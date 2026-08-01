@@ -27,6 +27,8 @@ def main():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--save-every", type=int, default=50)
     parser.add_argument("--resume", type=str, default=None)
+    parser.add_argument("--mcts", action="store_true", help="Use MCTS during self-play")
+    parser.add_argument("--mcts-sims", type=int, default=32, help="MCTS simulations per decision")
     args = parser.parse_args()
 
     deck = read_deck(args.deck)
@@ -38,6 +40,7 @@ def main():
     trainer = PPOTrainer(
         deck=deck, opponent_decks=opponent_decks,
         lr=args.lr, device=args.device,
+        use_mcts=args.mcts, mcts_sims=args.mcts_sims,
     )
 
     if args.resume:

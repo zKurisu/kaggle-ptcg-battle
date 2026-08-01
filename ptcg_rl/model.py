@@ -201,5 +201,124 @@ class PolicyValueNet(nn.Module):
         entropies /= max_k
         return logprobs, entropies, values
 
+    # ── MCTS action (for training-time self-play) ────────────────────
+
+    @torch.no_grad()
+    def act_mcts(self, obs_dict: dict, deck: list[int],
+                 sims: int = 32) -> tuple[list[int], float, float]:
+        """MCTS search using engine search API + this model as leaf evaluator.
+        Returns (picks, logprob, value) like act()."""
+        import math, random, time
+        from .encoder import FastEncoder
+        from cg.api import (
+            to_observation_class, search_begin, search_step, search_end,
+        )
+
+        obs = to_observation_class(obs_dict)
+        state = obs.current
+        you = state.yourIndex
+        my_s, op_s = state.players[you], state.players[1 - you]
+        dev = next(self.parameters()).device
+
+        # Predictions for hidden info
+        mc_d, pc = my_s.deckCount, len(my_s.prize)
+        oc, opc, ohc = op_s.deckCount, len(op_s.prize), op_s.handCount
+        pad = (deck * ((max(mc_d, pc, oc, opc, ohc) // len(deck)) + 2)) if deck else [1]
+
+        try:
+            ss = search_begin(obs,
+                your_deck=pad[:max(1, mc_d)],
+                your_prize=pad[:pc] if pc > 0 else [],
+                opponent_deck=pad[:max(1, oc)],
+                opponent_prize=pad[:opc] if opc > 0 else [],
+                opponent_hand=pad[:max(1, ohc)] if ohc > 0 else [1],
+                opponent_active=[deck[0]] if (op_s.active and op_s.active[0] is None) else [])
+        except Exception:
+            return self._greedy_fallback(obs_dict)
+
+        root_sel = ss.observation.select
+        if root_sel is None:
+            search_end(); return [], 0.0, 0.0
+        n = len(root_sel.option)
+        mc = root_sel.maxCount
+
+        # Root children
+        children = [{'sel': [i], 'sid': None, 'visits': 0, 'total': 0.0,
+                      'prior': 0.05 if i == n else 1.0 / n}
+                    for i in range(n + 1)]
+
+        if n > 1:
+            noise = np.random.dirichlet([0.25] * len(children))
+            for i, c in enumerate(children):
+                c['prior'] = 0.75 * c['prior'] + 0.25 * noise[i]
+
+        enc = FastEncoder()
+        def _eval_obs(o_dict: dict) -> float:
+            try:
+                d = enc.encode(o_dict)
+                b = torch.from_numpy(d.board_cards).unsqueeze(0).to(dev)
+                hd = torch.from_numpy(d.hand_cards).unsqueeze(0).to(dev)
+                ft = torch.from_numpy(d.state_feats).unsqueeze(0).to(dev)
+                return float(self.value(self.encode_state(b, hd, ft))[0])
+            except Exception:
+                return 0.0
+
+        root_sid = ss.searchId
+        t0 = time.time()
+
+        for si in range(sims):
+            if time.time() - t0 > 5.0:
+                break
+            cur_sid = root_sid
+
+            # PUCT selection + expansion
+            best_score, best_ci = -1e9, 0
+            for ci, c in enumerate(children):
+                q = c['total'] / max(1, c['visits'])
+                u = 1.25 * c['prior'] * math.sqrt(max(1, si)) / (1 + c['visits'])
+                if q + u > best_score:
+                    best_score, best_ci = q + u, ci
+
+            chosen = children[best_ci]
+            if chosen.get('visits', 0) == 0:
+                try:
+                    ar = search_step(cur_sid, chosen['sel'])
+                    chosen['sid'] = ar.searchId
+                    lc = ar.observation.current
+                    if lc and lc.result is not None and lc.result != -1:
+                        val = 1.0 if lc.result == you else (-1.0 if lc.result != 2 else 0.0)
+                    else:
+                        val = _eval_obs(ar.observation.__dict__ if hasattr(ar.observation, '__dict__') else {})
+                except Exception:
+                    val = 0.0
+
+                chosen['visits'] = 1
+                chosen['total'] = val
+            else:
+                chosen['visits'] += 1
+
+        search_end()
+
+        best = max(children, key=lambda c: c.get('visits', 0))
+        if best is None or best['sel'] == [n]:
+            return [], 0.0, 0.0
+
+        # Get greedy logprob/value for PPO
+        d2 = enc.encode(obs_dict)
+        _, lp, v = self.act(d2.board_cards, d2.hand_cards, d2.state_feats,
+                            d2.opt_type, d2.opt_card, d2.opt_card2,
+                            d2.opt_attack, d2.opt_feats,
+                            d2.min_count, d2.max_count, greedy=True)
+
+        return best['sel'][:mc], lp, v
+
+    def _greedy_fallback(self, obs_dict: dict):
+        from .encoder import FastEncoder
+        d = FastEncoder().encode(obs_dict)
+        return self.act(d.board_cards, d.hand_cards, d.state_feats,
+                        d.opt_type, d.opt_card, d.opt_card2,
+                        d.opt_attack, d.opt_feats,
+                        d.min_count, d.max_count, greedy=True)
+
     def count_params(self) -> int:
         return sum(p.numel() for p in self.parameters())

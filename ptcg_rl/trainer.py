@@ -36,7 +36,8 @@ def compute_gae(samples: list[EncodedDecision], gamma: float = 0.99,
 
 def play_game(model: PolicyValueNet, deck: list[int],
               opp_deck: list[int], encoder: FastEncoder,
-              temperature: float = 1.0) -> list[EncodedDecision]:
+              temperature: float = 1.0,
+              use_mcts: bool = False, mcts_sims: int = 32) -> list[EncodedDecision]:
     """Play one game. Returns list of decisions from our perspective (player 0)."""
     from cg.game import battle_start, battle_select, battle_finish, _get_battle_data
 
@@ -69,14 +70,33 @@ def play_game(model: PolicyValueNet, deck: list[int],
             obs = battle_select([])
             continue
 
-        # Act with model
+        # Act with model (MCTS or greedy)
+        n_opts = len(opts)
         with torch.no_grad():
-            picks, lp, val = model.act(
-                d.board_cards, d.hand_cards, d.state_feats,
-                d.opt_type, d.opt_card, d.opt_card2, d.opt_attack, d.opt_feats,
-                d.min_count, d.max_count,
-                greedy=(temperature < 0.1 or random.random() > temperature),
-            )
+            if use_mcts:
+                try:
+                    picks, lp, val = model.act_mcts(obs, deck, sims=mcts_sims)
+                    picks = [p for p in picks if 0 <= p < n_opts]
+                    picks = list(dict.fromkeys(picks))
+                    if len(picks) < d.min_count:
+                        raise ValueError("MCTS returned too few picks")
+                except Exception:
+                    picks, lp, val = model.act(
+                        d.board_cards, d.hand_cards, d.state_feats,
+                        d.opt_type, d.opt_card, d.opt_card2, d.opt_attack, d.opt_feats,
+                        d.min_count, d.max_count, greedy=True)
+            else:
+                picks, lp, val = model.act(
+                    d.board_cards, d.hand_cards, d.state_feats,
+                    d.opt_type, d.opt_card, d.opt_card2, d.opt_attack, d.opt_feats,
+                    d.min_count, d.max_count,
+                    greedy=(temperature < 0.1 or random.random() > temperature),
+                )
+        # Final safety: ensure legal
+        picks = [p for p in picks if 0 <= p < n_opts]
+        picks = list(dict.fromkeys(picks))[:mc]
+        if len(picks) < d.min_count:
+            picks = list(range(min(mc, n_opts)))
         d.action = picks
         d.logprob = lp
         d.value = val
@@ -104,7 +124,8 @@ class PPOTrainer:
                  value_coef: float = 0.5, entropy_coef: float = 0.01,
                  gamma: float = 0.99, lam: float = 0.95,
                  epochs: int = 4, minibatch: int = 128,
-                 device: str = 'cuda'):
+                 device: str = 'cuda',
+                 use_mcts: bool = False, mcts_sims: int = 32):
         self.deck = deck
         self.opp_decks = opponent_decks or [deck]
         self.clip_eps = clip_eps
@@ -115,20 +136,24 @@ class PPOTrainer:
         self.epochs = epochs
         self.minibatch = minibatch
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
+        self.use_mcts = use_mcts
+        self.mcts_sims = mcts_sims
 
         self.model = PolicyValueNet().to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         self.encoder = FastEncoder()
         self.metrics = []
 
-        print(f"Model: {self.model.count_params():,} params on {self.device}")
+        mode = f"MCTS({mcts_sims} sims)" if use_mcts else "greedy"
+        print(f"Model: {self.model.count_params():,} params on {self.device}, action: {mode}")
 
     def collect(self, n_games: int, temperature: float = 1.0) -> list[EncodedDecision]:
         """Play n_games, return all decisions."""
         all_d = []
         for _ in range(n_games):
             opp = random.choice(self.opp_decks)
-            d = play_game(self.model, self.deck, opp, self.encoder, temperature)
+            d = play_game(self.model, self.deck, opp, self.encoder, temperature,
+                         use_mcts=self.use_mcts, mcts_sims=self.mcts_sims)
             all_d.extend(d)
         return all_d
 

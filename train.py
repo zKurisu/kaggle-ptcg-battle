@@ -2,7 +2,12 @@
 """PTCG RL Training — clean pipeline. Usage: python train_ptcg.py"""
 
 import os, sys, argparse
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+# cg engine is in workspace root, not in this repo
+_WORKSPACE = os.path.dirname(_HERE)
+if _WORKSPACE not in sys.path:
+    sys.path.insert(0, _WORKSPACE)
 
 import torch
 from ptcg_rl.trainer import PPOTrainer, export_numpy
@@ -15,7 +20,7 @@ def read_deck(path: str) -> list[int]:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--deck", default="deck_dragapult.csv")
+    parser.add_argument("--deck", default="deck.csv")
     parser.add_argument("--iterations", type=int, default=500)
     parser.add_argument("--games", type=int, default=32)
     parser.add_argument("--lr", type=float, default=3e-4)

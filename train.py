@@ -34,8 +34,14 @@ def main():
     deck = read_deck(args.deck)
     assert len(deck) == 60
 
-    # Opponent pool — add more decks here for diversity
-    opponent_decks = [deck]
+    # Opponent pool: 26 real archetypes + mirror self-play
+    opponent_decks = [deck]  # always include mirror
+    pool_dir = os.path.join(_HERE, "decks")
+    if os.path.isdir(pool_dir):
+        for f in sorted(os.listdir(pool_dir)):
+            if f.endswith(".csv"):
+                opponent_decks.append(read_deck(os.path.join(pool_dir, f)))
+    print(f"Opponent pool: {len(opponent_decks)} decks (1 mirror + {len(opponent_decks)-1} archetypes)")
 
     trainer = PPOTrainer(
         deck=deck, opponent_decks=opponent_decks,

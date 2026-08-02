@@ -337,6 +337,27 @@ python3 -u tools/track_kaggle_scores.py \
 python3 tools/track_kaggle_scores.py --no-append
 ```
 
+### 分析 Kaggle Replay
+
+提交分数只给总分，不告诉输给谁。用 replay 分析脚本可以拉取某个
+submission 的公开 episodes，自动缓存回放，并按对手 deck/team 聚合胜率：
+
+```bash
+python3 tools/analyze_kaggle_replays.py 55188444 \
+    --deck decks/pool_341_crustle_mysterious_rock_inn.csv \
+    --known-decks-dir decks \
+    --group-by opponent_deck_name \
+    --out logs/kaggle_replay_analysis_55188444.csv \
+    --write-opponent-decks \
+    --progress-every 5
+```
+
+如果没有本地 deck 可用于自动识别我方 agent，就显式传：
+
+```bash
+python3 tools/analyze_kaggle_replays.py 55188444 --team-name "Jie Orkarin"
+```
+
 ## 常用命令
 
 ```bash

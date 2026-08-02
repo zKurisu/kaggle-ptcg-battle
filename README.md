@@ -232,6 +232,31 @@ kaggle competitions submit pokemon-tcg-ai-battle \
     -m "BC2 Marnie v4 epoch3"
 ```
 
+### 记录 Kaggle 分数变化
+
+simulation 分数会随匹配继续波动，早期冲高、回落速度、最终稳定区间都应记录。
+提交后建议每 10-30 分钟记录一次：
+
+```bash
+python3 tools/track_kaggle_scores.py \
+    --out logs/kaggle_submission_scores.csv
+```
+
+只查看不写 CSV：
+
+```bash
+python3 tools/track_kaggle_scores.py --no-append
+```
+
+长期记录可以直接循环：
+
+```bash
+while true; do
+    python3 tools/track_kaggle_scores.py --out logs/kaggle_submission_scores.csv
+    sleep 900
+done
+```
+
 ## 常用命令
 
 ```bash

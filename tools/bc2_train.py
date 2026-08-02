@@ -46,7 +46,7 @@ def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None, first
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--corpus", default="data/bc_corpus_banded_v3")
+    parser.add_argument("--corpus", default="data/bc_corpus_banded_v4")
     parser.add_argument("--archetype", default="Marnie Grimmsnarl")
     parser.add_argument("--score-bands", nargs="+", default=["1200+", "1100-1199", "1000-1099"])
     parser.add_argument("--epochs", type=int, default=12)

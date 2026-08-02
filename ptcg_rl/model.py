@@ -14,25 +14,37 @@ from .encoder import STATE_FEAT_DIM, OPT_FEAT_DIM, N_CARDS, N_ATTACKS, N_OPT_TYP
 
 NEG_INF = -1e9
 _EC, _EA, _EO, _OE, _HD, _S1, _SC = 64, 32, 16, 128, 256, 512, 128
+_CTX, _AREA, _IDX = 16, 8, 8
 
 
 class PolicyValueNet(nn.Module):
-    def __init__(self, width: float = 1.0):
+    def __init__(self, width: float = 1.0, option_context: bool = True):
         """width=1.0→501K, 2.0→4M, 3.0→9M params."""
         super().__init__()
         ec = int(_EC * width); ea = int(_EA * width); eo_t = int(_EO * width)
         oe = int(_OE * width); hd = int(_HD * width)
         s1 = int(_S1 * width); sc = int(_SC * width)
+        ctx = int(_CTX * width); area = int(_AREA * width); idx = int(_IDX * width)
+        self.option_context = option_context
         self._ec=ec; self._ea=ea; self._eo_t=eo_t; self._oe=oe; self._hd=hd
+        self._ctx=ctx; self._area=area; self._idx=idx
 
         self.card_emb = nn.Embedding(N_CARDS + 2, ec, padding_idx=0)
         self.attack_emb = nn.Embedding(N_ATTACKS + 1, ea, padding_idx=0)
         self.opt_type_emb = nn.Embedding(N_OPT_TYPES + 1, eo_t)
+        if option_context:
+            self.context_emb = nn.Embedding(65, ctx)
+            self.select_type_emb = nn.Embedding(17, ctx)
+            self.area_emb = nn.Embedding(17, area)
+            self.index_emb = nn.Embedding(65, idx)
+            self.inplay_area_emb = nn.Embedding(17, area)
+            self.inplay_index_emb = nn.Embedding(17, idx)
         self.stop_vec = nn.Parameter(torch.zeros(oe))
 
         self.state_fc1 = nn.Linear(2 * ec + ec + STATE_FEAT_DIM, s1)
         self.state_fc2 = nn.Linear(s1, hd)
-        self.opt_fc = nn.Linear(ec + ec + ea + eo_t + OPT_FEAT_DIM, oe)
+        opt_extra = ctx + ctx + area + idx + area + idx if option_context else 0
+        self.opt_fc = nn.Linear(ec + ec + ea + eo_t + opt_extra + OPT_FEAT_DIM, oe)
         self.score_fc1 = nn.Linear(hd + oe + oe, sc)
         self.score_fc2 = nn.Linear(sc, 1)
         self.value_fc1 = nn.Linear(hd, sc)
@@ -67,10 +79,24 @@ class PolicyValueNet(nn.Module):
     def encode_options(self, opt_type: torch.Tensor, opt_card: torch.Tensor,
                        opt_card2: torch.Tensor, opt_attack: torch.Tensor,
                        opt_feats: torch.Tensor) -> torch.Tensor:
-        x = torch.cat([
+        parts = [
             self.card_emb(opt_card), self.card_emb(opt_card2),
-            self.attack_emb(opt_attack), self.opt_type_emb(opt_type), opt_feats,
-        ], dim=-1)
+            self.attack_emb(opt_attack), self.opt_type_emb(opt_type),
+        ]
+        if self.option_context:
+            ctx = torch.round(opt_feats[..., 3] * 64.0).long().clamp(0, 64)
+            sel_type = torch.round(opt_feats[..., 4] * 16.0).long().clamp(0, 16)
+            area = torch.round(opt_feats[..., 7] * 16.0).long().clamp(0, 16)
+            idx = torch.round(opt_feats[..., 8] * 64.0).long().clamp(0, 64)
+            inplay_area = torch.round(opt_feats[..., 9] * 16.0).long().clamp(0, 16)
+            inplay_idx = torch.round(opt_feats[..., 10] * 10.0).long().clamp(0, 16)
+            parts.extend([
+                self.context_emb(ctx), self.select_type_emb(sel_type),
+                self.area_emb(area), self.index_emb(idx),
+                self.inplay_area_emb(inplay_area), self.inplay_index_emb(inplay_idx),
+            ])
+        parts.append(opt_feats)
+        x = torch.cat(parts, dim=-1)
         return F.relu(self.opt_fc(x))
 
     # ── scoring ─────────────────────────────────────────────────────

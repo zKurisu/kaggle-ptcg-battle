@@ -19,15 +19,18 @@ NEG_INF = -1e9
 CONTEXT_NAMES = {
     0: "MAIN", 1: "SETUP_ACTIVE", 2: "SETUP_BENCH", 3: "SWITCH",
     4: "TO_ACTIVE", 5: "TO_BENCH", 7: "TO_HAND", 8: "DISCARD",
-    13: "DAMAGE_COUNTER", 21: "ATTACH_FROM", 35: "ATTACK",
-    38: "DRAW_COUNT", 41: "IS_FIRST", 42: "MULLIGAN", 43: "ACTIVATE",
+    13: "DAMAGE_COUNTER", 15: "DAMAGE", 16: "REMOVE_DAMAGE_COUNTER",
+    21: "ATTACH_FROM", 22: "ATTACH_TO", 29: "DISCARD_CARD_OR_ATTACHED_CARD",
+    30: "DISCARD_ENERGY", 34: "SKILL_ORDER", 35: "ATTACK", 37: "EVOLVE",
+    38: "DRAW_COUNT", 39: "DAMAGE_COUNTER_COUNT", 40: "REMOVE_DAMAGE_COUNTER_COUNT",
+    41: "IS_FIRST", 42: "MULLIGAN", 43: "ACTIVATE",
 }
 
 OPT_NAMES = {
     0: "NUMBER", 1: "YES", 2: "NO", 3: "CARD", 4: "TOOL_CARD",
-    5: "ENERGY_CARD", 6: "ENERGY", 7: "SKILL", 8: "ATTACK",
-    9: "PLAY", 10: "ATTACH", 11: "EVOLVE", 12: "ABILITY",
-    13: "DISCARD", 14: "RETREAT", 15: "END", 16: "SPECIAL_CONDITION",
+    5: "ENERGY_CARD", 6: "ENERGY", 7: "PLAY", 8: "ATTACH",
+    9: "EVOLVE", 10: "ABILITY", 11: "DISCARD", 12: "RETREAT",
+    13: "ATTACK", 14: "END", 15: "SKILL", 16: "SPECIAL_CONDITION",
 }
 
 
@@ -65,13 +68,29 @@ def _predict(w, sample, include_stop=True):
     h = _relu(_linear(w["state_fc1.weight"], w["state_fc1.bias"], x))
     h = _relu(_linear(w["state_fc2.weight"], w["state_fc2.bias"], h))
 
-    opt_x = np.concatenate([
+    parts = [
         w["card_emb.weight"][oc],
         w["card_emb.weight"][oc2],
         w["attack_emb.weight"][oa],
         w["opt_type_emb.weight"][ot],
-        of_arr,
-    ], axis=-1)
+    ]
+    if "context_emb.weight" in w:
+        ctx = np.rint(of_arr[:, 3] * 64.0).astype(np.int64).clip(0, 64)
+        sel_type = np.rint(of_arr[:, 4] * 16.0).astype(np.int64).clip(0, 16)
+        area = np.rint(of_arr[:, 7] * 16.0).astype(np.int64).clip(0, 16)
+        idx = np.rint(of_arr[:, 8] * 64.0).astype(np.int64).clip(0, 64)
+        inplay_area = np.rint(of_arr[:, 9] * 16.0).astype(np.int64).clip(0, 16)
+        inplay_idx = np.rint(of_arr[:, 10] * 10.0).astype(np.int64).clip(0, 16)
+        parts.extend([
+            w["context_emb.weight"][ctx],
+            w["select_type_emb.weight"][sel_type],
+            w["area_emb.weight"][area],
+            w["index_emb.weight"][idx],
+            w["inplay_area_emb.weight"][inplay_area],
+            w["inplay_index_emb.weight"][inplay_idx],
+        ])
+    parts.append(of_arr)
+    opt_x = np.concatenate(parts, axis=-1)
     opts = _relu(_linear(w["opt_fc.weight"], w["opt_fc.bias"], opt_x))
 
     oe = w["stop_vec"].shape[0]

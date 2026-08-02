@@ -42,6 +42,7 @@ class NumpyPolicy:
         self._oe = self.w['stop_vec'].shape[0]
         self._hd = self.w['state_fc2.bias'].shape[0]
         self._ec = self.w['card_emb.weight'].shape[1]
+        self._has_option_context = "context_emb.weight" in self.w
 
     @classmethod
     def load(cls, path: str) -> "NumpyPolicy":
@@ -89,13 +90,29 @@ class NumpyPolicy:
         n = len(d.opt_type)
         h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats)
 
-        opt_x = np.concatenate([
+        parts = [
             self.w["card_emb.weight"][d.opt_card],
             self.w["card_emb.weight"][d.opt_card2],
             self.w["attack_emb.weight"][d.opt_attack],
             self.w["opt_type_emb.weight"][d.opt_type],
-            d.opt_feats,
-        ], axis=-1)
+        ]
+        if self._has_option_context:
+            ctx = np.rint(d.opt_feats[:, 3] * 64.0).astype(np.int64).clip(0, 64)
+            sel_type = np.rint(d.opt_feats[:, 4] * 16.0).astype(np.int64).clip(0, 16)
+            area = np.rint(d.opt_feats[:, 7] * 16.0).astype(np.int64).clip(0, 16)
+            idx = np.rint(d.opt_feats[:, 8] * 64.0).astype(np.int64).clip(0, 64)
+            inplay_area = np.rint(d.opt_feats[:, 9] * 16.0).astype(np.int64).clip(0, 16)
+            inplay_idx = np.rint(d.opt_feats[:, 10] * 10.0).astype(np.int64).clip(0, 16)
+            parts.extend([
+                self.w["context_emb.weight"][ctx],
+                self.w["select_type_emb.weight"][sel_type],
+                self.w["area_emb.weight"][area],
+                self.w["index_emb.weight"][idx],
+                self.w["inplay_area_emb.weight"][inplay_area],
+                self.w["inplay_index_emb.weight"][inplay_idx],
+            ])
+        parts.append(d.opt_feats)
+        opt_x = np.concatenate(parts, axis=-1)
         opts = _relu(_linear(self.w["opt_fc.weight"], self.w["opt_fc.bias"], opt_x))
 
         picks, picked_sum = [], np.zeros(self._oe, dtype=np.float32)

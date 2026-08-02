@@ -8,6 +8,8 @@ from typing import Iterable
 import numpy as np
 import torch
 
+from ptcg_rl.encoder import OPT_FEAT_DIM
+
 
 @dataclass
 class BCBatch:
@@ -118,7 +120,7 @@ class BCCorpus:
         opt_card = np.zeros((bsz, max_options), dtype=np.int64)
         opt_card2 = np.zeros((bsz, max_options), dtype=np.int64)
         opt_attack = np.zeros((bsz, max_options), dtype=np.int64)
-        opt_feats = np.zeros((bsz, max_options, 16), dtype=np.float32)
+        opt_feats = np.zeros((bsz, max_options, OPT_FEAT_DIM), dtype=np.float32)
         min_count = np.empty(bsz, dtype=np.int64)
         max_count = np.empty(bsz, dtype=np.int64)
         weights = np.ones(bsz, dtype=np.float32)
@@ -137,7 +139,8 @@ class BCCorpus:
             opt_card[bi, :n] = np.asarray(data["oc"][si], dtype=np.int64)
             opt_card2[bi, :n] = np.asarray(data["oc2"][si], dtype=np.int64)
             opt_attack[bi, :n] = np.asarray(data["oa"][si], dtype=np.int64)
-            opt_feats[bi, :n] = np.asarray(data["of_arr"][si], dtype=np.float32)
+            of = np.asarray(data["of_arr"][si], dtype=np.float32)
+            opt_feats[bi, :n, : min(of.shape[-1], OPT_FEAT_DIM)] = of[:, :OPT_FEAT_DIM]
             action = np.asarray(data["action"][si], dtype=np.int64).tolist()
             actions.append([int(a) for a in action])
             min_count[bi] = int(data["min_c"][si])

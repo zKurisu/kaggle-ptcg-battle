@@ -101,10 +101,30 @@ data/bc_corpus_banded/
 默认会提高第一步动作和大候选集合的权重，因为当前弱点主要集中在
 `TO_HAND`、`ATTACK`、`ABILITY` 和 6+ 候选的排序。
 
+2026-08-02 之后的 encoder 修复了 `Play`/`Skill` option 没有卡牌身份的问题，
+并且模型新增了 `context/area/index` embedding。建议重新抽取到 v4：
+
+```bash
+LB_CSV=$(ls /tmp/lb/*.csv | head -1)
+python3 -u tools/bc_extract_v2.py ../episodes_raw \
+    --out data/bc_corpus_banded_v4 \
+    --lb-csv "$LB_CSV" \
+    --workers 4 \
+    > logs/bc_extract_v4.log 2>&1
+```
+
+训练前先审计 raw option 字段，确认低分场景的 option 身份是否已被暴露：
+
+```bash
+python3 tools/audit_episode_options.py ../episodes_raw \
+    --max-episodes 2000 \
+    --option-types PLAY ABILITY ATTACK SKILL CARD
+```
+
 ```bash
 mkdir -p logs checkpoints
 CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
-    --corpus data/bc_corpus_banded_v3 \
+    --corpus data/bc_corpus_banded_v4 \
     --archetype "Marnie Grimmsnarl" \
     --score-bands "1200+" "1100-1199" "1000-1099" \
     --epochs 12 --batch-size 4096 --width 2.0 --device cuda:0 \
@@ -118,7 +138,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
 
 ```bash
 python3 tools/bc2_accuracy.py checkpoints/bc2_marnie_1000_w2.npz \
-    --corpus data/bc_corpus_banded_v3 \
+    --corpus data/bc_corpus_banded_v4 \
     --archetype "Marnie Grimmsnarl" \
     --score-bands "1200+" "1100-1199" "1000-1099" \
     --max-samples 50000 --batch-size 4096 --progress-every 5000

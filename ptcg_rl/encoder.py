@@ -193,6 +193,15 @@ class FastEncoder:
                 if target2:
                     opt_feats[i, 14] = self._damage_ratio(target2)
                     opt_feats[i, 15] = self._energy_count(target2) / 10.0
+            if ot == 7 and o.get("index") is not None:  # Play: hand index only
+                idx2 = int(o.get("index") or 0)
+                opt_feats[i, 7] = 2.0 / 16.0
+                opt_feats[i, 8] = float(idx2) / 64.0
+                if idx2 < len(my_hand) and my_hand[idx2]:
+                    opt_card[i] = my_hand[idx2]["id"]
+            if ot == 15:  # Skill: engine exposes card identity directly
+                opt_card[i] = int(o.get("cardId") or 0)
+                opt_feats[i, 8] = float(o.get("serial") or 0) / 64.0
             if o.get("attackId") is not None:
                 opt_attack[i] = o["attackId"]
             opt_feats[i, 1] = 1.0 if o.get("playerIndex") == you else 0.0

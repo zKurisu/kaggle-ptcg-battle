@@ -19,13 +19,23 @@ from ptcg_rl.model import PolicyValueNet
 
 CONTEXT_NAMES = {
     0: "MAIN", 1: "SETUP_ACTIVE", 2: "SETUP_BENCH", 3: "SWITCH", 4: "TO_ACTIVE",
-    5: "TO_BENCH", 7: "TO_HAND", 8: "DISCARD", 13: "DAMAGE_COUNTER",
-    21: "ATTACH_FROM", 35: "ATTACK", 38: "DRAW_COUNT", 41: "IS_FIRST", 43: "ACTIVATE",
+    5: "TO_BENCH", 6: "TO_FIELD", 7: "TO_HAND", 8: "DISCARD", 9: "TO_DECK",
+    10: "TO_DECK_BOTTOM", 11: "TO_PRIZE", 12: "NOT_MOVE", 13: "DAMAGE_COUNTER",
+    14: "DAMAGE_COUNTER_ANY", 15: "DAMAGE", 16: "REMOVE_DAMAGE_COUNTER", 17: "HEAL",
+    18: "EVOLVES_FROM", 19: "EVOLVES_TO", 20: "DEVOLVE", 21: "ATTACH_FROM",
+    22: "ATTACH_TO", 23: "DETACH_FROM", 24: "LOOK", 25: "EFFECT_TARGET",
+    26: "DISCARD_ENERGY_CARD", 27: "DISCARD_TOOL_CARD", 28: "SWITCH_ENERGY_CARD",
+    29: "DISCARD_CARD_OR_ATTACHED_CARD", 30: "DISCARD_ENERGY", 31: "TO_HAND_ENERGY",
+    32: "TO_DECK_ENERGY", 33: "SWITCH_ENERGY", 34: "SKILL_ORDER", 35: "ATTACK",
+    36: "DISABLE_ATTACK", 37: "EVOLVE", 38: "DRAW_COUNT", 39: "DAMAGE_COUNTER_COUNT",
+    40: "REMOVE_DAMAGE_COUNTER_COUNT", 41: "IS_FIRST", 42: "MULLIGAN", 43: "ACTIVATE",
+    44: "FIRST_EFFECT", 45: "MORE_DEVOLVE", 46: "COIN_HEAD", 47: "AFFECT_SPECIAL_CONDITION",
+    48: "RECOVER_SPECIAL_CONDITION",
 }
 OPT_NAMES = {
     0: "NUMBER", 1: "YES", 2: "NO", 3: "CARD", 4: "TOOL_CARD", 5: "ENERGY_CARD",
-    6: "ENERGY", 7: "SKILL", 8: "ATTACK", 9: "PLAY", 10: "ATTACH", 11: "EVOLVE",
-    12: "ABILITY", 13: "DISCARD", 14: "RETREAT", 15: "END", 16: "SPECIAL_CONDITION",
+    6: "ENERGY", 7: "PLAY", 8: "ATTACH", 9: "EVOLVE", 10: "ABILITY", 11: "DISCARD",
+    12: "RETREAT", 13: "ATTACK", 14: "END", 15: "SKILL", 16: "SPECIAL_CONDITION",
 }
 
 
@@ -44,7 +54,7 @@ def _bucket(n: int) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("policy")
-    parser.add_argument("--corpus", default="data/bc_corpus_banded_v3")
+    parser.add_argument("--corpus", default="data/bc_corpus_banded_v4")
     parser.add_argument("--archetype", default="Marnie Grimmsnarl")
     parser.add_argument("--score-bands", nargs="+", default=["1200+", "1100-1199", "1000-1099"])
     parser.add_argument("--width", type=float, default=2.0)
@@ -64,8 +74,9 @@ def main() -> None:
         indices = indices[:: args.stride]
     indices = indices[: args.max_samples]
 
-    model = PolicyValueNet(width=args.width).to(device)
     with np.load(args.policy) as z:
+        option_context = "context_emb.weight" in z.files
+        model = PolicyValueNet(width=args.width, option_context=option_context).to(device)
         state = {k: torch.as_tensor(z[k], device=device) for k in z.files}
     model.load_state_dict(state)
     model.eval()

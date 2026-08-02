@@ -100,24 +100,42 @@ class BCTrainer:
             'actions': actions, 'min_c': min_c, 'max_c': max_c, 'n_max': n_max,
         }
 
+    def _progress(self, step, total, t0, loss, pol, val):
+        pct = step / max(total, 1) * 100
+        elapsed = time.time() - t0
+        eta = elapsed / max(step, 1) * (total - step)
+        bar_len = 30
+        filled = int(bar_len * step / max(total, 1))
+        bar = "█" * filled + "░" * (bar_len - filled)
+        print(f"\r  {bar} {pct:5.1f}% | {step}/{total} | "
+              f"loss={loss:.3f} pol={pol:.3f} val={val:.3f} | "
+              f"{elapsed:.0f}s elapsed, {eta:.0f}s eta   ", end="", flush=True)
+
+    def _count_batches(self, batch_size):
+        """Count total batches without loading all data (just list files + estimate)."""
+        total = 0
+        arch_dir = os.path.join(self.corpus_dir, self.archetype.replace(' ', '_'))
+        for band in self.score_bands:
+            band_dir = os.path.join(arch_dir, band.replace(' ', '_'))
+            for npz_path in sorted(glob.glob(os.path.join(band_dir, "*.npz"))):
+                # Quick count from npz header
+                with np.load(npz_path, allow_pickle=True) as data:
+                    n = len(data['board'])
+                total += (n + batch_size - 1) // batch_size
+        return total
+
     def train(self, epochs: int = 10, batch_size: int = 128, save_path: str = "checkpoints/bc_policy.npz"):
-        # Count total batches for progress
-        n_total = 0
-        for _ in self._iter_batches(self.corpus_dir, self.archetype, self.score_bands, batch_size):
-            n_total += 1
-        print(f"  Total batches: {n_total}", flush=True)
+        print("  Counting batches...", end="", flush=True)
+        n_total = self._count_batches(batch_size)
+        print(f" {n_total} total", flush=True)
 
         for epoch in range(epochs):
             total_loss = 0.0; total_pol = 0.0; total_val = 0.0; steps = 0
             t0 = time.time()
-            print(f"  Epoch {epoch+1}/{epochs} [", end="", flush=True)
+            print(f"\n  Epoch {epoch+1}/{epochs}:", flush=True)
 
             for mb in self._iter_batches(self.corpus_dir, self.archetype,
                                          self.score_bands, batch_size):
-                if steps % 50 == 0:
-                    print(f"{steps}", end="", flush=True)
-                elif steps % 10 == 0:
-                    print(".", end="", flush=True)
                 batch = self._collate(mb)
 
                 # Forward: state → h, options → opts
@@ -162,15 +180,12 @@ class BCTrainer:
                         step_lp = logp.gather(1, safe_tgt.unsqueeze(1)).squeeze(1)  # [B]
                         pol_loss = pol_loss - (step_lp * valid.float()).sum()
 
-                        # Update picked_sum only for real options (not STOP)
-                        real_pick = valid & (step_targets < batch['n_max'])
-                        if real_pick.any():
-                            idx = safe_tgt[real_pick]
-                            chosen = opts[real_pick].gather(1, idx.view(-1, 1, 1).expand(-1, 1, 128)).squeeze(1)
-                            picked_sum[real_pick] += chosen
-                            for ri, rv in enumerate(real_pick):
-                                if rv:
-                                    avail[ri, idx[ri]] = False
+                        # Update picked_sum + avail for real options (not STOP)
+                        for i in range(B):
+                            if valid[i] and step_targets[i] < batch['n_max']:
+                                tgt = int(step_targets[i])
+                                picked_sum[i] += opts[i, tgt]
+                                avail[i, tgt] = False
 
                 pol_loss = pol_loss / B
 
@@ -188,8 +203,15 @@ class BCTrainer:
                 total_loss += loss.item(); total_pol += pol_loss.item()
                 total_val += val_loss.item(); steps += 1
 
-            elapsed = time.time() - t0
-            print(f"] loss={total_loss/steps:.4f} pol={total_pol/steps:.4f} val={total_val/steps:.4f} t={elapsed:.0f}s", flush=True)
+                if steps % 20 == 0 or steps == n_total:
+                    avg_l = total_loss / steps; avg_p = total_pol / steps; avg_v = total_val / steps
+                    self._progress(steps, n_total, t0, avg_l, avg_p, avg_v)
+
+            # End of epoch
+            avg_l = total_loss / max(steps, 1); avg_p = total_pol / max(steps, 1)
+            avg_v = total_val / max(steps, 1)
+            self._progress(steps, n_total, t0, avg_l, avg_p, avg_v)
+            print(flush=True)  # newline
 
         # Save
         export_numpy(self.model, save_path)

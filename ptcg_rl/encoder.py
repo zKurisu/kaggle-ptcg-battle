@@ -29,8 +29,8 @@ MAX_HP = 400            # practical max HP
 
 # ── Feature dimensions ────────────────────────────────────────────────────
 CARD_DIM = 64           # card embedding
-STATE_FEAT_DIM = 32     # scalar state features
-OPT_FEAT_DIM = 16       # per-option scalar features
+STATE_FEAT_DIM = 48     # scalar state features
+OPT_FEAT_DIM = 32       # per-option scalar features
 
 
 @dataclass
@@ -148,6 +148,24 @@ class FastEncoder:
         s[29] = sum(self._damage_ratio(p) for p in me.get("bench", []) if p) / BENCH_MAX
         s[30] = sum(self._damage_ratio(p) for p in opp.get("bench", []) if p) / BENCH_MAX
         s[31] = len(my_hand) / MAX_HAND
+        my_active = me.get("active", [None])[0] if me.get("active") else None
+        opp_active = opp.get("active", [None])[0] if opp.get("active") else None
+        s[32] = self._hp_ratio(my_active)
+        s[33] = self._hp_ratio(opp_active)
+        s[34] = self._retreat_cost(my_active) / 5.0
+        s[35] = self._retreat_cost(opp_active) / 5.0
+        s[36] = len((my_active or {}).get("tools") or []) / 4.0
+        s[37] = len((opp_active or {}).get("tools") or []) / 4.0
+        s[38] = self._stage(my_active) / 2.0
+        s[39] = self._stage(opp_active) / 2.0
+        s[40] = self._is_ex(my_active)
+        s[41] = self._is_ex(opp_active)
+        s[42] = self._is_mega(my_active)
+        s[43] = self._is_mega(opp_active)
+        s[44] = self._special_status(me)
+        s[45] = self._special_status(opp)
+        s[46] = len(me.get("discard") or []) / DECK_SIZE
+        s[47] = len(opp.get("discard") or []) / DECK_SIZE
 
         # ── Options ───────────────────────────────────────────────────────
         options = sel.get("option", [])
@@ -186,6 +204,7 @@ class FastEncoder:
                 target = self._get_pokemon(cur, pid, area, idx)
                 opt_feats[i, 14] = self._damage_ratio(target)
                 opt_feats[i, 15] = self._energy_count(target) / 10.0
+                self._fill_option_extras(opt_feats[i], c, target, pid, you, area)
                 if ot == 4:  # ToolCard: choose an attached tool, not only its Pokemon.
                     attached = self._get_attached_card(cur, pid, area, idx, "tools", o.get("toolIndex"))
                     if attached:
@@ -203,19 +222,23 @@ class FastEncoder:
                 if target2:
                     opt_feats[i, 14] = self._damage_ratio(target2)
                     opt_feats[i, 15] = self._energy_count(target2) / 10.0
+                    self._fill_target_extras(opt_feats[i], target2, pid, you, o.get("inPlayArea"))
             if ot == 7 and o.get("index") is not None:  # Play: hand index only
                 idx2 = int(o.get("index") or 0)
                 opt_feats[i, 7] = 2.0 / 16.0
                 opt_feats[i, 8] = float(idx2) / 64.0
                 if idx2 < len(my_hand) and my_hand[idx2]:
                     opt_card[i] = my_hand[idx2]["id"]
+                    self._fill_card_metadata(opt_feats[i], opt_card[i])
             if ot == 15:  # Skill: engine exposes card identity directly
                 opt_card[i] = int(o.get("cardId") or 0)
                 opt_feats[i, 8] = float(o.get("serial") or 0) / 64.0
+                self._fill_card_metadata(opt_feats[i], opt_card[i])
             if ot == 16 and o.get("specialConditionType") is not None:
                 opt_feats[i, 5] = float(o.get("specialConditionType") or 0) / 20.0
             if o.get("attackId") is not None:
                 opt_attack[i] = o["attackId"]
+                opt_feats[i, 30] = 1.0
             opt_feats[i, 1] = 1.0 if o.get("playerIndex") == you else 0.0
 
         return EncodedDecision(
@@ -236,6 +259,40 @@ class FastEncoder:
         return max(0.0, min(1.0, (max_hp - hp) / max_hp))
 
     @staticmethod
+    def _hp_ratio(p: dict | None) -> float:
+        if not p:
+            return 0.0
+        return max(0.0, min(1.0, float(p.get("hp", 0) or 0) / MAX_HP))
+
+    def _stage(self, p: dict | None) -> int:
+        if not p:
+            return 0
+        cid = int(p.get("id") or 0)
+        return int(self.card_stage[cid]) if 0 <= cid < len(self.card_stage) else 0
+
+    def _is_ex(self, p: dict | None) -> float:
+        if not p:
+            return 0.0
+        cid = int(p.get("id") or 0)
+        return float(self.card_ex[cid]) if 0 <= cid < len(self.card_ex) else 0.0
+
+    def _is_mega(self, p: dict | None) -> float:
+        if not p:
+            return 0.0
+        cid = int(p.get("id") or 0)
+        return float(self.card_mega[cid]) if 0 <= cid < len(self.card_mega) else 0.0
+
+    def _retreat_cost(self, p: dict | None) -> int:
+        if not p:
+            return 0
+        cid = int(p.get("id") or 0)
+        return int(self.card_retreat[cid]) if 0 <= cid < len(self.card_retreat) else 0
+
+    @staticmethod
+    def _special_status(player: dict) -> float:
+        return float(any(bool(player.get(k)) for k in ("asleep", "burned", "confused", "paralyzed", "poisoned")))
+
+    @staticmethod
     def _energy_count(p: dict | None) -> int:
         if not p:
             return 0
@@ -243,6 +300,36 @@ class FastEncoder:
         if energies is not None:
             return len(energies)
         return len(p.get("energyCards") or [])
+
+    def _fill_card_metadata(self, feats: np.ndarray, card_id: int) -> None:
+        cid = int(card_id or 0)
+        if not (0 <= cid < len(self.card_hp)):
+            return
+        feats[16] = float(self.card_hp[cid]) / MAX_HP
+        feats[17] = float(self.card_stage[cid]) / 2.0
+        feats[18] = float(self.card_ex[cid])
+        feats[19] = float(self.card_mega[cid])
+        feats[20] = float(self.card_retreat[cid]) / 5.0
+
+    def _fill_target_extras(self, feats: np.ndarray, target: dict | None,
+                            player_idx: int, you: int, area: int | None) -> None:
+        if not target:
+            return
+        feats[21] = self._hp_ratio(target)
+        feats[22] = self._stage(target) / 2.0
+        feats[23] = self._is_ex(target)
+        feats[24] = self._is_mega(target)
+        feats[25] = len(target.get("tools") or []) / 4.0
+        feats[26] = 1.0 if area == 4 else 0.0
+        feats[27] = 1.0 if area == 5 else 0.0
+        feats[28] = 1.0 if player_idx == you else 0.0
+        feats[29] = 1.0 if player_idx != you else 0.0
+
+    def _fill_option_extras(self, feats: np.ndarray, card_id: int,
+                            target: dict | None, player_idx: int,
+                            you: int, area: int | None) -> None:
+        self._fill_card_metadata(feats, card_id)
+        self._fill_target_extras(feats, target, player_idx, you, area)
 
     @staticmethod
     def _get_pokemon(cur: dict, player_idx: int, area: int, index: int) -> dict | None:

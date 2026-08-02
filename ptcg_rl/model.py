@@ -19,7 +19,8 @@ _CTX, _AREA, _IDX = 16, 8, 8
 
 class PolicyValueNet(nn.Module):
     def __init__(self, width: float = 1.0, option_context: bool = True,
-                 slot_state: bool = True):
+                 slot_state: bool = True, state_feat_dim: int = STATE_FEAT_DIM,
+                 opt_feat_dim: int = OPT_FEAT_DIM):
         """width=1.0→501K, 2.0→4M, 3.0→9M params."""
         super().__init__()
         ec = int(_EC * width); ea = int(_EA * width); eo_t = int(_EO * width)
@@ -28,6 +29,8 @@ class PolicyValueNet(nn.Module):
         ctx = int(_CTX * width); area = int(_AREA * width); idx = int(_IDX * width)
         self.option_context = option_context
         self.slot_state = slot_state
+        self.state_feat_dim = int(state_feat_dim)
+        self.opt_feat_dim = int(opt_feat_dim)
         self._ec=ec; self._ea=ea; self._eo_t=eo_t; self._oe=oe; self._hd=hd
         self._ctx=ctx; self._area=area; self._idx=idx
 
@@ -43,11 +46,11 @@ class PolicyValueNet(nn.Module):
             self.inplay_index_emb = nn.Embedding(17, idx)
         self.stop_vec = nn.Parameter(torch.zeros(oe))
 
-        state_in = (5 * ec if slot_state else 3 * ec) + STATE_FEAT_DIM
+        state_in = (5 * ec if slot_state else 3 * ec) + self.state_feat_dim
         self.state_fc1 = nn.Linear(state_in, s1)
         self.state_fc2 = nn.Linear(s1, hd)
         opt_extra = ctx + ctx + area + idx + area + idx if option_context else 0
-        self.opt_fc = nn.Linear(ec + ec + ea + eo_t + opt_extra + OPT_FEAT_DIM, oe)
+        self.opt_fc = nn.Linear(ec + ec + ea + eo_t + opt_extra + self.opt_feat_dim, oe)
         self.score_fc1 = nn.Linear(hd + oe + oe, sc)
         self.score_fc2 = nn.Linear(sc, 1)
         self.value_fc1 = nn.Linear(hd, sc)
@@ -71,6 +74,7 @@ class PolicyValueNet(nn.Module):
 
     def encode_state(self, board: torch.Tensor, hand: torch.Tensor,
                      feats: torch.Tensor) -> torch.Tensor:
+        feats = self._fit_feat_dim(feats, self.state_feat_dim)
         if self.slot_state:
             my_active = self.card_emb(board[..., 0])
             my_bench = self._pool(board[..., 1:6])
@@ -90,6 +94,7 @@ class PolicyValueNet(nn.Module):
     def encode_options(self, opt_type: torch.Tensor, opt_card: torch.Tensor,
                        opt_card2: torch.Tensor, opt_attack: torch.Tensor,
                        opt_feats: torch.Tensor) -> torch.Tensor:
+        opt_feats = self._fit_feat_dim(opt_feats, self.opt_feat_dim)
         parts = [
             self.card_emb(opt_card), self.card_emb(opt_card2),
             self.attack_emb(opt_attack), self.opt_type_emb(opt_type),
@@ -109,6 +114,15 @@ class PolicyValueNet(nn.Module):
         parts.append(opt_feats)
         x = torch.cat(parts, dim=-1)
         return F.relu(self.opt_fc(x))
+
+    @staticmethod
+    def _fit_feat_dim(x: torch.Tensor, dim: int) -> torch.Tensor:
+        cur = x.shape[-1]
+        if cur == dim:
+            return x
+        if cur > dim:
+            return x[..., :dim]
+        return F.pad(x, (0, dim - cur))
 
     # ── scoring ─────────────────────────────────────────────────────
 
@@ -191,14 +205,15 @@ class PolicyValueNet(nn.Module):
         oc = torch.zeros(B, n_max, dtype=torch.long, device=dev)
         oc2 = torch.zeros(B, n_max, dtype=torch.long, device=dev)
         oa = torch.zeros(B, n_max, dtype=torch.long, device=dev)
-        of = torch.zeros(B, n_max, OPT_FEAT_DIM, device=dev)
+        of = torch.zeros(B, n_max, self.opt_feat_dim, device=dev)
         for i, d in enumerate(decisions):
             n = len(d.opt_type)
             ot[i, :n] = torch.from_numpy(d.opt_type).to(dev)
             oc[i, :n] = torch.from_numpy(d.opt_card).to(dev)
             oc2[i, :n] = torch.from_numpy(d.opt_card2).to(dev)
             oa[i, :n] = torch.from_numpy(d.opt_attack).to(dev)
-            of[i, :n] = torch.from_numpy(d.opt_feats).to(dev)
+            src = torch.from_numpy(d.opt_feats).to(dev)
+            of[i, :n, : min(src.shape[-1], self.opt_feat_dim)] = src[:, : self.opt_feat_dim]
 
         opts = self.encode_options(ot, oc, oc2, oa, of)
 

@@ -15,7 +15,7 @@ import random
 import time
 import numpy as np
 
-from .encoder import FastEncoder, STATE_FEAT_DIM, OPT_FEAT_DIM, MAX_HAND
+from .encoder import FastEncoder, MAX_HAND
 
 NEG_INF = -1e9
 
@@ -43,7 +43,27 @@ class NumpyPolicy:
         self._hd = self.w['state_fc2.bias'].shape[0]
         self._ec = self.w['card_emb.weight'].shape[1]
         self._has_option_context = "context_emb.weight" in self.w
-        self._slot_state = self.w["state_fc1.weight"].shape[1] == 5 * self._ec + STATE_FEAT_DIM
+        state_in = self.w["state_fc1.weight"].shape[1]
+        slot_feat_dim = state_in - 5 * self._ec
+        legacy_feat_dim = state_in - 3 * self._ec
+        self._slot_state = 8 <= slot_feat_dim <= 256
+        self._state_feat_dim = slot_feat_dim if self._slot_state else legacy_feat_dim
+        opt_extra = 0
+        if self._has_option_context:
+            opt_extra = (
+                self.w["context_emb.weight"].shape[1]
+                + self.w["select_type_emb.weight"].shape[1]
+                + self.w["area_emb.weight"].shape[1]
+                + self.w["index_emb.weight"].shape[1]
+                + self.w["inplay_area_emb.weight"].shape[1]
+                + self.w["inplay_index_emb.weight"].shape[1]
+            )
+        self._opt_feat_dim = self.w["opt_fc.weight"].shape[1] - (
+            2 * self._ec
+            + self.w["attack_emb.weight"].shape[1]
+            + self.w["opt_type_emb.weight"].shape[1]
+            + opt_extra
+        )
 
     @classmethod
     def load(cls, path: str) -> "NumpyPolicy":
@@ -59,6 +79,7 @@ class NumpyPolicy:
 
     def encode_state(self, board: np.ndarray, hand: np.ndarray,
                      feats: np.ndarray) -> np.ndarray:
+        feats = self._fit_feat_dim(feats, self._state_feat_dim)
         if self._slot_state:
             emb = self.w["card_emb.weight"]
             my_active = emb[board[0]]
@@ -80,6 +101,16 @@ class NumpyPolicy:
         v = _relu(_linear(self.w["value_fc1.weight"], self.w["value_fc1.bias"], h))
         return float(np.tanh(_linear(self.w["value_fc2.weight"], self.w["value_fc2.bias"], v)))
 
+    @staticmethod
+    def _fit_feat_dim(x: np.ndarray, dim: int) -> np.ndarray:
+        if x.shape[-1] == dim:
+            return x.astype(np.float32, copy=False)
+        if x.shape[-1] > dim:
+            return x[..., :dim].astype(np.float32, copy=False)
+        pad = [(0, 0)] * x.ndim
+        pad[-1] = (0, dim - x.shape[-1])
+        return np.pad(x.astype(np.float32, copy=False), pad)
+
     def _evaluate_state(self, obs_dict: dict) -> float:
         """V(s) from a raw observation dict. Higher = better for current player."""
         try:
@@ -100,6 +131,7 @@ class NumpyPolicy:
         d = self.encoder.encode(obs_dict)
         n = len(d.opt_type)
         h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats)
+        opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
 
         parts = [
             self.w["card_emb.weight"][d.opt_card],
@@ -108,12 +140,12 @@ class NumpyPolicy:
             self.w["opt_type_emb.weight"][d.opt_type],
         ]
         if self._has_option_context:
-            ctx = np.rint(d.opt_feats[:, 3] * 64.0).astype(np.int64).clip(0, 64)
-            sel_type = np.rint(d.opt_feats[:, 4] * 16.0).astype(np.int64).clip(0, 16)
-            area = np.rint(d.opt_feats[:, 7] * 16.0).astype(np.int64).clip(0, 16)
-            idx = np.rint(d.opt_feats[:, 8] * 64.0).astype(np.int64).clip(0, 64)
-            inplay_area = np.rint(d.opt_feats[:, 9] * 16.0).astype(np.int64).clip(0, 16)
-            inplay_idx = np.rint(d.opt_feats[:, 10] * 10.0).astype(np.int64).clip(0, 16)
+            ctx = np.rint(opt_feats[:, 3] * 64.0).astype(np.int64).clip(0, 64)
+            sel_type = np.rint(opt_feats[:, 4] * 16.0).astype(np.int64).clip(0, 16)
+            area = np.rint(opt_feats[:, 7] * 16.0).astype(np.int64).clip(0, 16)
+            idx = np.rint(opt_feats[:, 8] * 64.0).astype(np.int64).clip(0, 64)
+            inplay_area = np.rint(opt_feats[:, 9] * 16.0).astype(np.int64).clip(0, 16)
+            inplay_idx = np.rint(opt_feats[:, 10] * 10.0).astype(np.int64).clip(0, 16)
             parts.extend([
                 self.w["context_emb.weight"][ctx],
                 self.w["select_type_emb.weight"][sel_type],
@@ -122,7 +154,7 @@ class NumpyPolicy:
                 self.w["inplay_area_emb.weight"][inplay_area],
                 self.w["inplay_index_emb.weight"][inplay_idx],
             ])
-        parts.append(d.opt_feats)
+        parts.append(opt_feats)
         opt_x = np.concatenate(parts, axis=-1)
         opts = _relu(_linear(self.w["opt_fc.weight"], self.w["opt_fc.bias"], opt_x))
 

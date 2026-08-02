@@ -15,7 +15,6 @@ _REPO = _HERE.parent
 sys.path.insert(0, str(_REPO))
 
 from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, greedy_decode
-from ptcg_rl.encoder import STATE_FEAT_DIM
 from ptcg_rl.model import PolicyValueNet
 
 CONTEXT_NAMES = {
@@ -68,25 +67,52 @@ def main() -> None:
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    paths = discover_npz_paths(args.corpus, args.archetype, args.score_bands)
-    corpus = BCCorpus(paths, include_empty=args.include_empty)
-    indices = corpus.all_indices()
-    if args.stride > 1:
-        indices = indices[:: args.stride]
-    indices = indices[: args.max_samples]
-
     with np.load(args.policy) as z:
         option_context = "context_emb.weight" in z.files
         ec = z["card_emb.weight"].shape[1]
-        slot_state = z["state_fc1.weight"].shape[1] == 5 * ec + STATE_FEAT_DIM
+        state_in = z["state_fc1.weight"].shape[1]
+        slot_feat_dim = state_in - 5 * ec
+        legacy_feat_dim = state_in - 3 * ec
+        slot_state = 8 <= slot_feat_dim <= 256
+        state_feat_dim = slot_feat_dim if slot_state else legacy_feat_dim
+        opt_extra = 0
+        if option_context:
+            opt_extra = (
+                z["context_emb.weight"].shape[1]
+                + z["select_type_emb.weight"].shape[1]
+                + z["area_emb.weight"].shape[1]
+                + z["index_emb.weight"].shape[1]
+                + z["inplay_area_emb.weight"].shape[1]
+                + z["inplay_index_emb.weight"].shape[1]
+            )
+        opt_feat_dim = z["opt_fc.weight"].shape[1] - (
+            2 * ec
+            + z["attack_emb.weight"].shape[1]
+            + z["opt_type_emb.weight"].shape[1]
+            + opt_extra
+        )
         model = PolicyValueNet(
             width=args.width,
             option_context=option_context,
             slot_state=slot_state,
+            state_feat_dim=state_feat_dim,
+            opt_feat_dim=opt_feat_dim,
         ).to(device)
         state = {k: torch.as_tensor(z[k], device=device) for k in z.files}
     model.load_state_dict(state)
     model.eval()
+
+    paths = discover_npz_paths(args.corpus, args.archetype, args.score_bands)
+    corpus = BCCorpus(
+        paths,
+        include_empty=args.include_empty,
+        state_feat_dim=state_feat_dim,
+        opt_feat_dim=opt_feat_dim,
+    )
+    indices = corpus.all_indices()
+    if args.stride > 1:
+        indices = indices[:: args.stride]
+    indices = indices[: args.max_samples]
 
     n = exact = first = pred_empty = true_empty = len_match = 0
     by_ctx = defaultdict(lambda: [0, 0, 0])

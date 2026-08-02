@@ -8,7 +8,7 @@ from typing import Iterable
 import numpy as np
 import torch
 
-from ptcg_rl.encoder import OPT_FEAT_DIM
+from ptcg_rl.encoder import OPT_FEAT_DIM, STATE_FEAT_DIM
 
 
 @dataclass
@@ -66,11 +66,15 @@ class BCCorpus:
         *,
         include_empty: bool = False,
         option_weight: float = 0.0,
+        state_feat_dim: int = STATE_FEAT_DIM,
+        opt_feat_dim: int = OPT_FEAT_DIM,
     ):
         if not paths:
             raise FileNotFoundError("No BC corpus .npz files found")
         self.include_empty = include_empty
         self.option_weight = float(option_weight)
+        self.state_feat_dim = int(state_feat_dim)
+        self.opt_feat_dim = int(opt_feat_dim)
         self.npz_data: list[dict[str, np.ndarray]] = []
         self.groups: list[list[tuple[int, int]]] = []
         self.stats = {"raw": 0, "kept": 0, "empty": 0, "bad": 0}
@@ -115,12 +119,12 @@ class BCCorpus:
         max_options = max(n_options)
         board = np.empty((bsz, 12), dtype=np.int64)
         hand = np.zeros((bsz, 25), dtype=np.int64)
-        feats = np.empty((bsz, 32), dtype=np.float32)
+        feats = np.zeros((bsz, self.state_feat_dim), dtype=np.float32)
         opt_type = np.zeros((bsz, max_options), dtype=np.int64)
         opt_card = np.zeros((bsz, max_options), dtype=np.int64)
         opt_card2 = np.zeros((bsz, max_options), dtype=np.int64)
         opt_attack = np.zeros((bsz, max_options), dtype=np.int64)
-        opt_feats = np.zeros((bsz, max_options, OPT_FEAT_DIM), dtype=np.float32)
+        opt_feats = np.zeros((bsz, max_options, self.opt_feat_dim), dtype=np.float32)
         min_count = np.empty(bsz, dtype=np.int64)
         max_count = np.empty(bsz, dtype=np.int64)
         weights = np.ones(bsz, dtype=np.float32)
@@ -134,13 +138,14 @@ class BCCorpus:
             board[bi] = np.asarray(data["board"][si], dtype=np.int64)
             h = np.asarray(data["hand"][si], dtype=np.int64)
             hand[bi, : min(len(h), 25)] = h[:25]
-            feats[bi] = np.asarray(data["feats"][si], dtype=np.float32)
+            ft = np.asarray(data["feats"][si], dtype=np.float32)
+            feats[bi, : min(len(ft), self.state_feat_dim)] = ft[: self.state_feat_dim]
             opt_type[bi, :n] = np.asarray(data["ot"][si], dtype=np.int64)
             opt_card[bi, :n] = np.asarray(data["oc"][si], dtype=np.int64)
             opt_card2[bi, :n] = np.asarray(data["oc2"][si], dtype=np.int64)
             opt_attack[bi, :n] = np.asarray(data["oa"][si], dtype=np.int64)
             of = np.asarray(data["of_arr"][si], dtype=np.float32)
-            opt_feats[bi, :n, : min(of.shape[-1], OPT_FEAT_DIM)] = of[:, :OPT_FEAT_DIM]
+            opt_feats[bi, :n, : min(of.shape[-1], self.opt_feat_dim)] = of[:, : self.opt_feat_dim]
             action = np.asarray(data["action"][si], dtype=np.int64).tolist()
             actions.append([int(a) for a in action])
             min_count[bi] = int(data["min_c"][si])

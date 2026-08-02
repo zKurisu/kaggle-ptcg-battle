@@ -303,6 +303,24 @@ python3 -u tools/train_bc_population.py \
     > logs/train_bc_population_v5_slot_1000_w2.log 2>&1
 ```
 
+### Expanded Features v6
+
+v6 在重新抽取 corpus 时把标量特征从 `state=32/options=16` 扩到
+`state=48/options=32`。新增特征只使用 observation 中稳定存在的信息：
+active/target 的 HP、retreat cost、stage、ex/mega、tool 数、异常状态、
+discard 数量，以及 option 指向 active/bench/self/opponent 的标志。
+
+旧 v4/v5 checkpoint 仍可加载；推理和 accuracy 会按 checkpoint 维度自动截断
+或补零。新特征需要重新抽取 corpus：
+
+```bash
+python3 -u tools/bc_extract_v2.py ../episodes_raw \
+    --out data/bc_corpus_banded_v6wide \
+    --workers 9 \
+    --progress-every 500 \
+    > logs/bc_extract_v6wide.log 2>&1
+```
+
 ## Kaggle 提交
 
 ```bash

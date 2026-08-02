@@ -12,16 +12,25 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
+_HERE = Path(__file__).resolve().parent
+_REPO = _HERE.parent
+sys.path.insert(0, str(_REPO))
+
+from ptcg_rl.bc2 import discover_npz_paths
+
 
 DEFAULT_ARCHETYPES = [
     "Marnie Grimmsnarl",
-    "Mega Lucario",
-    "Mega Abomasnow",
-    "Archaludon",
     "Alakazam",
+    "Crustle Wall",
+    "Team Rocket Mewtwo",
+    "Teal Mask Ogerpon",
+    "Mega Lopunny",
     "Dragapult",
-    "Mega Starmie",
-    "Iono Bellibolt",
+    "Festival Lead",
+    "Cynthia Garchomp",
 ]
 
 
@@ -37,6 +46,8 @@ class Job:
     save: Path
     log: Path
     acc_log: Path
+    corpus_files: int = 0
+    decisions: int = 0
     gpu: str | None = None
     proc: subprocess.Popen | None = None
     start_time: float = 0.0
@@ -74,6 +85,19 @@ def build_train_cmd(args: argparse.Namespace, job: Job) -> list[str]:
     if args.include_empty:
         cmd.append("--include-empty")
     return cmd
+
+
+def count_decisions(paths: list[str]) -> int:
+    total = 0
+    for path in paths:
+        with np.load(path, allow_pickle=True) as z:
+            total += int(len(z["board"]))
+    return total
+
+
+def preflight_corpus(args: argparse.Namespace, archetype: str) -> tuple[int, int]:
+    paths = discover_npz_paths(args.corpus, archetype, args.score_bands)
+    return len(paths), count_decisions(paths) if paths else 0
 
 
 def build_accuracy_cmd(args: argparse.Namespace, job: Job) -> list[str]:
@@ -145,6 +169,17 @@ def make_jobs(args: argparse.Namespace) -> list[Job]:
     tag = args.tag or f"{score_tag(args.score_bands)}_w{args.width:g}"
     jobs = []
     for arch in args.archetype:
+        files, decisions = preflight_corpus(args, arch)
+        if files == 0:
+            print(f"Skip {arch}: no corpus files for bands={args.score_bands}", flush=True)
+            continue
+        if decisions < args.min_decisions:
+            print(
+                f"Skip {arch}: only {decisions} decisions in {files} files "
+                f"(< --min-decisions {args.min_decisions})",
+                flush=True,
+            )
+            continue
         slug = slugify(arch)
         save = Path(args.checkpoint_dir) / f"bc2_{slug}_{tag}.npz"
         log = Path(args.log_dir) / f"bc2_{slug}_{tag}.log"
@@ -152,7 +187,7 @@ def make_jobs(args: argparse.Namespace) -> list[Job]:
         if args.skip_existing and save.exists():
             print(f"Skip existing {arch}: {save}", flush=True)
             continue
-        jobs.append(Job(arch, save, log, acc_log))
+        jobs.append(Job(arch, save, log, acc_log, corpus_files=files, decisions=decisions))
     return jobs
 
 
@@ -176,6 +211,8 @@ def main() -> None:
     p.add_argument("--archetype", action="append", default=[],
                    help="archetype to train; repeat. Defaults to common population.")
     p.add_argument("--score-bands", nargs="+", default=["1200+", "1100-1199", "1000-1099"])
+    p.add_argument("--min-decisions", type=int, default=20000,
+                   help="skip archetypes with fewer available corpus decisions; 0 disables")
     p.add_argument("--epochs", type=int, default=8)
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--lr", type=float, default=1e-4)
@@ -209,17 +246,24 @@ def main() -> None:
 
     print(
         f"BC population: jobs={len(jobs)} slots={slots} corpus={args.corpus} "
-        f"score_bands={args.score_bands}",
+        f"score_bands={args.score_bands} min_decisions={args.min_decisions}",
         flush=True,
     )
     for i, job in enumerate(jobs):
         slot = slots[i % len(slots)] if slots else None
         cmd = build_train_cmd(args, job)
         prefix = f"CUDA_VISIBLE_DEVICES={slot} " if slot is not None else ""
-        print(f"  {job.archetype}: {job.save}", flush=True)
+        print(
+            f"  {job.archetype}: files={job.corpus_files} decisions={job.decisions} "
+            f"save={job.save}",
+            flush=True,
+        )
         if args.dry_run:
             print("    " + prefix + shlex.join(cmd), flush=True)
     if args.dry_run:
+        return
+    if not jobs:
+        print("No trainable jobs after corpus preflight", flush=True)
         return
 
     pending = list(jobs)

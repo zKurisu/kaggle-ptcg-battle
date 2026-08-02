@@ -86,6 +86,7 @@ def main() -> None:
     by_opt = defaultdict(lambda: [0, 0, 0])
     by_nopt = defaultdict(lambda: [0, 0, 0])
     start = time.time()
+    next_progress = args.progress_every if args.progress_every else None
 
     for batch_start in range(0, len(indices), args.batch_size):
         batch = corpus.collate(indices[batch_start : batch_start + args.batch_size], device)
@@ -105,9 +106,16 @@ def main() -> None:
                 table[key][0] += 1
                 table[key][1] += first_ok
                 table[key][2] += exact_ok
-        if args.progress_every and n % args.progress_every == 0:
+        if next_progress is not None and (n >= next_progress or n == len(indices)):
             rate = n / max(time.time() - start, 1e-9)
-            print(f"  {n}/{len(indices)} exact={exact/n:.3f} first={first/max(n-true_empty,1):.3f} {rate:.1f}/s", flush=True)
+            eta = max(len(indices) - n, 0) / max(rate, 1e-9)
+            print(
+                f"  {n}/{len(indices)} exact={exact/n:.3f} "
+                f"first={first/max(n-true_empty,1):.3f} {rate:.1f}/s eta={eta:.0f}s",
+                flush=True,
+            )
+            while next_progress is not None and next_progress <= n:
+                next_progress += args.progress_every
 
     print(f"Policy: {args.policy}")
     print(f"Samples: {n} from {len(paths)} files")

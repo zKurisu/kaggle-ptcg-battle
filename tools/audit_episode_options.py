@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 import zipfile
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -55,7 +56,19 @@ def main() -> None:
     parser.add_argument("--max-episodes", type=int, default=2000)
     parser.add_argument("--option-types", nargs="*", default=["PLAY", "ABILITY", "ATTACK", "SKILL", "CARD"])
     parser.add_argument("--examples", type=int, default=5)
+    parser.add_argument("--progress-every", type=int, default=200,
+                        help="print progress every N episodes; 0 disables progress")
     args = parser.parse_args()
+
+    zips = _iter_zips(Path(args.episodes))
+    if not zips:
+        raise FileNotFoundError(f"No episode zip files found: {args.episodes}")
+    total_eps = 0
+    for zip_path in zips:
+        with zipfile.ZipFile(zip_path) as zf:
+            total_eps += sum(1 for n in zf.namelist() if n.endswith(".json"))
+    target_eps = min(args.max_episodes, total_eps)
+    print(f"Auditing {target_eps} episodes from {len(zips)} zip files", flush=True)
 
     wanted = {_type_id(x) for x in args.option_types}
     key_counts = defaultdict(Counter)
@@ -65,10 +78,12 @@ def main() -> None:
     selected_counts = Counter()
     examples = defaultdict(list)
     n_eps = n_obs = n_selected = 0
+    t0 = time.time()
 
-    for zip_path in _iter_zips(Path(args.episodes)):
+    for zip_path in zips:
         with zipfile.ZipFile(zip_path) as zf:
             names = [n for n in zf.namelist() if n.endswith(".json")]
+            print(f"  {zip_path.name}: {len(names)} episodes", flush=True)
             for name in names:
                 if n_eps >= args.max_episodes:
                     break
@@ -112,9 +127,19 @@ def main() -> None:
                                 key_counts[(ctx, ot)][_key_fields(opt)] += 1
                                 if ot in wanted and len(examples[(ctx, ot)]) < args.examples:
                                     examples[(ctx, ot)].append(opt)
+                if args.progress_every and n_eps % args.progress_every == 0:
+                    elapsed = time.time() - t0
+                    rate = n_eps / max(elapsed, 1e-9)
+                    eta = max(target_eps - n_eps, 0) / max(rate, 1e-9)
+                    print(
+                        f"  {n_eps}/{target_eps} eps obs={n_obs} selected={n_selected} "
+                        f"{rate:.1f} eps/s eta={eta:.0f}s",
+                        flush=True,
+                    )
             if n_eps >= args.max_episodes:
                 break
 
+    print(f"Done in {time.time() - t0:.1f}s", flush=True)
     print(f"Episodes: {n_eps}")
     print(f"Decision observations: {n_obs}")
     print(f"Selected option refs: {n_selected}")

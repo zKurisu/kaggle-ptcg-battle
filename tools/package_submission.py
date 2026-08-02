@@ -43,17 +43,27 @@ def main():
         raise FileNotFoundError("cg engine not found; pass --cg-dir /path/to/cg")
 
     out.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Packaging submission", flush=True)
+    print(f"  policy: {policy}", flush=True)
+    print(f"  deck:   {deck}", flush=True)
+    print(f"  cg:     {cg_dir}", flush=True)
     with tempfile.TemporaryDirectory(prefix="ptcg_submit_") as td:
         root = Path(td)
+        print("  copying main.py/deck/policy", flush=True)
         shutil.copy2(repo / "main.py", root / "main.py")
         shutil.copy2(deck, root / "deck.csv")
         shutil.copy2(policy, root / "policy.npz")
+        print("  copying ptcg_rl", flush=True)
         _copytree(repo / "ptcg_rl", root / "ptcg_rl")
+        print("  copying cg engine", flush=True)
         _copytree(cg_dir, root / "cg")
 
+        items = sorted(root.iterdir())
+        print(f"  writing tarball with {len(items)} top-level entries", flush=True)
         with tarfile.open(out, "w:gz") as tar:
-            for item in sorted(root.iterdir()):
+            for i, item in enumerate(items, 1):
                 tar.add(item, arcname=item.name)
+                print(f"    [{i}/{len(items)}] {item.name}", flush=True)
 
     size_mb = out.stat().st_size / 1024 / 1024
     print(f"Wrote {out} ({size_mb:.1f} MiB)")

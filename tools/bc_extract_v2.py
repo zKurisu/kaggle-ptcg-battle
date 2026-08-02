@@ -136,7 +136,7 @@ def _append_decision(all_data, encoder, obs: dict, action: list,
     return True
 
 
-def process_zip(zip_path, out_dir, name_to_score: dict):
+def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 500):
     from ptcg_rl.encoder import FastEncoder
     encoder = FastEncoder()
 
@@ -191,11 +191,16 @@ def process_zip(zip_path, out_dir, name_to_score: dict):
             except Exception:
                 errors += 1
 
-            if (i+1) % 500 == 0:
+            if progress_every and ((i+1) % progress_every == 0 or (i+1) == len(fnames)):
                 total = sum(len(v) for v in all_data.values())
                 elapsed = time.time() - t0
                 eta = elapsed / (i+1) * (len(fnames)-i-1)
-                print(f"  {i+1}/{len(fnames)} | {total} decs | bad {bad_actions} | err {errors} | eta {eta:.0f}s")
+                rate = (i + 1) / max(elapsed, 1e-9)
+                print(
+                    f"  {zip_path.name} {i+1}/{len(fnames)} eps | {total} decs | "
+                    f"bad {bad_actions} | err {errors} | {rate:.1f} eps/s | eta {eta:.0f}s",
+                    flush=True,
+                )
 
     # Save — directory: <Archetype>/<ScoreBand>/<date>.npz
     total = 0
@@ -236,6 +241,8 @@ def main():
     p.add_argument("--lb-csv", default=None, help="Leaderboard CSV path (auto-download if omitted)")
     p.add_argument("--workers", type=int, default=1,
                    help="number of episode zip files to process concurrently")
+    p.add_argument("--progress-every", type=int, default=500,
+                   help="print progress every N episodes per zip; 0 disables progress")
     args = p.parse_args()
 
     name_to_score = load_leaderboard_scores(args.lb_csv)
@@ -246,14 +253,19 @@ def main():
     zips = sorted(Path(args.episodes_dir).glob("*.zip"))
     if args.workers <= 1:
         for zf in zips:
-            process_zip(zf, args.out, name_to_score)
+            process_zip(zf, args.out, name_to_score, args.progress_every)
     else:
         workers = min(args.workers, len(zips))
         print(f"Processing {len(zips)} zips with {workers} workers\n", flush=True)
         with ProcessPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(process_zip, zf, args.out, name_to_score) for zf in zips]
+            futs = [ex.submit(process_zip, zf, args.out, name_to_score, args.progress_every) for zf in zips]
+            done = 0
+            t0 = time.time()
             for fut in as_completed(futs):
                 fut.result()
+                done += 1
+                elapsed = time.time() - t0
+                print(f"Finished {done}/{len(futs)} zip files in {elapsed:.0f}s", flush=True)
 
 
 if __name__ == "__main__":

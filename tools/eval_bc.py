@@ -5,7 +5,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from ptcg_rl.numpy_policy import NumpyPolicy
-from cg.game import battle_start, battle_select, battle_finish
 
 def load_deck(path): 
     with open(path) as f: return [int(l.strip()) for l in f if l.strip()]
@@ -41,9 +40,12 @@ def _policy_action(policy, obs, deck, use_mcts=False, sims=48, time_budget=4.0):
         return act[:mc]
     return _legal_random(sel)
 
-def eval_vs_random(policy, deck, games=20, use_mcts=False, sims=48, time_budget=4.0):
+def eval_vs_random(policy, deck, games=20, use_mcts=False, sims=48, time_budget=4.0, progress_every=10):
     """Win rate against random agent."""
+    from cg.game import battle_start, battle_select, battle_finish
+
     wins = 0
+    t0 = time.time()
     for g in range(games):
         if g % 2 == 0:
             obs, sd = battle_start(deck, deck)
@@ -66,6 +68,16 @@ def eval_vs_random(policy, deck, games=20, use_mcts=False, sims=48, time_budget=
                 act = _legal_random(sel)
             obs = battle_select(act)
         battle_finish()
+        done = g + 1
+        if progress_every and (done == 1 or done % progress_every == 0 or done == games):
+            elapsed = time.time() - t0
+            rate = done / max(elapsed, 1e-9)
+            eta = max(games - done, 0) / max(rate, 1e-9)
+            print(
+                f"  {done}/{games} games wins={wins} wr={wins/done:.3f} "
+                f"{rate:.2f} games/s eta={eta:.0f}s",
+                flush=True,
+            )
     return wins / games
 
 def main():
@@ -77,6 +89,8 @@ def main():
                    help="evaluate with the same policy.select_mcts fallback used by main.py")
     p.add_argument("--mcts-sims", type=int, default=48)
     p.add_argument("--time-budget", type=float, default=4.0)
+    p.add_argument("--progress-every", type=int, default=10,
+                   help="print progress every N games; 0 disables progress")
     args = p.parse_args()
 
     policy = NumpyPolicy.load(args.policy)
@@ -88,7 +102,8 @@ def main():
     print(f"Testing {args.games} games vs legal random ({mode})...")
     
     t0 = time.time()
-    wr = eval_vs_random(policy, deck, args.games, args.mcts, args.mcts_sims, args.time_budget)
+    wr = eval_vs_random(policy, deck, args.games, args.mcts, args.mcts_sims,
+                        args.time_budget, args.progress_every)
     elapsed = time.time() - t0
     
     print(f"\nWin rate vs Random: {wr*100:.1f}% ({int(wr*args.games)}/{args.games})")

@@ -151,6 +151,59 @@ python3 tools/eval_bc.py checkpoints/bc2_marnie_1000_w2.npz \
     --deck deck.csv --games 200
 ```
 
+### 批量训练 BC Population
+
+先用同一份 v4 corpus 训练多个主流 archetype，形成后续 round-robin 和 RL
+opponent pool。默认列表包括 Marnie、Lucario、Abomasnow、Archaludon、
+Alakazam、Dragapult、Starmie、Bellibolt。
+
+先 dry-run 检查命令和输出路径：
+
+```bash
+python3 tools/train_bc_population.py \
+    --corpus data/bc_corpus_banded_v4 \
+    --gpus 0,1,2,3 \
+    --epochs 8 \
+    --batch-size 4096 \
+    --width 2.0 \
+    --tag v4_1000_w2 \
+    --dry-run
+```
+
+正式启动 4 卡并行训练；每个 job 完成后会自动跑一次 `bc2_accuracy`：
+
+```bash
+python3 -u tools/train_bc_population.py \
+    --corpus data/bc_corpus_banded_v4 \
+    --gpus 0,1,2,3 \
+    --epochs 8 \
+    --batch-size 4096 \
+    --width 2.0 \
+    --tag v4_1000_w2 \
+    --accuracy-samples 50000 \
+    --poll-seconds 30 \
+    > logs/train_bc_population_v4_1000_w2.log 2>&1
+```
+
+只训练指定卡组时重复 `--archetype`：
+
+```bash
+python3 -u tools/train_bc_population.py \
+    --archetype "Mega Lucario" \
+    --archetype "Mega Abomasnow" \
+    --corpus data/bc_corpus_banded_v4 \
+    --gpus 0,1 \
+    --tag v4_1000_w2
+```
+
+输出命名示例：
+
+```text
+checkpoints/bc2_marnie_grimmsnarl_v4_1000_w2.npz
+logs/bc2_marnie_grimmsnarl_v4_1000_w2.log
+logs/bc2_marnie_grimmsnarl_v4_1000_w2_accuracy.log
+```
+
 ### 旧 BC 模仿学习
 
 从高分 replay 学习人类决策：

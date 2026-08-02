@@ -9,7 +9,8 @@ Output per zip × per archetype:
     data/bc_corpus/<Archetype>/<date>.npz
 """
 
-import sys, os, json, zipfile, time, argparse, numpy as np
+import sys, os, json, zipfile, time, argparse, tempfile, numpy as np
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import defaultdict, Counter
 from pathlib import Path
 
@@ -26,11 +27,34 @@ ARCHETYPES = {
     "N's Zoroark": [293, 320], "Hop Trevenant": [879], "Raging Bolt": [1065],
 }
 
+def _find_leaderboard_csv(lb_csv_path: str = None) -> str | None:
+    if lb_csv_path and os.path.exists(lb_csv_path):
+        return lb_csv_path
+
+    for p in [
+        _REPO / "pokemon-tcg-ai-battle.zip",
+        _REPO.parent / "pokemon-tcg-ai-battle.zip",
+        Path("/tmp/lb/pokemon-tcg-ai-battle.zip"),
+    ]:
+        if p.exists():
+            tmp = tempfile.mkdtemp(prefix="ptcg_lb_")
+            with zipfile.ZipFile(p) as zf:
+                csv_files = [n for n in zf.namelist() if n.endswith('.csv')]
+                if csv_files:
+                    raw = zf.read(csv_files[0]).decode('utf-8')
+                    out = os.path.join(tmp, csv_files[0])
+                    with open(out, 'w') as f:
+                        f.write(raw)
+                    return out
+    return None
+
+
 def load_leaderboard_scores(lb_csv_path: str = None) -> dict[str, float]:
     """Load team_name → score from leaderboard CSV."""
+    lb_csv_path = _find_leaderboard_csv(lb_csv_path)
     if lb_csv_path is None:
         # Download latest leaderboard
-        import subprocess, glob, tempfile
+        import subprocess, glob
         tmp = tempfile.mkdtemp()
         subprocess.run(["kaggle", "competitions", "leaderboard",
                        "pokemon-tcg-ai-battle", "--download", "-p", tmp],
@@ -210,13 +234,26 @@ def main():
     p.add_argument("episodes_dir")
     p.add_argument("--out", default="data/bc_corpus")
     p.add_argument("--lb-csv", default=None, help="Leaderboard CSV path (auto-download if omitted)")
+    p.add_argument("--workers", type=int, default=1,
+                   help="number of episode zip files to process concurrently")
     args = p.parse_args()
 
     name_to_score = load_leaderboard_scores(args.lb_csv)
     print(f"Leaderboard: {len(name_to_score)} teams\n")
+    if not name_to_score:
+        print("WARNING: no leaderboard scores loaded; all episodes will fall into 600-699", flush=True)
 
-    for zf in sorted(Path(args.episodes_dir).glob("*.zip")):
-        process_zip(zf, args.out, name_to_score)
+    zips = sorted(Path(args.episodes_dir).glob("*.zip"))
+    if args.workers <= 1:
+        for zf in zips:
+            process_zip(zf, args.out, name_to_score)
+    else:
+        workers = min(args.workers, len(zips))
+        print(f"Processing {len(zips)} zips with {workers} workers\n", flush=True)
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(process_zip, zf, args.out, name_to_score) for zf in zips]
+            for fut in as_completed(futs):
+                fut.result()
 
 
 if __name__ == "__main__":

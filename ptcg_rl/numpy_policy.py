@@ -78,8 +78,8 @@ class NumpyPolicy:
 
     # ── greedy / sampling select ────────────────────────────────────
 
-    def select(self, obs_dict: dict, greedy: bool = True) -> list[int]:
-        """Greedy (or sampled) action selection without search."""
+    def select(self, obs_dict: dict, greedy: bool = True, temperature: float = 1.0) -> list[int]:
+        """Action selection. temperature=1.0 = greedy, >1.0 = more random."""
         sel = obs_dict.get("select")
         if sel is None:
             raise ValueError("deck selection — return deck directly")
@@ -110,10 +110,16 @@ class NumpyPolicy:
                            _relu(_linear(self.w["score_fc1.weight"],
                                         self.w["score_fc1.bias"], score_x)))
             logits = np.where(avail, logits, NEG_INF)
+            # Apply temperature
+            if temperature != 1.0:
+                logits = logits / temperature
             logits = logits - logits.max()
             probs = np.exp(logits) / np.exp(logits).sum()
 
-            idx = int(np.argmax(probs)) if greedy else int(np.random.choice(n + 1, p=probs))
+            if greedy:
+                idx = int(np.argmax(probs))
+            else:
+                idx = int(np.random.choice(n + 1, p=probs))
             if idx >= n:
                 break
             picks.append(idx)

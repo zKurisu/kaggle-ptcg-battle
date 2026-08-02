@@ -69,6 +69,7 @@ class BCTrainer:
                 tgt[i, len(acts[i])] = N
 
         pol = torch.tensor(0.0, device=self.device)
+        weights = torch.ones(B, device=self.device)
         for k in range(mp + 1):
             sok = torch.tensor([k >= mn[i] for i in range(B)], device=self.device)
             mask = avail.clone(); mask[:, N] = sok
@@ -78,7 +79,12 @@ class BCTrainer:
             if vld.any():
                 idx = tk.clamp(min=0).unsqueeze(1)
                 lp = logp.gather(1, idx).squeeze(1)
-                pol = pol - (lp * vld.float()).sum()
+                # Apply inverse-frequency weights
+                for i in range(B):
+                    if vld[i]:
+                        ti = int(tk[i])
+                        weights[i] = self.action_weights.get(ti, 1.0)
+                pol = pol - (lp * vld.float() * weights).sum()
                 for i in range(B):
                     if vld[i] and tk[i] < N:
                         ps[i] = ps[i] + opts[i, int(tk[i])]
@@ -86,15 +92,31 @@ class BCTrainer:
         return pol / B
 
     def train(self, epochs=10, batch_size=128, save_path="checkpoints/bc_policy.npz"):
-        # Build flat index list per npz file (= per day of episodes)
-        npz_groups = [(di, list(range(len(d['board'])))) for di, d in enumerate(self.npz_data)]
+        # Build flat index list — FILTER empty actions (no learning signal)
+        def _has_action(di, si):
+            return len(self.npz_data[di]['action'][si]) > 0
+        npz_groups = [(di, [si for si in range(len(d['board'])) if _has_action(di, si)])
+                      for di, d in enumerate(self.npz_data)]
+        npz_groups = [(di, idxs) for di, idxs in npz_groups if idxs]  # remove empty groups
         np.random.shuffle(npz_groups)
         split = max(1, int(len(npz_groups) * 0.9))
         train_idx = [(di, si) for di, indices in npz_groups[:split] for si in indices]
         val_idx   = [(di, si) for di, indices in npz_groups[split:] for si in indices]
         n_train = len(train_idx); train_batches = (n_train + batch_size - 1) // batch_size
         n_val = len(val_idx); val_batches = (n_val + batch_size - 1) // batch_size
-        print(f"  Train: {n_train} ({train_batches} batches) | Val: {n_val} ({val_batches} batches)", flush=True)
+        print(f"  Train: {n_train} ({train_batches} batches) | Val: {n_val} ({val_batches} batches) [empty filtered]", flush=True)
+
+        # Inverse-frequency weights for action balancing
+        action_counts = {}
+        for di, d in enumerate(self.npz_data):
+            for si in range(len(d['board'])):
+                acts = d['action'][si]
+                for a in acts:
+                    a_int = int(a)
+                    action_counts[a_int] = action_counts.get(a_int, 0) + 1
+        total = sum(action_counts.values())
+        self.action_weights = {a: total / max(c, 1) for a, c in action_counts.items()}
+        print(f"  Action weights: {len(self.action_weights)} unique actions (range {min(self.action_weights.values()):.1f}-{max(self.action_weights.values()):.1f})", flush=True)
 
         # Cosine LR over all training steps
         total_steps = epochs * train_batches

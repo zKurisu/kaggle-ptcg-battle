@@ -51,7 +51,7 @@ def agent(obs_dict: dict) -> list[int]:
 
     # Greedy fallback
     try:
-        picks = policy.select(obs_dict, greedy=True)
+        picks = policy.select(obs_dict, greedy=True, temperature=1.2)
         picks = [p for p in picks if 0 <= p < n]
         picks = list(dict.fromkeys(picks))
         if mn <= len(picks) <= mc: return picks[:mc]

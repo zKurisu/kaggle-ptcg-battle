@@ -103,11 +103,19 @@ cd ptcg_rl_git
 CUDA_VISIBLE_DEVICES=1 python3 -u tools/bc_trainer.py \
     --archetype "Marnie Grimmsnarl" \
     --score-bands "1200+" "1100-1199" \
-    --epochs 10 --batch-size 128 --device cuda:0 \
+    --epochs 30 --batch-size 2048 --width 2.0 --device cuda:0 \
+    --checkpoint-every 5 \
     --save checkpoints/bc_marnie_1100.npz
 ```
 
 输出 `checkpoints/bc_marnie_1100.npz` 可直接用于 Kaggle 提交。
+
+`bc_trainer.py` 默认过滤空 action，避免无梯度样本浪费 batch。需要学习
+“不选择任何 option 直接 STOP”的场景时，显式加 `--include-empty`。
+
+当前 BC 训练是单进程单卡；`CUDA_VISIBLE_DEVICES=1 --device cuda:0` 表示使用
+可见设备列表中的第 0 张卡，也就是物理 GPU 1。4 卡 A800 不会自动并行，
+需要另做 DDP/多进程训练。
 
 ### RL 训练（PPO + MCTS）
 

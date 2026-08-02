@@ -15,10 +15,12 @@ data/bc_corpus_banded/
     1100-1199/2026-07-30.npz
 
 For each training step:
-  1. Sample batch of decisions from .npz files
-  2. Forward pass: state → option logprobs + value
-  3. Loss = cross_entropy(logprobs, human_action) + value_loss
-  4. Backward, update
+  1. Sample batch indices from in-memory .npz arrays
+  2. Collate variable-length options/actions into padded numpy arrays
+  3. Move each padded field to the target device once
+  4. Forward pass: state → sequential option logprobs
+  5. Loss = mean cross_entropy(logprobs, human_action/STOP)
+  6. Backward, update
 ```
 
 ## Multi-Select Handling
@@ -49,16 +51,21 @@ All decisions in batch share:
   - Mask: which options are legal [batch, max_N + 1]
 ```
 
+The implementation keeps each `.npz` file as a loaded dict of numpy arrays. It
+does not expand the corpus into one Python dict per decision, and it does not
+write one sample at a time into GPU tensors. Batch collation happens in CPU
+numpy arrays first, then each field is transferred to the device once.
+
 ## Training Config
 
 ```python
 BC_TRAIN_CONFIG = {
     "learning_rate": 1e-4,
-    "batch_size": 128,
-    "epochs": 10,            # fixed corpus, can overfit
-    "dropout": 0.1,          # regularization
-    "value_coef": 0.5,       # train value head too
+    "batch_size": 2048,
+    "epochs": 30,            # fixed corpus, can overfit
+    "width": 2.0,
     "score_filter": "1100+",  # only top players
+    "include_empty": False,   # default filters empty actions
     "datasets": ["2026-07-28", "2026-07-29", "2026-07-30", "2026-08-01"],
 }
 ```
@@ -67,27 +74,26 @@ BC_TRAIN_CONFIG = {
 
 ```python
 class BCTrainer:
-    def __init__(self, model, corpus_dir, archetype="Marnie Grimmsnarl",
-                 score_bands=["1200+", "1100-1199"]):
+    def __init__(self, corpus_dir, archetype="Marnie Grimmsnarl",
+                 score_bands=["1200+", "1100-1199"], width=2.0):
         # Load all .npz files matching archetype + score bands
-        self.samples = self._load_corpus(corpus_dir, archetype, score_bands)
+        self.npz_data, self.groups = self._load_corpus(corpus_dir, archetype, score_bands)
 
     def _load_corpus(self, dir, arch, bands):
-        samples = []
+        npz_data, groups = [], []
         for band in bands:
             for npz in glob(f"{dir}/{arch}/{band}/*.npz"):
-                data = np.load(npz, allow_pickle=True)
-                for i in range(len(data['board'])):
-                    samples.append({k: data[k][i] for k in data.files})
-        return samples
+                with np.load(npz, allow_pickle=True) as z:
+                    data = {k: z[k] for k in z.files}
+                di = len(npz_data)
+                idxs = [i for i in range(len(data["board"])) if len(data["action"][i]) > 0]
+                npz_data.append(data)
+                groups.append([(di, i) for i in idxs])
+        return npz_data, groups
 
-    def train_step(self, batch):
-        # Forward: reuse model.evaluate_actions()
-        logprobs, entropies, values = self.model.evaluate_actions(batch)
-        # Loss: cross-entropy (maximize probability of human action)
-        policy_loss = -logprobs.mean()
-        value_loss = (values - batch['outcome']).pow(2).mean()
-        loss = policy_loss + 0.5 * value_loss
+    def train_step(self, indices):
+        batch = self._collate(indices)
+        loss = self._compute_loss(batch)
         loss.backward()
         self.optimizer.step()
 ```
@@ -111,9 +117,10 @@ Then fine-tune with PPO self-play to surpass human performance.
 ## Implementation Status
 
 - [x] `tools/bc_trainer.py` — working, stable pol_loss ~3-5
-- [x] Data loading: 304K decisions, 0s load time
+- [x] Data loading: each `.npz` is materialized once, then reused from memory
 - [x] Score band filtering (1200+, 1100-1199, etc.)
-- [x] GPU training with inline collation (no CPU round-trip)
+- [x] Empty actions filtered by default; `--include-empty` trains legal STOP
+- [x] GPU training with numpy-first batch collation and one transfer per field
 - [x] progress bar (per-batch)
 
 ## Key Bug Fixed
@@ -124,9 +131,23 @@ Then fine-tune with PPO self-play to surpass human performance.
 - Without fix: pol_raw = 7,812,503 (NEG_INF/128)
 - With fix: pol_raw = 3-5 (normal)
 
+## Performance Fix
+
+A800 utilization was near zero because the old trainer mixed lazy `.npz`
+member access with per-sample GPU tensor writes. That made every batch wait on
+Python/object-array access and many tiny host-to-device copies.
+
+The current trainer:
+- loads each `.npz` member into normal numpy arrays once;
+- keeps only `(file_index, sample_index)` references in training indices;
+- pads a whole batch in CPU numpy arrays;
+- sends each batch field to the device once;
+- updates selected-option state with tensor indexing instead of per-sample GPU
+  writes.
+
 ## Next Steps
 
-1. Run full BC training on Marnie Grimmsnarl 1100+ (304K decisions, ~1.5h/epoch)
+1. Run full BC training on Marnie Grimmsnarl 1100+ with `--batch-size 2048`
 2. Export policy.npz → submit to Kaggle as BC baseline
 3. BC+PPO finetune
 4. Repeat for other archetypes (Alakazam, Crustle, etc.)

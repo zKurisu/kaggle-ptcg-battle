@@ -17,9 +17,6 @@ import numpy as np
 
 from .encoder import FastEncoder, STATE_FEAT_DIM, OPT_FEAT_DIM, MAX_HAND
 
-EMB_CARD = 64
-OPT_ENC = 128
-HIDDEN = 256
 NEG_INF = -1e9
 
 # MCTS settings
@@ -41,6 +38,10 @@ class NumpyPolicy:
     def __init__(self, weights: dict[str, np.ndarray]):
         self.w = {k: np.asarray(v, dtype=np.float32) for k, v in weights.items()}
         self.encoder = FastEncoder()
+        # Auto-detect dimensions from weights
+        self._oe = self.w['stop_vec'].shape[0]
+        self._hd = self.w['state_fc2.bias'].shape[0]
+        self._ec = self.w['card_emb.weight'].shape[1]
 
     @classmethod
     def load(cls, path: str) -> "NumpyPolicy":
@@ -97,14 +98,14 @@ class NumpyPolicy:
         ], axis=-1)
         opts = _relu(_linear(self.w["opt_fc.weight"], self.w["opt_fc.bias"], opt_x))
 
-        picks, picked_sum = [], np.zeros(OPT_ENC, dtype=np.float32)
+        picks, picked_sum = [], np.zeros(self._oe, dtype=np.float32)
         avail = np.ones(n + 1, dtype=bool)
 
         while len(picks) < d.max_count:
             avail[n] = len(picks) >= d.min_count
             rows = np.concatenate([opts, self.w["stop_vec"][np.newaxis, :]], axis=0)
-            hx = np.broadcast_to(h, (n + 1, HIDDEN))
-            px = np.broadcast_to(picked_sum, (n + 1, OPT_ENC))
+            hx = np.broadcast_to(h, (n + 1, self._hd))
+            px = np.broadcast_to(picked_sum, (n + 1, self._oe))
             score_x = np.concatenate([hx, rows, px], axis=-1)
             logits = _linear(self.w["score_fc2.weight"], self.w["score_fc2.bias"],
                            _relu(_linear(self.w["score_fc1.weight"],

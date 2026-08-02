@@ -12,35 +12,31 @@ import torch.nn.functional as F
 
 from .encoder import STATE_FEAT_DIM, OPT_FEAT_DIM, N_CARDS, N_ATTACKS, N_OPT_TYPES, BOARD_SLOTS, MAX_HAND
 
-EMB_CARD = 64
-EMB_ATTACK = 32
-EMB_OPT_TYPE = 16
-OPT_ENC = 128
-HIDDEN = 256
 NEG_INF = -1e9
+_EC, _EA, _EO, _OE, _HD, _S1, _SC = 64, 32, 16, 128, 256, 512, 128
 
 
 class PolicyValueNet(nn.Module):
-    def __init__(self):
+    def __init__(self, width: float = 1.0):
+        """width=1.0→501K, 2.0→4M, 3.0→9M params."""
         super().__init__()
-        self.card_emb = nn.Embedding(N_CARDS + 2, EMB_CARD, padding_idx=0)
-        self.attack_emb = nn.Embedding(N_ATTACKS + 1, EMB_ATTACK, padding_idx=0)
-        self.opt_type_emb = nn.Embedding(N_OPT_TYPES + 1, EMB_OPT_TYPE)
-        self.stop_vec = nn.Parameter(torch.zeros(OPT_ENC))
+        ec = int(_EC * width); ea = int(_EA * width); eo_t = int(_EO * width)
+        oe = int(_OE * width); hd = int(_HD * width)
+        s1 = int(_S1 * width); sc = int(_SC * width)
+        self._ec=ec; self._ea=ea; self._eo_t=eo_t; self._oe=oe; self._hd=hd
 
-        state_in = 2 * EMB_CARD + EMB_CARD + STATE_FEAT_DIM
-        self.state_fc1 = nn.Linear(state_in, 512)
-        self.state_fc2 = nn.Linear(512, HIDDEN)
+        self.card_emb = nn.Embedding(N_CARDS + 2, ec, padding_idx=0)
+        self.attack_emb = nn.Embedding(N_ATTACKS + 1, ea, padding_idx=0)
+        self.opt_type_emb = nn.Embedding(N_OPT_TYPES + 1, eo_t)
+        self.stop_vec = nn.Parameter(torch.zeros(oe))
 
-        opt_in = EMB_CARD + EMB_CARD + EMB_ATTACK + EMB_OPT_TYPE + OPT_FEAT_DIM
-        self.opt_fc = nn.Linear(opt_in, OPT_ENC)
-
-        score_in = HIDDEN + OPT_ENC + OPT_ENC
-        self.score_fc1 = nn.Linear(score_in, 128)
-        self.score_fc2 = nn.Linear(128, 1)
-
-        self.value_fc1 = nn.Linear(HIDDEN, 128)
-        self.value_fc2 = nn.Linear(128, 1)
+        self.state_fc1 = nn.Linear(2 * ec + ec + STATE_FEAT_DIM, s1)
+        self.state_fc2 = nn.Linear(s1, hd)
+        self.opt_fc = nn.Linear(ec + ec + ea + eo_t + OPT_FEAT_DIM, oe)
+        self.score_fc1 = nn.Linear(hd + oe + oe, sc)
+        self.score_fc2 = nn.Linear(sc, 1)
+        self.value_fc1 = nn.Linear(hd, sc)
+        self.value_fc2 = nn.Linear(sc, 1)
         self._init()
 
     def _init(self):
@@ -82,10 +78,10 @@ class PolicyValueNet(nn.Module):
     def option_logits(self, h: torch.Tensor, opts: torch.Tensor,
                       picked_sum: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         B, N, _ = opts.shape
-        stop = self.stop_vec.expand(B, 1, OPT_ENC)
+        stop = self.stop_vec.expand(B, 1, self._oe)
         rows = torch.cat([opts, stop], dim=1)
-        hx = h.unsqueeze(1).expand(B, N + 1, HIDDEN)
-        px = picked_sum.unsqueeze(1).expand(B, N + 1, OPT_ENC)
+        hx = h.unsqueeze(1).expand(B, N + 1, self._hd)
+        px = picked_sum.unsqueeze(1).expand(B, N + 1, self._oe)
         x = torch.cat([hx, rows, px], dim=-1)
         logits = self.score_fc2(F.relu(self.score_fc1(x))).squeeze(-1)
         return logits.masked_fill(~mask, NEG_INF)
@@ -117,7 +113,7 @@ class PolicyValueNet(nn.Module):
         opts = self.encode_options(ot, oc, oc2, oa, of)
 
         picks, stopped, lp = [], False, 0.0
-        ps = torch.zeros(1, OPT_ENC, device=dev)
+        ps = torch.zeros(1, self._oe, device=dev)
         avail = torch.ones(1, n + 1, dtype=torch.bool, device=dev)
 
         while len(picks) < max_count:
@@ -172,7 +168,7 @@ class PolicyValueNet(nn.Module):
         # Sequential re-evaluation
         logprobs = torch.zeros(B, device=dev)
         entropies = torch.zeros(B, device=dev)
-        ps = torch.zeros(B, OPT_ENC, device=dev)
+        ps = torch.zeros(B, self._oe, device=dev)
         avail = torch.ones(B, n_max + 1, dtype=torch.bool, device=dev)
 
         # Pad stored actions

@@ -5,6 +5,7 @@ import glob
 import os
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,20 @@ _REPO = _HERE.parent
 sys.path.insert(0, str(_REPO))
 
 NEG_INF = -1e9
+
+CONTEXT_NAMES = {
+    0: "MAIN", 1: "SETUP_ACTIVE", 2: "SETUP_BENCH", 3: "SWITCH",
+    4: "TO_ACTIVE", 5: "TO_BENCH", 7: "TO_HAND", 8: "DISCARD",
+    13: "DAMAGE_COUNTER", 21: "ATTACH_FROM", 35: "ATTACK",
+    38: "DRAW_COUNT", 41: "IS_FIRST", 42: "MULLIGAN", 43: "ACTIVATE",
+}
+
+OPT_NAMES = {
+    0: "NUMBER", 1: "YES", 2: "NO", 3: "CARD", 4: "TOOL_CARD",
+    5: "ENERGY_CARD", 6: "ENERGY", 7: "SKILL", 8: "ATTACK",
+    9: "PLAY", 10: "ATTACH", 11: "EVOLVE", 12: "ABILITY",
+    13: "DISCARD", 14: "RETREAT", 15: "END", 16: "SPECIAL_CONDITION",
+}
 
 
 def _relu(x):
@@ -155,6 +170,9 @@ def main():
 
     n = seen = exact = first = pred_empty = true_empty = 0
     len_match = 0
+    by_ctx = defaultdict(lambda: [0, 0, 0])
+    by_opt = defaultdict(lambda: [0, 0, 0])
+    by_nopt = defaultdict(lambda: [0, 0, 0])
     t0 = time.time()
     for s in _iter_samples(paths, args.include_empty):
         seen += 1
@@ -165,9 +183,20 @@ def main():
         n += 1
         exact += int(pred == true)
         len_match += int(len(pred) == len(true))
-        first += int(bool(pred) and bool(true) and pred[0] == true[0])
+        first_ok = int(bool(pred) and bool(true) and pred[0] == true[0])
+        exact_ok = int(pred == true)
+        first += first_ok
         pred_empty += int(len(pred) == 0)
         true_empty += int(len(true) == 0)
+        ctx = int(round(float(np.asarray(s["feats"], dtype=np.float32)[17]) * 64.0))
+        true0 = true[0] if true else -1
+        opt0 = int(np.asarray(s["ot"], dtype=np.int64)[true0]) if true0 >= 0 else -1
+        nopt = len(s["ot"])
+        nopt_bucket = "1" if nopt == 1 else "2" if nopt == 2 else "3-5" if nopt <= 5 else "6-10" if nopt <= 10 else "11+"
+        for table, key in ((by_ctx, ctx), (by_opt, opt0), (by_nopt, nopt_bucket)):
+            table[key][0] += 1
+            table[key][1] += first_ok
+            table[key][2] += exact_ok
         if args.progress_every and n % args.progress_every == 0:
             dt = time.time() - t0
             rate = n / max(dt, 1e-9)
@@ -195,6 +224,15 @@ def main():
     print(f"Length match:     {len_match / max(n, 1):.3f}")
     print(f"True empty:       {true_empty / max(n, 1):.3f}")
     print(f"Pred empty:       {pred_empty / max(n, 1):.3f}")
+    print("\nBy context:")
+    for key, (cnt, fst, ex) in sorted(by_ctx.items(), key=lambda kv: kv[1][0], reverse=True)[:20]:
+        print(f"  {key:2d} {CONTEXT_NAMES.get(key, '?'):<18} n={cnt:5d} first={fst/cnt:.3f} exact={ex/cnt:.3f}")
+    print("\nBy true first option type:")
+    for key, (cnt, fst, ex) in sorted(by_opt.items(), key=lambda kv: kv[1][0], reverse=True)[:20]:
+        print(f"  {key:2d} {OPT_NAMES.get(key, '?'):<18} n={cnt:5d} first={fst/cnt:.3f} exact={ex/cnt:.3f}")
+    print("\nBy option count:")
+    for key, (cnt, fst, ex) in sorted(by_nopt.items(), key=lambda kv: str(kv[0])):
+        print(f"  {key:<4} n={cnt:5d} first={fst/cnt:.3f} exact={ex/cnt:.3f}")
 
 
 if __name__ == "__main__":

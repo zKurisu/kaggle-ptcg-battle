@@ -280,6 +280,29 @@ python3 tools/eval_round_robin.py \
 这个矩阵比只看 random 更接近 Kaggle ladder：random 100% 只说明 agent
 基本可用，能否过 800-1000 分段要看它对其他 BC/规则型 population 的胜率。
 
+### Slot-Aware BC v5
+
+v5 模型默认启用 slot-aware board encoder：不再把 active 和 bench 混在一个
+pool 里，而是分别编码我方 active、我方 bench、对方 active、对方 bench、手牌。
+这不需要重建 corpus，直接复用 `data/bc_corpus_banded_v4`。
+
+适合重点改善 `ATTACH`、`RETREAT`、`DISCARD` 和多候选选择。旧 checkpoint
+仍可加载；需要回退旧结构做 ablation 时加 `--legacy-state-pool`。
+
+```bash
+python3 -u tools/train_bc_population.py \
+    --corpus data/bc_corpus_banded_v4 \
+    --gpus 0,1,2,3 \
+    --epochs 8 \
+    --batch-size 4096 \
+    --width 2.0 \
+    --tag v5_slot_1000_w2 \
+    --min-decisions 20000 \
+    --accuracy-samples 50000 \
+    --poll-seconds 30 \
+    > logs/train_bc_population_v5_slot_1000_w2.log 2>&1
+```
+
 ## Kaggle 提交
 
 ```bash

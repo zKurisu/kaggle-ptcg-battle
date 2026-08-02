@@ -15,6 +15,7 @@ _REPO = _HERE.parent
 sys.path.insert(0, str(_REPO))
 
 from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, greedy_decode
+from ptcg_rl.encoder import STATE_FEAT_DIM
 from ptcg_rl.model import PolicyValueNet
 
 CONTEXT_NAMES = {
@@ -76,7 +77,13 @@ def main() -> None:
 
     with np.load(args.policy) as z:
         option_context = "context_emb.weight" in z.files
-        model = PolicyValueNet(width=args.width, option_context=option_context).to(device)
+        ec = z["card_emb.weight"].shape[1]
+        slot_state = z["state_fc1.weight"].shape[1] == 5 * ec + STATE_FEAT_DIM
+        model = PolicyValueNet(
+            width=args.width,
+            option_context=option_context,
+            slot_state=slot_state,
+        ).to(device)
         state = {k: torch.as_tensor(z[k], device=device) for k in z.files}
     model.load_state_dict(state)
     model.eval()

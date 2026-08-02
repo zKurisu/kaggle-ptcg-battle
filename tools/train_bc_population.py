@@ -84,6 +84,8 @@ def build_train_cmd(args: argparse.Namespace, job: Job) -> list[str]:
     ]
     if args.include_empty:
         cmd.append("--include-empty")
+    if args.legacy_state_pool:
+        cmd.append("--legacy-state-pool")
     return cmd
 
 
@@ -223,6 +225,8 @@ def main() -> None:
     p.add_argument("--first-action-weight", type=float, default=1.5)
     p.add_argument("--option-weight", type=float, default=0.15)
     p.add_argument("--include-empty", action="store_true")
+    p.add_argument("--legacy-state-pool", action="store_true",
+                   help="use old pooled board encoder instead of slot-aware active/bench encoder")
     p.add_argument("--checkpoint-every", type=int, default=1)
     p.add_argument("--checkpoint-dir", default="checkpoints")
     p.add_argument("--log-dir", default="logs")

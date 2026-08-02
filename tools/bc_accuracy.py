@@ -61,10 +61,20 @@ def _predict(w, sample, include_stop=True):
     mx = int(sample["max_c"])
     n = len(ot)
 
-    my = _pool(w, board[:6])
-    opp = _pool(w, board[6:])
-    hnd = _pool(w, hand)
-    x = np.concatenate([my, opp, hnd, feats])
+    ec = w["card_emb.weight"].shape[1]
+    if w["state_fc1.weight"].shape[1] == 5 * ec + len(feats):
+        emb = w["card_emb.weight"]
+        my_active = emb[board[0]]
+        my_bench = _pool(w, board[1:6])
+        opp_active = emb[board[6]]
+        opp_bench = _pool(w, board[7:])
+        hnd = _pool(w, hand)
+        x = np.concatenate([my_active, my_bench, opp_active, opp_bench, hnd, feats])
+    else:
+        my = _pool(w, board[:6])
+        opp = _pool(w, board[6:])
+        hnd = _pool(w, hand)
+        x = np.concatenate([my, opp, hnd, feats])
     h = _relu(_linear(w["state_fc1.weight"], w["state_fc1.bias"], x))
     h = _relu(_linear(w["state_fc2.weight"], w["state_fc2.bias"], h))
 

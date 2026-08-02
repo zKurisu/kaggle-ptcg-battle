@@ -18,7 +18,8 @@ _CTX, _AREA, _IDX = 16, 8, 8
 
 
 class PolicyValueNet(nn.Module):
-    def __init__(self, width: float = 1.0, option_context: bool = True):
+    def __init__(self, width: float = 1.0, option_context: bool = True,
+                 slot_state: bool = True):
         """width=1.0→501K, 2.0→4M, 3.0→9M params."""
         super().__init__()
         ec = int(_EC * width); ea = int(_EA * width); eo_t = int(_EO * width)
@@ -26,6 +27,7 @@ class PolicyValueNet(nn.Module):
         s1 = int(_S1 * width); sc = int(_SC * width)
         ctx = int(_CTX * width); area = int(_AREA * width); idx = int(_IDX * width)
         self.option_context = option_context
+        self.slot_state = slot_state
         self._ec=ec; self._ea=ea; self._eo_t=eo_t; self._oe=oe; self._hd=hd
         self._ctx=ctx; self._area=area; self._idx=idx
 
@@ -41,7 +43,8 @@ class PolicyValueNet(nn.Module):
             self.inplay_index_emb = nn.Embedding(17, idx)
         self.stop_vec = nn.Parameter(torch.zeros(oe))
 
-        self.state_fc1 = nn.Linear(2 * ec + ec + STATE_FEAT_DIM, s1)
+        state_in = (5 * ec if slot_state else 3 * ec) + STATE_FEAT_DIM
+        self.state_fc1 = nn.Linear(state_in, s1)
         self.state_fc2 = nn.Linear(s1, hd)
         opt_extra = ctx + ctx + area + idx + area + idx if option_context else 0
         self.opt_fc = nn.Linear(ec + ec + ea + eo_t + opt_extra + OPT_FEAT_DIM, oe)
@@ -68,6 +71,14 @@ class PolicyValueNet(nn.Module):
 
     def encode_state(self, board: torch.Tensor, hand: torch.Tensor,
                      feats: torch.Tensor) -> torch.Tensor:
+        if self.slot_state:
+            my_active = self.card_emb(board[..., 0])
+            my_bench = self._pool(board[..., 1:6])
+            opp_active = self.card_emb(board[..., 6])
+            opp_bench = self._pool(board[..., 7:])
+            hnd = self._pool(hand)
+            x = torch.cat([my_active, my_bench, opp_active, opp_bench, hnd, feats], dim=-1)
+            return F.relu(self.state_fc2(F.relu(self.state_fc1(x))))
         my = self._pool(board[..., :6])
         opp = self._pool(board[..., 6:])
         hnd = self._pool(hand)

@@ -57,6 +57,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--val-fraction", type=float, default=0.1)
     parser.add_argument("--include-empty", action="store_true")
+    parser.add_argument("--legacy-state-pool", action="store_true",
+                        help="use old pooled board encoder instead of slot-aware active/bench encoder")
     parser.add_argument("--first-action-weight", type=float, default=1.5)
     parser.add_argument("--option-weight", type=float, default=0.15)
     parser.add_argument("--checkpoint-every", type=int, default=1)
@@ -70,7 +72,7 @@ def main() -> None:
     corpus = BCCorpus(paths, include_empty=args.include_empty, option_weight=args.option_weight)
     train_idx, val_idx = corpus.split_indices(args.val_fraction, args.seed)
 
-    model = PolicyValueNet(width=args.width).to(device)
+    model = PolicyValueNet(width=args.width, slot_state=not args.legacy_state_pool).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     train_batches = (len(train_idx) + args.batch_size - 1) // args.batch_size
     total_steps = max(args.epochs * train_batches, 1)
@@ -79,7 +81,7 @@ def main() -> None:
 
     print(
         f"BC2: {args.archetype} {args.score_bands} device={device} "
-        f"width={args.width} params={params/1e6:.1f}M",
+        f"width={args.width} slot_state={not args.legacy_state_pool} params={params/1e6:.1f}M",
         flush=True,
     )
     print(f"Corpus: files={len(paths)} stats={corpus.stats}", flush=True)

@@ -43,6 +43,7 @@ class NumpyPolicy:
         self._hd = self.w['state_fc2.bias'].shape[0]
         self._ec = self.w['card_emb.weight'].shape[1]
         self._has_option_context = "context_emb.weight" in self.w
+        self._slot_state = self.w["state_fc1.weight"].shape[1] == 5 * self._ec + STATE_FEAT_DIM
 
     @classmethod
     def load(cls, path: str) -> "NumpyPolicy":
@@ -58,6 +59,16 @@ class NumpyPolicy:
 
     def encode_state(self, board: np.ndarray, hand: np.ndarray,
                      feats: np.ndarray) -> np.ndarray:
+        if self._slot_state:
+            emb = self.w["card_emb.weight"]
+            my_active = emb[board[0]]
+            my_bench = self._pool(board[1:6])
+            opp_active = emb[board[6]]
+            opp_bench = self._pool(board[7:])
+            hnd = self._pool(hand)
+            x = np.concatenate([my_active, my_bench, opp_active, opp_bench, hnd, feats])
+            x = _relu(_linear(self.w["state_fc1.weight"], self.w["state_fc1.bias"], x))
+            return _relu(_linear(self.w["state_fc2.weight"], self.w["state_fc2.bias"], x))
         my = self._pool(board[:6])
         opp = self._pool(board[6:])
         hnd = self._pool(hand)

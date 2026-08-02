@@ -4,6 +4,7 @@ import argparse
 import glob
 import os
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -115,6 +116,9 @@ def main():
     p.add_argument("--score-bands", nargs="+", default=["1200+", "1100-1199", "1000-1099"])
     p.add_argument("--max-samples", type=int, default=20000)
     p.add_argument("--include-empty", action="store_true")
+    p.add_argument("--progress-every", type=int, default=1000)
+    p.add_argument("--stride", type=int, default=1,
+                   help="evaluate every Nth sample after filtering")
     args = p.parse_args()
 
     arch_dir = os.path.join(args.corpus, args.archetype.replace(" ", "_"))
@@ -127,9 +131,13 @@ def main():
     with np.load(args.policy) as z:
         w = {k: np.asarray(z[k], dtype=np.float32) for k in z.files}
 
-    n = exact = first = pred_empty = true_empty = 0
+    n = seen = exact = first = pred_empty = true_empty = 0
     len_match = 0
+    t0 = time.time()
     for s in _iter_samples(paths, args.include_empty):
+        seen += 1
+        if args.stride > 1 and (seen - 1) % args.stride != 0:
+            continue
         pred = _predict(w, s)
         true = [int(a) for a in s["action"] if 0 <= int(a) < len(s["ot"])]
         n += 1
@@ -138,11 +146,22 @@ def main():
         first += int(bool(pred) and bool(true) and pred[0] == true[0])
         pred_empty += int(len(pred) == 0)
         true_empty += int(len(true) == 0)
+        if args.progress_every and n % args.progress_every == 0:
+            dt = time.time() - t0
+            rate = n / max(dt, 1e-9)
+            remaining = max(args.max_samples - n, 0) / max(rate, 1e-9)
+            print(
+                f"  {n}/{args.max_samples} "
+                f"exact={exact/n:.3f} first={first/max(n-true_empty,1):.3f} "
+                f"pred_empty={pred_empty/n:.3f} {rate:.1f}/s eta={remaining:.0f}s",
+                flush=True,
+            )
         if n >= args.max_samples:
             break
 
     print(f"Policy: {args.policy}")
     print(f"Samples: {n} from {len(paths)} files")
+    print(f"Elapsed: {time.time() - t0:.1f}s")
     print(f"Exact action seq: {exact / max(n, 1):.3f}")
     print(f"First action:     {first / max(n - true_empty, 1):.3f} over non-empty labels")
     print(f"Length match:     {len_match / max(n, 1):.3f}")

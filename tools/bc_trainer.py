@@ -60,6 +60,7 @@ class BCTrainer:
         of_np = np.zeros((B, N, 16), dtype=np.float32)
         acts = []
         mn_np = np.empty(B, dtype=np.int64)
+        mx_np = np.empty(B, dtype=np.int64)
 
         for bi, (di, si) in enumerate(indices):
             d = self.npz_data[di]
@@ -75,13 +76,14 @@ class BCTrainer:
             of_np[bi, :nn] = np.asarray(d['of_arr'][si], dtype=np.float32)
             acts.append(np.asarray(d['action'][si], dtype=np.int64))
             mn_np[bi] = int(d['min_c'][si])
+            mx_np[bi] = int(d['max_c'][si])
 
         mp = max(len(a) for a in acts)
         tgt_np = np.full((B, mp + 1), -1, dtype=np.int64)
-        for bi, a in enumerate(acts):
-            valid = a[(a >= 0) & (a < N)]
+        for bi, (a, nn) in enumerate(zip(acts, n_opt)):
+            valid = a[(a >= 0) & (a < nn)]
             tgt_np[bi, :len(valid)] = valid
-            if len(a) >= mn_np[bi] and (len(a) > 0 or self.include_empty):
+            if len(a) < mx_np[bi] and len(a) >= mn_np[bi] and (len(a) > 0 or self.include_empty):
                 tgt_np[bi, len(a)] = N
 
         to_dev = self.device
@@ -96,12 +98,13 @@ class BCTrainer:
             torch.as_tensor(of_np, device=to_dev),
             torch.as_tensor(tgt_np, device=to_dev),
             torch.as_tensor(mn_np, device=to_dev),
+            torch.as_tensor(n_opt, dtype=torch.long, device=to_dev),
             N,
         )
 
     def _compute_loss(self, indices):
         (board, hand, feats, ot, oc, oc2, oa, of_arr,
-         tgt, mn, N) = self._collate(indices)
+         tgt, mn, opt_len, N) = self._collate(indices)
         B = board.shape[0]
 
         h = self.model.encode_state(board, hand, feats)
@@ -110,7 +113,11 @@ class BCTrainer:
         total_loss = torch.tensor(0.0, device=self.device)
         total_valid = torch.tensor(0.0, device=self.device)
         ps = torch.zeros(B, self.model._oe, device=self.device)
-        avail = torch.ones(B, N + 1, dtype=torch.bool, device=self.device)
+        opt_mask = torch.arange(N, device=self.device).unsqueeze(0) < opt_len.unsqueeze(1)
+        avail = torch.cat([
+            opt_mask,
+            torch.ones(B, 1, dtype=torch.bool, device=self.device),
+        ], dim=1)
 
         for k in range(tgt.shape[1]):
             sok = k >= mn

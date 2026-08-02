@@ -16,7 +16,9 @@ with open(os.path.join(HERE, "deck.csv")) as f:
 
 policy = NumpyPolicy.load(os.path.join(HERE, "policy.npz"))
 
-USE_MCTS = True
+# BC checkpoints only train the policy head. Keep MCTS off until RL/PPO trains
+# a meaningful value head for leaf evaluation.
+USE_MCTS = False
 MCTS_SIMS = 48
 MCTS_TIME_BUDGET = 4.0
 

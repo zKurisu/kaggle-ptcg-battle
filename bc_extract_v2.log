@@ -60,3 +60,157 @@ pokemon-tcg-ai-battle-episodes-2026-07-29.zip: 4386 eps
   1500/4386 | 520707 decs | eta 312s
   2000/4386 | 696993 decs | eta 265s
   2500/4386 | 869854 decs | eta 213s
+  3000/4386 | 1040062 decs | eta 159s
+  3500/4386 | 1214117 decs | eta 104s
+  4000/4386 | 1387974 decs | eta 46s
+  Alakazam|1000-1099: 90413 decs, 2MB
+  Alakazam|1200+: 18031 decs, 0MB
+  Alakazam|600-699: 1805 decs, 0MB
+  Alakazam|700-799: 350 decs, 0MB
+  Alakazam|800-899: 21859 decs, 0MB
+  Alakazam|900-999: 19635 decs, 0MB
+  Archaludon|700-799: 190 decs, 0MB
+  Crustle Wall|1000-1099: 47652 decs, 1MB
+  Crustle Wall|1100-1199: 20498 decs, 0MB
+  Crustle Wall|1200+: 25510 decs, 0MB
+  Crustle Wall|600-699: 303 decs, 0MB
+  Crustle Wall|800-899: 163 decs, 0MB
+  Crustle Wall|900-999: 38018 decs, 1MB
+  Cynthia Garchomp|1000-1099: 17191 decs, 0MB
+  Cynthia Garchomp|700-799: 306 decs, 0MB
+  Cynthia Garchomp|900-999: 7318 decs, 0MB
+  Dragapult|1000-1099: 23078 decs, 0MB
+  Dragapult|900-999: 462 decs, 0MB
+  Festival Lead|1000-1099: 5464 decs, 0MB
+  Festival Lead|800-899: 101 decs, 0MB
+  Festival Lead|900-999: 27053 decs, 1MB
+  Marnie Grimmsnarl|1000-1099: 499418 decs, 9MB
+  Marnie Grimmsnarl|1100-1199: 165599 decs, 3MB
+  Marnie Grimmsnarl|1200+: 69306 decs, 1MB
+  Marnie Grimmsnarl|600-699: 62726 decs, 1MB
+  Marnie Grimmsnarl|700-799: 58026 decs, 1MB
+  Marnie Grimmsnarl|800-899: 36969 decs, 1MB
+  Marnie Grimmsnarl|900-999: 113174 decs, 2MB
+  Mega Lopunny|1100-1199: 7962 decs, 0MB
+  Mega Lopunny|800-899: 206 decs, 0MB
+  Mega Lucario|800-899: 1132 decs, 0MB
+  Mega Starmie|700-799: 2756 decs, 0MB
+  Mega Starmie|900-999: 541 decs, 0MB
+  Other|800-899: 370 decs, 0MB
+  Teal Mask Ogerpon|1000-1099: 38865 decs, 1MB
+  Team Rocket Mewtwo|1000-1099: 22368 decs, 0MB
+  Team Rocket Mewtwo|1100-1199: 24220 decs, 0MB
+  Team Rocket Mewtwo|1200+: 14429 decs, 0MB
+  Team Rocket Mewtwo|600-699: 20195 decs, 0MB
+  Team Rocket Mewtwo|800-899: 6825 decs, 0MB
+  Team Rocket Mewtwo|900-999: 9782 decs, 0MB
+  Done: 1520269 decs in 587s
+
+pokemon-tcg-ai-battle-episodes-2026-07-30.zip: 4384 eps
+  500/4384 | 172152 decs | eta 407s
+  1000/4384 | 348481 decs | eta 360s
+  1500/4384 | 519009 decs | eta 309s
+  2000/4384 | 686475 decs | eta 258s
+  2500/4384 | 867020 decs | eta 211s
+  3000/4384 | 1042648 decs | eta 158s
+  3500/4384 | 1216922 decs | eta 103s
+  4000/4384 | 1390724 decs | eta 46s
+  Alakazam|1000-1099: 65453 decs, 1MB
+  Alakazam|1200+: 18635 decs, 0MB
+  Alakazam|600-699: 1103 decs, 0MB
+  Alakazam|800-899: 8995 decs, 0MB
+  Alakazam|900-999: 18345 decs, 0MB
+  Archaludon|700-799: 316 decs, 0MB
+  Crustle Wall|1000-1099: 58212 decs, 1MB
+  Crustle Wall|1100-1199: 25610 decs, 0MB
+  Crustle Wall|1200+: 24011 decs, 0MB
+  Crustle Wall|800-899: 3825 decs, 0MB
+  Crustle Wall|900-999: 15054 decs, 0MB
+  Cynthia Garchomp|1000-1099: 34229 decs, 1MB
+  Cynthia Garchomp|700-799: 139 decs, 0MB
+  Cynthia Garchomp|800-899: 3346 decs, 0MB
+  Cynthia Garchomp|900-999: 710 decs, 0MB
+  Dragapult|1000-1099: 47203 decs, 1MB
+  Festival Lead|1000-1099: 9445 decs, 0MB
+  Festival Lead|600-699: 7111 decs, 0MB
+  Festival Lead|800-899: 10532 decs, 0MB
+  Festival Lead|900-999: 14777 decs, 0MB
+  Marnie Grimmsnarl|1000-1099: 557031 decs, 10MB
+  Marnie Grimmsnarl|1100-1199: 169003 decs, 3MB
+  Marnie Grimmsnarl|1200+: 87626 decs, 2MB
+  Marnie Grimmsnarl|600-699: 54194 decs, 1MB
+  Marnie Grimmsnarl|700-799: 25332 decs, 0MB
+  Marnie Grimmsnarl|800-899: 5535 decs, 0MB
+  Marnie Grimmsnarl|900-999: 119367 decs, 2MB
+  Mega Lopunny|1100-1199: 946 decs, 0MB
+  Mega Lopunny|600-699: 4133 decs, 0MB
+  Mega Lopunny|900-999: 9123 decs, 0MB
+  Mega Lucario|800-899: 140 decs, 0MB
+  Mega Starmie|700-799: 200 decs, 0MB
+  Mega Starmie|900-999: 272 decs, 0MB
+  Other|800-899: 901 decs, 0MB
+  Teal Mask Ogerpon|1000-1099: 37350 decs, 1MB
+  Teal Mask Ogerpon|1100-1199: 13074 decs, 0MB
+  Team Rocket Mewtwo|1000-1099: 16461 decs, 0MB
+  Team Rocket Mewtwo|1100-1199: 23771 decs, 0MB
+  Team Rocket Mewtwo|1200+: 17587 decs, 0MB
+  Team Rocket Mewtwo|600-699: 4026 decs, 0MB
+  Team Rocket Mewtwo|700-799: 2439 decs, 0MB
+  Team Rocket Mewtwo|800-899: 4399 decs, 0MB
+  Team Rocket Mewtwo|900-999: 5753 decs, 0MB
+  Done: 1525714 decs in 587s
+
+pokemon-tcg-ai-battle-episodes-2026-08-01.zip: 4518 eps
+  500/4518 | 170608 decs | eta 409s
+  1000/4518 | 337651 decs | eta 356s
+  1500/4518 | 506269 decs | eta 310s
+  2000/4518 | 676071 decs | eta 264s
+  2500/4518 | 842171 decs | eta 215s
+  3000/4518 | 1007916 decs | eta 165s
+  3500/4518 | 1181259 decs | eta 113s
+  4000/4518 | 1350822 decs | eta 59s
+  4500/4518 | 1520274 decs | eta 2s
+  Alakazam|1000-1099: 21394 decs, 0MB
+  Alakazam|1200+: 20064 decs, 0MB
+  Alakazam|600-699: 191 decs, 0MB
+  Alakazam|800-899: 172 decs, 0MB
+  Alakazam|900-999: 13378 decs, 0MB
+  Crustle Wall|1000-1099: 58706 decs, 1MB
+  Crustle Wall|1100-1199: 49514 decs, 1MB
+  Crustle Wall|700-799: 122 decs, 0MB
+  Crustle Wall|800-899: 387 decs, 0MB
+  Crustle Wall|900-999: 4144 decs, 0MB
+  Cynthia Garchomp|1000-1099: 47830 decs, 1MB
+  Cynthia Garchomp|900-999: 159 decs, 0MB
+  Dragapult|1000-1099: 52933 decs, 1MB
+  Dragapult|800-899: 219 decs, 0MB
+  Festival Lead|1000-1099: 30313 decs, 1MB
+  Festival Lead|1100-1199: 1693 decs, 0MB
+  Festival Lead|900-999: 19638 decs, 0MB
+  Marnie Grimmsnarl|1000-1099: 463327 decs, 8MB
+  Marnie Grimmsnarl|1100-1199: 209158 decs, 4MB
+  Marnie Grimmsnarl|1200+: 79661 decs, 1MB
+  Marnie Grimmsnarl|700-799: 18531 decs, 0MB
+  Marnie Grimmsnarl|800-899: 980 decs, 0MB
+  Marnie Grimmsnarl|900-999: 48867 decs, 1MB
+  Mega Lopunny|1000-1099: 3898 decs, 0MB
+  Mega Lopunny|1100-1199: 40378 decs, 1MB
+  Mega Lopunny|1200+: 86408 decs, 2MB
+  Mega Lopunny|600-699: 14856 decs, 0MB
+  Mega Lopunny|900-999: 28768 decs, 1MB
+  Mega Lucario|1000-1099: 107 decs, 0MB
+  Mega Lucario|900-999: 2020 decs, 0MB
+  Other|800-899: 1626 decs, 0MB
+  Teal Mask Ogerpon|1000-1099: 59995 decs, 1MB
+  Teal Mask Ogerpon|1100-1199: 65832 decs, 1MB
+  Teal Mask Ogerpon|1200+: 29564 decs, 1MB
+  Teal Mask Ogerpon|700-799: 298 decs, 0MB
+  Teal Mask Ogerpon|800-899: 906 decs, 0MB
+  Teal Mask Ogerpon|900-999: 813 decs, 0MB
+  Team Rocket Mewtwo|1000-1099: 28935 decs, 1MB
+  Team Rocket Mewtwo|1100-1199: 8099 decs, 0MB
+  Team Rocket Mewtwo|800-899: 957 decs, 0MB
+  Team Rocket Mewtwo|900-999: 11626 decs, 0MB
+  Done: 1526467 decs in 580s
+
+All done!

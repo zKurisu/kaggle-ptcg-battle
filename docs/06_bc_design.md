@@ -108,9 +108,25 @@ class BCTrainer:
 After BC training: `policy_bc.npz` — a model that plays like a top-1100+ player.
 Then fine-tune with PPO self-play to surpass human performance.
 
+## Implementation Status
+
+- [x] `tools/bc_trainer.py` — working, stable pol_loss ~3-5
+- [x] Data loading: 304K decisions, 0s load time
+- [x] Score band filtering (1200+, 1100-1199, etc.)
+- [x] GPU training with inline collation (no CPU round-trip)
+- [x] progress bar (per-batch)
+
+## Key Bug Fixed
+
+**STOP token masked when `len(action) < minCount`**
+- Some replay data has inconsistent action/minCount
+- Fix: only set STOP target if `len(acts[i]) >= mn[i]`
+- Without fix: pol_raw = 7,812,503 (NEG_INF/128)
+- With fix: pol_raw = 3-5 (normal)
+
 ## Next Steps
 
-1. Write `tools/bc_trainer.py`
-2. Run BC on Marnie Grimmsnarl (our main deck)
-3. Export policy.npz → submit to Kaggle as baseline
-4. Compare BC-only vs BC+PPO finetune
+1. Run full BC training on Marnie Grimmsnarl 1100+ (304K decisions, ~1.5h/epoch)
+2. Export policy.npz → submit to Kaggle as BC baseline
+3. BC+PPO finetune
+4. Repeat for other archetypes (Alakazam, Crustle, etc.)

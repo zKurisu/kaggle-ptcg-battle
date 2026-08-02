@@ -57,3 +57,6 @@ pokemon-tcg-ai-battle-episodes-2026-07-28.zip: 4385 eps
 pokemon-tcg-ai-battle-episodes-2026-07-29.zip: 4386 eps
   500/4386 | 171317 decs | eta 399s
   1000/4386 | 347823 decs | eta 357s
+  1500/4386 | 520707 decs | eta 312s
+  2000/4386 | 696993 decs | eta 265s
+  2500/4386 | 869854 decs | eta 213s

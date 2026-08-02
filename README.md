@@ -376,6 +376,45 @@ python3 tools/analyze_kaggle_replays.py 55188444 \
 python3 tools/analyze_kaggle_replays.py 55188444 --team-name "Jie Orkarin"
 ```
 
+### 构建 Ladder Opponent Pool
+
+用官方 daily episode zip 和自己提交输过的 replay opponent decks 生成本地
+ladder 对手池。输出包括 `pool_manifest.csv`、`archetype_stats.csv` 和可直接
+用于 `eval_round_robin.py` 的 deck CSV：
+
+```bash
+python3 tools/build_ladder_pool.py \
+    --episodes-dir ../episodes_raw \
+    --out logs/ladder_pool_v1 \
+    --personal-loss-dir logs/kaggle_opponent_decks/55188444 \
+    --personal-loss-dir logs/kaggle_opponent_decks/55188543 \
+    --personal-loss-dir logs/kaggle_opponent_decks/55189149 \
+    --top 80 \
+    --workers 9
+```
+
+为候选 checkpoint 生成对手 `--entry` 参数：
+
+```bash
+python3 tools/emit_ladder_pool_entries.py logs/ladder_pool_v1/pool_manifest.csv \
+    --top 20 \
+    --one-per-archetype
+```
+
+典型用法：
+
+```bash
+OPPS=$(python3 tools/emit_ladder_pool_entries.py \
+    logs/ladder_pool_v1/pool_manifest.csv --top 20 --one-per-archetype)
+
+python3 tools/eval_round_robin.py \
+    --entry candidate=checkpoints/bc2_crustle_wall_v6wide_feat_1000_w2.npz:decks/pool_341_crustle_mysterious_rock_inn.csv \
+    $OPPS \
+    --games 100 \
+    --progress-every 10 \
+    --out-csv logs/round_robin_candidate_vs_ladder_pool.csv
+```
+
 ## 常用命令
 
 ```bash

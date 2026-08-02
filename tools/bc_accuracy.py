@@ -85,14 +85,36 @@ def _predict(w, sample, include_stop=True):
     return picks
 
 
+def _label_status(data, i, include_empty):
+    action = np.asarray(data["action"][i], dtype=np.int64)
+    n_opt = len(data["ot"][i])
+    mn = int(data["min_c"][i])
+    mx = int(data["max_c"][i])
+    if len(action) == 0:
+        return "keep" if include_empty and mn == 0 else "empty"
+    if len(action) < mn or len(action) > mx:
+        return "bad"
+    if len(set(action.tolist())) != len(action):
+        return "bad"
+    if not ((action >= 0) & (action < n_opt)).all():
+        return "bad"
+    return "keep"
+
+
 def _iter_samples(paths, include_empty):
+    stats = {"raw": 0, "empty": 0, "bad": 0, "kept": 0}
+    _iter_samples.stats = stats
     for path in paths:
         with np.load(path, allow_pickle=True) as z:
             data = {k: z[k] for k in z.files}
         for i in range(len(data["board"])):
-            act = np.asarray(data["action"][i], dtype=np.int64).tolist()
-            if not include_empty and len(act) == 0:
+            stats["raw"] += 1
+            status = _label_status(data, i, include_empty)
+            if status != "keep":
+                stats[status] += 1
                 continue
+            stats["kept"] += 1
+            act = np.asarray(data["action"][i], dtype=np.int64).tolist()
             yield {
                 "board": data["board"][i],
                 "hand": data["hand"][i],
@@ -161,6 +183,12 @@ def main():
 
     print(f"Policy: {args.policy}")
     print(f"Samples: {n} from {len(paths)} files")
+    stats = getattr(_iter_samples, "stats", {})
+    if stats:
+        print(
+            f"Corpus labels: raw={stats['raw']} kept={stats['kept']} "
+            f"skipped_empty={stats['empty']} skipped_bad={stats['bad']}"
+        )
     print(f"Elapsed: {time.time() - t0:.1f}s")
     print(f"Exact action seq: {exact / max(n, 1):.3f}")
     print(f"First action:     {first / max(n - true_empty, 1):.3f} over non-empty labels")

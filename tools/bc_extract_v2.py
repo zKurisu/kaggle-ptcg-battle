@@ -74,64 +74,104 @@ def classify(deck):
     return best if bs >= 2 else "Other"
 
 
+def _valid_action(action: list, sel: dict) -> bool:
+    n_opt = len(sel.get('option', []))
+    mn = int(sel.get('minCount', 0))
+    mx = int(sel.get('maxCount', 0))
+    if len(action) == 60:
+        return False
+    if len(action) < mn or len(action) > mx:
+        return False
+    if len(set(action)) != len(action):
+        return False
+    return all(isinstance(a, int) and 0 <= a < n_opt for a in action)
+
+
+def _append_decision(all_data, encoder, obs: dict, action: list,
+                     deck: list[int], band: str) -> bool:
+    sel = obs.get('select')
+    if sel is None or len(sel.get('option', [])) == 0:
+        return False
+    if not _valid_action(action, sel):
+        return False
+    arch = classify(deck)
+    key = f"{arch}|{band}"
+    ed = encoder.encode(obs)
+    all_data[key].append({
+        'board': ed.board_cards.astype(np.int16),
+        'hand': ed.hand_cards.astype(np.int16),
+        'feats': ed.state_feats.astype(np.float16),
+        'ot': ed.opt_type.astype(np.int16),
+        'oc': ed.opt_card.astype(np.int16),
+        'oc2': ed.opt_card2.astype(np.int16),
+        'oa': ed.opt_attack.astype(np.int16),
+        'of': ed.opt_feats.astype(np.float16),
+        'action': np.array(action, dtype=np.int16),
+        'min_c': ed.min_count, 'max_c': ed.max_count,
+    })
+    return True
+
+
 def process_zip(zip_path, out_dir, name_to_score: dict):
     from ptcg_rl.encoder import FastEncoder
     encoder = FastEncoder()
 
     with zipfile.ZipFile(str(zip_path)) as zf:
         fnames = [n for n in zf.namelist() if n.endswith('.json')]
-    print(f"{zip_path.name}: {len(fnames)} eps")
-    t0 = time.time()
+        print(f"{zip_path.name}: {len(fnames)} eps")
+        t0 = time.time()
 
-    all_data = defaultdict(list)  # key: "archetype|band"
-    for i, fname in enumerate(fnames):
-        try:
-            raw = zf.read(fname).decode('utf-8')
-            data = json.loads(raw); steps = data['steps']
-            if len(steps) < 2: continue
-            decks_raw = steps[0][0].get('visualize', [{}])[0].get('action', [])
-            if len(decks_raw) != 2: continue
-            decks = [decks_raw[0], decks_raw[1]]
-            if len(decks[0]) != 60 or len(decks[1]) != 60: continue
+        all_data = defaultdict(list)  # key: "archetype|band"
+        bad_actions = 0
+        errors = 0
+        for i, fname in enumerate(fnames):
+            try:
+                raw = zf.read(fname).decode('utf-8')
+                data = json.loads(raw); steps = data['steps']
+                if len(steps) < 2: continue
+                decks_raw = steps[0][0].get('visualize', [{}])[0].get('action', [])
+                if len(decks_raw) != 2: continue
+                decks = [decks_raw[0], decks_raw[1]]
+                if len(decks[0]) != 60 or len(decks[1]) != 60: continue
 
-            # Get scores from team names
-            info = data.get('info', {})
-            teams = info.get('TeamNames', [])
-            scores = [name_to_score.get(t, 0) for t in teams[:2]]
-            bands = [score_band(s) for s in scores]
+                # Get scores from team names
+                info = data.get('info', {})
+                teams = info.get('TeamNames', [])
+                scores = [name_to_score.get(t, 0) for t in teams[:2]]
+                bands = [score_band(s) for s in scores]
 
-            for step in steps[1:]:
-                for pi, pd in enumerate(step[:2]):
-                    obs = pd.get('observation', {})
-                    sel = obs.get('select')
-                    act = pd.get('action', [])
-                    if sel is None or not isinstance(act, list): continue
-                    if len(sel.get('option', [])) == 0: continue
-                    if len(act) == 60: continue  # deck selection
+                # Kaggle episode rows store the action that answered the
+                # previous ACTIVE observation for that player.
+                pending = [None, None]
+                for step in steps[1:]:
+                    for pi, pd in enumerate(step[:2]):
+                        if not isinstance(pd, dict):
+                            continue
+                        action = pd.get('action', [])
+                        if pending[pi] is not None and isinstance(action, list) and len(action) != 60:
+                            obs_prev = pending[pi]
+                            band = bands[pi] if pi < len(bands) else "unknown"
+                            try:
+                                ok = _append_decision(all_data, encoder, obs_prev, action, decks[pi], band)
+                                bad_actions += 0 if ok else 1
+                            except Exception:
+                                errors += 1
+                            pending[pi] = None
 
-                    arch = classify(decks[pi])
-                    band = bands[pi] if pi < len(bands) else "unknown"
-                    key = f"{arch}|{band}"
-                    ed = encoder.encode(obs)
-                    all_data[key].append({
-                        'board': ed.board_cards.astype(np.int16),
-                        'hand': ed.hand_cards.astype(np.int16),
-                        'feats': ed.state_feats.astype(np.float16),
-                        'ot': ed.opt_type.astype(np.int16),
-                        'oc': ed.opt_card.astype(np.int16),
-                        'oc2': ed.opt_card2.astype(np.int16),
-                        'oa': ed.opt_attack.astype(np.int16),
-                        'of': ed.opt_feats.astype(np.float16),
-                        'action': np.array(act, dtype=np.int16),
-                        'min_c': ed.min_count, 'max_c': ed.max_count,
-                    })
-        except: pass
+                        obs = pd.get('observation')
+                        obs = obs if isinstance(obs, dict) else None
+                        sel = obs.get('select') if obs else None
+                        if (pd.get('status') == 'ACTIVE' and sel is not None
+                                and len(sel.get('option', [])) > 0):
+                            pending[pi] = obs
+            except Exception:
+                errors += 1
 
-        if (i+1) % 500 == 0:
-            total = sum(len(v) for v in all_data.values())
-            elapsed = time.time() - t0
-            eta = elapsed / (i+1) * (len(fnames)-i-1)
-            print(f"  {i+1}/{len(fnames)} | {total} decs | eta {eta:.0f}s")
+            if (i+1) % 500 == 0:
+                total = sum(len(v) for v in all_data.values())
+                elapsed = time.time() - t0
+                eta = elapsed / (i+1) * (len(fnames)-i-1)
+                print(f"  {i+1}/{len(fnames)} | {total} decs | bad {bad_actions} | err {errors} | eta {eta:.0f}s")
 
     # Save — directory: <Archetype>/<ScoreBand>/<date>.npz
     total = 0

@@ -18,10 +18,23 @@ class BCTrainer:
         p = sum(p.numel() for p in self.model.parameters())
         print(f"BC: {archetype} [{', '.join(score_bands)}] {self.device} lr={lr} width={width} params={p/1e6:.1f}M", flush=True)
 
+        def keep_sample(d, i):
+            action = np.asarray(d['action'][i], dtype=np.int64)
+            n_opt = len(d['ot'][i])
+            mn = int(d['min_c'][i])
+            mx = int(d['max_c'][i])
+            if len(action) == 0:
+                return include_empty and mn == 0
+            if len(action) < mn or len(action) > mx:
+                return False
+            if len(set(action.tolist())) != len(action):
+                return False
+            return bool(((action >= 0) & (action < n_opt)).all())
+
         t0 = time.time()
         ad = os.path.join(corpus_dir, archetype.replace(' ', '_'))
         n_files = sum(1 for b in score_bands for _ in glob.glob(os.path.join(ad, b.replace(' ', '_'), "*.npz")))
-        fi = 0; total = 0; kept = 0
+        fi = 0; total = 0; kept = 0; skipped_empty = 0; skipped_bad = 0
         self.npz_data = []
         self.groups = []
         print(f"  Loading {n_files} files:", flush=True)
@@ -33,18 +46,26 @@ class BCTrainer:
                 n = len(d['board'])
                 di = len(self.npz_data)
                 actions = d['action']
-                idxs = [i for i in range(n)
-                        if include_empty or len(actions[i]) > 0]
+                idxs = []
+                bad = empty = 0
+                for i in range(n):
+                    if keep_sample(d, i):
+                        idxs.append(i)
+                    elif len(actions[i]) == 0:
+                        empty += 1
+                    else:
+                        bad += 1
                 self.npz_data.append(d)
                 self.groups.append([(di, i) for i in idxs])
                 total += n; fi += 1
                 kept += len(idxs)
-                skipped = n - len(idxs)
-                suffix = f", skipped {skipped} empty" if skipped else ""
+                skipped_empty += empty
+                skipped_bad += bad
+                suffix = f", skipped {empty} empty, {bad} bad" if empty or bad else ""
                 print(f"    [{fi}/{n_files}] {os.path.basename(npz_path)}: {n} decs{suffix}, {time.time()-t1:.1f}s", flush=True)
         if kept == 0:
             raise RuntimeError(f"No BC samples found under {ad} for bands {score_bands}")
-        print(f"  {kept}/{total} decisions kept, {time.time()-t0:.0f}s", flush=True)
+        print(f"  {kept}/{total} decisions kept, skipped {skipped_empty} empty, {skipped_bad} bad, {time.time()-t0:.0f}s", flush=True)
 
     def _collate(self, indices):
         B = len(indices)

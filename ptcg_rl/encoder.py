@@ -130,6 +130,24 @@ class FastEncoder:
         s[11] = opp.get("handCount", 0) / 25.0
         s[12] = len(me.get("bench", [])) / BENCH_MAX
         s[13] = len(opp.get("bench", [])) / BENCH_MAX
+        s[14] = 1.0 if cur.get("stadiumPlayed") else 0.0
+        s[15] = len(cur.get("stadium") or []) / 1.0
+        s[16] = len(cur.get("looking") or []) / 30.0
+        s[17] = sel.get("context", 0) / 64.0
+        s[18] = sel.get("type", 0) / 16.0
+        s[19] = sel.get("minCount", 0) / 10.0
+        s[20] = sel.get("maxCount", 0) / 10.0
+        s[21] = sel.get("remainDamageCounter", 0) / 30.0
+        s[22] = sel.get("remainEnergyCost", 0) / 10.0
+        s[23] = 1.0 if sel.get("contextCard") else 0.0
+        s[24] = 1.0 if sel.get("effect") else 0.0
+        s[25] = self._damage_ratio(me.get("active", [None])[0] if me.get("active") else None)
+        s[26] = self._energy_count(me.get("active", [None])[0] if me.get("active") else None) / 10.0
+        s[27] = self._damage_ratio(opp.get("active", [None])[0] if opp.get("active") else None)
+        s[28] = self._energy_count(opp.get("active", [None])[0] if opp.get("active") else None) / 10.0
+        s[29] = sum(self._damage_ratio(p) for p in me.get("bench", []) if p) / BENCH_MAX
+        s[30] = sum(self._damage_ratio(p) for p in opp.get("bench", []) if p) / BENCH_MAX
+        s[31] = len(my_hand) / MAX_HAND
 
         # ── Options ───────────────────────────────────────────────────────
         options = sel.get("option", [])
@@ -144,18 +162,37 @@ class FastEncoder:
             ot = o.get("type", 0)
             opt_type[i] = ot
             opt_feats[i, 0] = float(ot) / N_OPT_TYPES
+            opt_feats[i, 2] = i / max(n_opt - 1, 1)
+            opt_feats[i, 3] = sel.get("context", 0) / 64.0
+            opt_feats[i, 4] = sel.get("type", 0) / 16.0
+            opt_feats[i, 5] = o.get("number", 0) / 20.0 if o.get("number") is not None else 0.0
+            opt_feats[i, 6] = o.get("count", 0) / 20.0 if o.get("count") is not None else 0.0
 
             # Resolve the card this option acts on
             pid = o.get("playerIndex", you)
             area = o.get("area")
             idx = o.get("index", 0)
+            opt_feats[i, 7] = float(area or 0) / 16.0
+            opt_feats[i, 8] = float(idx or 0) / 64.0
+            opt_feats[i, 9] = float(o.get("inPlayArea") or 0) / 16.0
+            opt_feats[i, 10] = float(o.get("inPlayIndex") or 0) / 10.0
+            opt_feats[i, 11] = float(o.get("toolIndex") or 0) / 10.0
+            opt_feats[i, 12] = float(o.get("energyIndex") or 0) / 10.0
+            opt_feats[i, 13] = 1.0 if pid == you else 0.0
 
             if area is not None and idx is not None:
                 c = self._get_card(cur, pid, area, idx)
                 opt_card[i] = c
+                target = self._get_pokemon(cur, pid, area, idx)
+                opt_feats[i, 14] = self._damage_ratio(target)
+                opt_feats[i, 15] = self._energy_count(target) / 10.0
             if o.get("inPlayArea") is not None and o.get("inPlayIndex") is not None:
                 c2 = self._get_card(cur, pid, o.get("inPlayArea"), o.get("inPlayIndex"))
                 opt_card2[i] = c2
+                target2 = self._get_pokemon(cur, pid, o.get("inPlayArea"), o.get("inPlayIndex"))
+                if target2:
+                    opt_feats[i, 14] = self._damage_ratio(target2)
+                    opt_feats[i, 15] = self._energy_count(target2) / 10.0
             if o.get("attackId") is not None:
                 opt_attack[i] = o["attackId"]
             opt_feats[i, 1] = 1.0 if o.get("playerIndex") == you else 0.0
@@ -166,6 +203,38 @@ class FastEncoder:
             opt_attack=opt_attack, opt_feats=opt_feats,
             min_count=sel.get("minCount", 0), max_count=sel.get("maxCount", 0),
         )
+
+    @staticmethod
+    def _damage_ratio(p: dict | None) -> float:
+        if not p:
+            return 0.0
+        hp = float(p.get("hp", 0) or 0)
+        max_hp = float(p.get("maxHp", 0) or 0)
+        if max_hp <= 0:
+            return 0.0
+        return max(0.0, min(1.0, (max_hp - hp) / max_hp))
+
+    @staticmethod
+    def _energy_count(p: dict | None) -> int:
+        if not p:
+            return 0
+        energies = p.get("energies")
+        if energies is not None:
+            return len(energies)
+        return len(p.get("energyCards") or [])
+
+    @staticmethod
+    def _get_pokemon(cur: dict, player_idx: int, area: int, index: int) -> dict | None:
+        ps = cur["players"][player_idx]
+        if area == 4:  # ACTIVE
+            a = ps.get("active", [])
+            if a and index < len(a) and a[index]:
+                return a[index]
+        if area == 5:  # BENCH
+            b = ps.get("bench", [])
+            if index < len(b) and b[index]:
+                return b[index]
+        return None
 
     @staticmethod
     def _get_card(cur: dict, player_idx: int, area: int, index: int) -> int:

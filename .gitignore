@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+
+logs/
+*.log
+
+checkpoints/
+*.npz
+*.pt
+*.tar.gz
+pokemon-tcg-ai-battle.zip
+
+data/bc_corpus*/
+data/ptcg_engine/
+data/sample_submission/
+data/*Card_Data.csv

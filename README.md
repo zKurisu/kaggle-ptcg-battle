@@ -94,7 +94,44 @@ data/bc_corpus_banded/
 
 ## 训练流程
 
-### BC 模仿学习（当前主线）
+### BC2 模仿学习（当前主线）
+
+`bc2` 是新的干净训练入口：仍然输出可被 `main.py`/`numpy_policy.py`
+直接加载的 `.npz`，但数据加载、过滤、mask、loss 和诊断已经拆成独立模块。
+默认会提高第一步动作和大候选集合的权重，因为当前弱点主要集中在
+`TO_HAND`、`ATTACK`、`ABILITY` 和 6+ 候选的排序。
+
+```bash
+mkdir -p logs checkpoints
+CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
+    --corpus data/bc_corpus_banded_v3 \
+    --archetype "Marnie Grimmsnarl" \
+    --score-bands "1200+" "1100-1199" "1000-1099" \
+    --epochs 12 --batch-size 4096 --width 2.0 --device cuda:0 \
+    --first-action-weight 1.5 --option-weight 0.15 \
+    --checkpoint-every 1 \
+    --save checkpoints/bc2_marnie_1000_w2.npz \
+    > logs/bc2_marnie_1000_w2.log 2>&1
+```
+
+离线 first-action/分场景诊断：
+
+```bash
+python3 tools/bc2_accuracy.py checkpoints/bc2_marnie_1000_w2.npz \
+    --corpus data/bc_corpus_banded_v3 \
+    --archetype "Marnie Grimmsnarl" \
+    --score-bands "1200+" "1100-1199" "1000-1099" \
+    --max-samples 50000 --batch-size 4096 --progress-every 5000
+```
+
+对 random 实战：
+
+```bash
+python3 tools/eval_bc.py checkpoints/bc2_marnie_1000_w2.npz \
+    --deck deck.csv --games 200
+```
+
+### 旧 BC 模仿学习
 
 从高分 replay 学习人类决策：
 

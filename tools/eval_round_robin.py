@@ -9,13 +9,24 @@ import os
 import random
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+
+for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from ptcg_rl.numpy_policy import NumpyPolicy
+
+_WORKER_A: "Entry | None" = None
+_WORKER_B: "Entry | None" = None
+_WORKER_USE_MCTS = False
+_WORKER_SIMS = 48
+_WORKER_TIME_BUDGET = 4.0
+_WORKER_MAX_TURNS = 700
 
 
 @dataclass
@@ -107,11 +118,24 @@ def load_entries(specs: list[str], default_deck: str, include_random: bool) -> l
     return entries
 
 
+def entry_payload(e: Entry) -> tuple[str, str, str]:
+    return e.name, e.policy_path, e.deck_path
+
+
+def entry_from_payload(payload: tuple[str, str, str]) -> Entry:
+    name, policy_path, deck_path = payload
+    deck = read_deck(deck_path)
+    policy = None if policy_path == "random" else NumpyPolicy.load(policy_path)
+    return Entry(name, policy_path, deck_path, policy, deck)
+
+
 def play_game(a: Entry, b: Entry, swapped: bool, use_mcts: bool, sims: int,
-              time_budget: float, max_turns: int) -> int:
+              time_budget: float, max_turns: int, seed: int | None = None) -> int:
     """Return 0 if entry a wins, 1 if entry b wins, 2 draw/error."""
     from cg.game import battle_finish, battle_select, battle_start
 
+    if seed is not None:
+        random.seed(seed)
     first, second = (b, a) if swapped else (a, b)
     obs, sd = battle_start(first.deck, second.deck)
     if obs is None:
@@ -137,31 +161,75 @@ def play_game(a: Entry, b: Entry, swapped: bool, use_mcts: bool, sims: int,
         battle_finish()
 
 
+def _init_match_worker(a_payload, b_payload, use_mcts: bool, sims: int,
+                       time_budget: float, max_turns: int) -> None:
+    global _WORKER_A, _WORKER_B, _WORKER_USE_MCTS, _WORKER_SIMS, _WORKER_TIME_BUDGET, _WORKER_MAX_TURNS
+    _WORKER_A = entry_from_payload(a_payload)
+    _WORKER_B = entry_from_payload(b_payload)
+    _WORKER_USE_MCTS = use_mcts
+    _WORKER_SIMS = sims
+    _WORKER_TIME_BUDGET = time_budget
+    _WORKER_MAX_TURNS = max_turns
+
+
+def _play_match_worker(args) -> int:
+    g, seed = args
+    return play_game(
+        _WORKER_A, _WORKER_B, swapped=bool(g % 2),
+        use_mcts=_WORKER_USE_MCTS, sims=_WORKER_SIMS,
+        time_budget=_WORKER_TIME_BUDGET, max_turns=_WORKER_MAX_TURNS,
+        seed=seed,
+    )
+
+
+def _print_match_progress(a: Entry, b: Entry, done: int, games: int,
+                          wins_a: int, wins_b: int, draws: int, t0: float) -> None:
+    elapsed = time.time() - t0
+    rate = done / max(elapsed, 1e-9)
+    eta = (games - done) / max(rate, 1e-9)
+    print(
+        f"  {a.name} vs {b.name}: {done}/{games} "
+        f"{wins_a}-{wins_b}-{draws} wr={wins_a/done:.3f} "
+        f"{rate:.2f} games/s eta={eta:.0f}s",
+        flush=True,
+    )
+
+
 def play_matchup(a: Entry, b: Entry, games: int, use_mcts: bool, sims: int,
-                 time_budget: float, max_turns: int, progress_every: int) -> dict:
+                 time_budget: float, max_turns: int, progress_every: int,
+                 workers: int = 1, seed: int = 1) -> dict:
     wins_a = wins_b = draws = 0
     t0 = time.time()
-    for g in range(games):
-        res = play_game(a, b, swapped=bool(g % 2), use_mcts=use_mcts, sims=sims,
-                        time_budget=time_budget, max_turns=max_turns)
+    workers = max(1, min(int(workers), games))
+
+    def record(done: int, res: int) -> None:
+        nonlocal wins_a, wins_b, draws
         if res == 0:
             wins_a += 1
         elif res == 1:
             wins_b += 1
         else:
             draws += 1
-
-        done = g + 1
         if progress_every and (done == 1 or done % progress_every == 0 or done == games):
-            elapsed = time.time() - t0
-            rate = done / max(elapsed, 1e-9)
-            eta = (games - done) / max(rate, 1e-9)
-            print(
-                f"  {a.name} vs {b.name}: {done}/{games} "
-                f"{wins_a}-{wins_b}-{draws} wr={wins_a/done:.3f} "
-                f"{rate:.2f} games/s eta={eta:.0f}s",
-                flush=True,
+            _print_match_progress(a, b, done, games, wins_a, wins_b, draws, t0)
+
+    if workers == 1:
+        for g in range(games):
+            res = play_game(
+                a, b, swapped=bool(g % 2), use_mcts=use_mcts, sims=sims,
+                time_budget=time_budget, max_turns=max_turns, seed=seed + g,
             )
+            record(g + 1, res)
+    else:
+        tasks = [(g, seed + g) for g in range(games)]
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            initializer=_init_match_worker,
+            initargs=(entry_payload(a), entry_payload(b), use_mcts, sims, time_budget, max_turns),
+        ) as ex:
+            futs = [ex.submit(_play_match_worker, t) for t in tasks]
+            for done, fut in enumerate(as_completed(futs), 1):
+                record(done, fut.result())
     return {"a": a.name, "b": b.name, "wins_a": wins_a, "wins_b": wins_b, "draws": draws}
 
 
@@ -222,6 +290,8 @@ def main() -> None:
     p.add_argument("--time-budget", type=float, default=4.0)
     p.add_argument("--max-turns", type=int, default=700)
     p.add_argument("--progress-every", type=int, default=10)
+    p.add_argument("--workers", type=int, default=1,
+                   help="parallel game worker processes per pair; each worker loads both policies once")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--out-csv", default="", help="optional pairwise matrix CSV output")
     args = p.parse_args()
@@ -255,6 +325,7 @@ def main() -> None:
             results[(i, j)] = play_matchup(
                 entries[i], entries[j], args.games, args.mcts, args.mcts_sims,
                 args.time_budget, args.max_turns, args.progress_every,
+                workers=args.workers, seed=args.seed + done_pairs * 100000,
             )
             elapsed = time.time() - t0
             print(f"Finished pair {done_pairs}/{total_pairs} in {elapsed:.0f}s total", flush=True)

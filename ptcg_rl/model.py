@@ -195,13 +195,19 @@ class PolicyValueNet(nn.Module):
         logprobs = torch.zeros(B, device=dev)
         entropies = torch.zeros(B, device=dev)
         ps = torch.zeros(B, self._oe, device=dev)
-        avail = torch.ones(B, n_max + 1, dtype=torch.bool, device=dev)
+        opt_len = torch.tensor([len(d.opt_type) for d in decisions], dtype=torch.long, device=dev)
+        opt_mask = torch.arange(n_max, device=dev).unsqueeze(0) < opt_len.unsqueeze(1)
+        avail = torch.cat([
+            opt_mask,
+            torch.ones(B, 1, dtype=torch.bool, device=dev),
+        ], dim=1)
 
         # Pad stored actions
         max_k = max(len(d.action) for d in decisions) + 1  # +1 for possible STOP
         for k in range(max_k):
             stop_ok = torch.tensor([k >= d.min_count for d in decisions], device=dev)
             mask = avail.clone()
+            mask[:, :n_max] &= opt_mask
             mask[:, n_max] = stop_ok
 
             logits = self.option_logits(h, opts, ps, mask)

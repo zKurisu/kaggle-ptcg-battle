@@ -171,8 +171,9 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
                     for pi, pd in enumerate(step[:2]):
                         if not isinstance(pd, dict):
                             continue
-                        action = pd.get('action', [])
-                        if pending[pi] is not None and isinstance(action, list) and len(action) != 60:
+                        has_action = 'action' in pd
+                        action = pd.get('action')
+                        if pending[pi] is not None and has_action and isinstance(action, list) and len(action) != 60:
                             obs_prev = pending[pi]
                             band = bands[pi] if pi < len(bands) else "unknown"
                             try:

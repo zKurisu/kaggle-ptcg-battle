@@ -186,6 +186,16 @@ class FastEncoder:
                 target = self._get_pokemon(cur, pid, area, idx)
                 opt_feats[i, 14] = self._damage_ratio(target)
                 opt_feats[i, 15] = self._energy_count(target) / 10.0
+                if ot == 4:  # ToolCard: choose an attached tool, not only its Pokemon.
+                    attached = self._get_attached_card(cur, pid, area, idx, "tools", o.get("toolIndex"))
+                    if attached:
+                        opt_card[i] = attached
+                        opt_card2[i] = c
+                elif ot in (5, 6):  # EnergyCard/Energy: choose an attached energy card.
+                    attached = self._get_attached_card(cur, pid, area, idx, "energyCards", o.get("energyIndex"))
+                    if attached:
+                        opt_card[i] = attached
+                        opt_card2[i] = c
             if o.get("inPlayArea") is not None and o.get("inPlayIndex") is not None:
                 c2 = self._get_card(cur, pid, o.get("inPlayArea"), o.get("inPlayIndex"), sel)
                 opt_card2[i] = c2
@@ -202,6 +212,8 @@ class FastEncoder:
             if ot == 15:  # Skill: engine exposes card identity directly
                 opt_card[i] = int(o.get("cardId") or 0)
                 opt_feats[i, 8] = float(o.get("serial") or 0) / 64.0
+            if ot == 16 and o.get("specialConditionType") is not None:
+                opt_feats[i, 5] = float(o.get("specialConditionType") or 0) / 20.0
             if o.get("attackId") is not None:
                 opt_attack[i] = o["attackId"]
             opt_feats[i, 1] = 1.0 if o.get("playerIndex") == you else 0.0
@@ -244,6 +256,20 @@ class FastEncoder:
             if index < len(b) and b[index]:
                 return b[index]
         return None
+
+    @classmethod
+    def _get_attached_card(cls, cur: dict, player_idx: int, area: int, index: int,
+                           key: str, attached_index: int | None) -> int:
+        if attached_index is None:
+            return 0
+        target = cls._get_pokemon(cur, player_idx, area, index)
+        if not target:
+            return 0
+        attached = target.get(key) or []
+        ai = int(attached_index)
+        if 0 <= ai < len(attached) and attached[ai]:
+            return int(attached[ai].get("id") or 0)
+        return 0
 
     @staticmethod
     def _get_card(cur: dict, player_idx: int, area: int, index: int, sel: dict | None = None) -> int:

@@ -187,22 +187,49 @@ python3 -u train.py \
 ```bash
 # 小规模对战测试
 python3 tools/deck_battle.py battle deck.csv decks/ --games 10
+
+# 单 checkpoint 对 legal random
+python3 tools/eval_bc.py checkpoints/bc2_marnie_1000_w2_v4_ep003.npz \
+    --deck deck.csv \
+    --games 500 \
+    --progress-every 25
+
+# population round-robin：行胜列的胜率矩阵
+python3 tools/eval_round_robin.py \
+    --include-random \
+    --policy checkpoints/bc2_marnie_1000_w2_v4_ep003.npz \
+    --policy checkpoints/bc2_marnie_1000_w2_v4.npz \
+    --deck deck.csv \
+    --games 100 \
+    --progress-every 10 \
+    --out-csv logs/round_robin_marnie.csv
+
+# 不同卡组/不同 checkpoint 时，用 NAME=POLICY:DECK
+python3 tools/eval_round_robin.py \
+    --entry marnie=checkpoints/bc2_marnie_1000_w2_v4.npz:deck.csv \
+    --entry lucario=checkpoints/bc2_lucario_1000_w2.npz:decks/lucario.csv \
+    --entry random=random:deck.csv \
+    --games 100 \
+    --progress-every 10
 ```
+
+`eval_round_robin.py` 会交替先后手，draw/error 计入总局数但不算任一方胜。
+这个矩阵比只看 random 更接近 Kaggle ladder：random 100% 只说明 agent
+基本可用，能否过 800-1000 分段要看它对其他 BC/规则型 population 的胜率。
 
 ## Kaggle 提交
 
 ```bash
-# 打包
-mkdir -p /tmp/submit/ptcg_rl
-cp main.py deck.csv checkpoints/bc_marnie_1100.npz /tmp/submit/
-cp policy.npz /tmp/submit/ 2>/dev/null  # 或 bc 产出的权重
-cp ptcg_rl/*.py /tmp/submit/ptcg_rl/
-cp -r /home/jie/Do/0_PTCG/workspace/cg /tmp/submit/
-cd /tmp/submit
-tar czf submission.tar.gz *
+# 打包 tar.gz
+python3 tools/package_submission.py \
+    --policy checkpoints/bc2_marnie_1000_w2_v4_ep003.npz \
+    --deck deck.csv \
+    --out submission.tar.gz
 
 # 提交
-kaggle competitions submit pokemon-tcg-ai-battle -f submission.tar.gz -m "BC Marnie 1100+"
+kaggle competitions submit pokemon-tcg-ai-battle \
+    -f submission.tar.gz \
+    -m "BC2 Marnie v4 epoch3"
 ```
 
 ## 常用命令

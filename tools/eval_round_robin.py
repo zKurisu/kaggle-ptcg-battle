@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""Evaluate a local policy population with pairwise battles."""
+from __future__ import annotations
+
+import argparse
+import csv
+import importlib.util
+import os
+import random
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from ptcg_rl.numpy_policy import NumpyPolicy
+
+
+@dataclass
+class Entry:
+    name: str
+    policy_path: str
+    deck_path: str
+    policy: NumpyPolicy | None
+    deck: list[int]
+
+
+def read_deck(path: str) -> list[int]:
+    with open(path) as f:
+        deck = [int(line.strip()) for line in f if line.strip()]
+    if len(deck) != 60:
+        raise ValueError(f"deck must contain 60 cards: {path} has {len(deck)}")
+    return deck
+
+
+def legal_random(sel: dict) -> list[int]:
+    opts = sel.get("option", [])
+    mn = int(sel.get("minCount", 0))
+    mc = int(sel.get("maxCount", 0))
+    if not opts or mc <= 0:
+        return []
+    hi = min(mc, len(opts))
+    lo = min(max(mn, 0), hi)
+    k = random.randint(lo, hi)
+    return random.sample(range(len(opts)), k) if k > 0 else []
+
+
+def policy_action(entry: Entry, obs: dict, use_mcts: bool, sims: int, time_budget: float) -> list[int]:
+    sel = obs.get("select") or {}
+    opts = sel.get("option", [])
+    mn = int(sel.get("minCount", 0))
+    mc = int(sel.get("maxCount", 0))
+    n = len(opts)
+    if n == 0 or mc <= 0:
+        return []
+    if entry.policy is None:
+        return legal_random(sel)
+
+    try:
+        if use_mcts:
+            picks = entry.policy.select_mcts(obs, entry.deck, sims=sims, time_budget=time_budget)
+        else:
+            picks = entry.policy.select(obs, greedy=True)
+    except Exception:
+        return legal_random(sel)
+
+    picks = [p for p in picks if 0 <= p < n]
+    picks = list(dict.fromkeys(picks))
+    if mn <= len(picks) <= mc:
+        return picks[:mc]
+    return legal_random(sel)
+
+
+def parse_entry(spec: str, default_deck: str) -> tuple[str, str, str]:
+    """Parse NAME=POLICY[:DECK]. POLICY can be 'random'."""
+    if "=" in spec:
+        name, rest = spec.split("=", 1)
+    else:
+        rest = spec
+        name = "random" if rest == "random" else Path(rest).stem
+    parts = rest.split(":", 1)
+    policy_path = parts[0]
+    deck_path = parts[1] if len(parts) == 2 else default_deck
+    if not name:
+        raise ValueError(f"empty entry name: {spec}")
+    return name, policy_path, deck_path
+
+
+def load_entries(specs: list[str], default_deck: str, include_random: bool) -> list[Entry]:
+    entries: list[Entry] = []
+    if include_random:
+        specs = [f"random=random:{default_deck}"] + specs
+
+    seen: set[str] = set()
+    for spec in specs:
+        name, policy_path, deck_path = parse_entry(spec, default_deck)
+        if name in seen:
+            raise ValueError(f"duplicate entry name: {name}")
+        seen.add(name)
+        deck = read_deck(deck_path)
+        policy = None if policy_path == "random" else NumpyPolicy.load(policy_path)
+        entries.append(Entry(name, policy_path, deck_path, policy, deck))
+    if len(entries) < 2:
+        raise ValueError("need at least two entries; pass --include-random or multiple --entry values")
+    return entries
+
+
+def play_game(a: Entry, b: Entry, swapped: bool, use_mcts: bool, sims: int,
+              time_budget: float, max_turns: int) -> int:
+    """Return 0 if entry a wins, 1 if entry b wins, 2 draw/error."""
+    from cg.game import battle_finish, battle_select, battle_start
+
+    first, second = (b, a) if swapped else (a, b)
+    obs, sd = battle_start(first.deck, second.deck)
+    if obs is None:
+        return 2
+
+    try:
+        for _ in range(max_turns):
+            cur = obs.get("current", {})
+            res = int(cur.get("result", -1))
+            if res != -1:
+                if swapped:
+                    return 1 if res == 0 else 0 if res == 1 else 2
+                return res if res in (0, 1) else 2
+            if obs.get("select") is None:
+                return 2
+            side = int(cur.get("yourIndex", 0))
+            entry = first if side == 0 else second
+            obs = battle_select(policy_action(entry, obs, use_mcts, sims, time_budget))
+            if obs is None:
+                return 2
+        return 2
+    finally:
+        battle_finish()
+
+
+def play_matchup(a: Entry, b: Entry, games: int, use_mcts: bool, sims: int,
+                 time_budget: float, max_turns: int, progress_every: int) -> dict:
+    wins_a = wins_b = draws = 0
+    t0 = time.time()
+    for g in range(games):
+        res = play_game(a, b, swapped=bool(g % 2), use_mcts=use_mcts, sims=sims,
+                        time_budget=time_budget, max_turns=max_turns)
+        if res == 0:
+            wins_a += 1
+        elif res == 1:
+            wins_b += 1
+        else:
+            draws += 1
+
+        done = g + 1
+        if progress_every and (done == 1 or done % progress_every == 0 or done == games):
+            elapsed = time.time() - t0
+            rate = done / max(elapsed, 1e-9)
+            eta = (games - done) / max(rate, 1e-9)
+            print(
+                f"  {a.name} vs {b.name}: {done}/{games} "
+                f"{wins_a}-{wins_b}-{draws} wr={wins_a/done:.3f} "
+                f"{rate:.2f} games/s eta={eta:.0f}s",
+                flush=True,
+            )
+    return {"a": a.name, "b": b.name, "wins_a": wins_a, "wins_b": wins_b, "draws": draws}
+
+
+def print_matrix(entries: list[Entry], results: dict[tuple[int, int], dict], games: int) -> None:
+    names = [e.name for e in entries]
+    widths = [max(8, len(n)) for n in names]
+    first_w = max(12, max(len(n) for n in names))
+    print("\nWin-rate matrix: row beats column")
+    print(" " * first_w + "  " + "  ".join(n.rjust(w) for n, w in zip(names, widths)))
+    for i, row_name in enumerate(names):
+        cells = []
+        for j in range(len(names)):
+            if i == j:
+                cells.append("-".rjust(widths[j]))
+            else:
+                key = (min(i, j), max(i, j))
+                r = results[key]
+                wins = r["wins_a"] if i < j else r["wins_b"]
+                cells.append(f"{wins / games:.3f}".rjust(widths[j]))
+        print(row_name.rjust(first_w) + "  " + "  ".join(cells))
+
+
+def write_csv(path: str, entries: list[Entry], results: dict[tuple[int, int], dict], games: int) -> None:
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["row", "column", "games", "row_wins", "column_wins", "draws", "row_win_rate"])
+        for i, a in enumerate(entries):
+            for j, b in enumerate(entries):
+                if i == j:
+                    continue
+                r = results[(min(i, j), max(i, j))]
+                row_wins = r["wins_a"] if i < j else r["wins_b"]
+                col_wins = r["wins_b"] if i < j else r["wins_a"]
+                w.writerow([a.name, b.name, games, row_wins, col_wins, r["draws"], row_wins / games])
+    print(f"\nWrote {out}", flush=True)
+
+
+def has_cg_engine() -> bool:
+    try:
+        return importlib.util.find_spec("cg.game") is not None
+    except ModuleNotFoundError:
+        return False
+
+
+def main() -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument("--entry", action="append", default=[],
+                   help="NAME=POLICY[:DECK]. POLICY may be 'random'. Repeat for each agent.")
+    p.add_argument("--policy", action="append", default=[],
+                   help="Shortcut for --entry basename=POLICY using --deck.")
+    p.add_argument("--deck", default="deck.csv", help="default deck for entries without :DECK")
+    p.add_argument("--include-random", action="store_true", help="prepend random=random:DECK")
+    p.add_argument("--games", type=int, default=50, help="games per pair")
+    p.add_argument("--mcts", action="store_true", help="use NumpyPolicy.select_mcts for policy entries")
+    p.add_argument("--mcts-sims", type=int, default=48)
+    p.add_argument("--time-budget", type=float, default=4.0)
+    p.add_argument("--max-turns", type=int, default=700)
+    p.add_argument("--progress-every", type=int, default=10)
+    p.add_argument("--seed", type=int, default=1)
+    p.add_argument("--out-csv", default="", help="optional pairwise matrix CSV output")
+    args = p.parse_args()
+
+    random.seed(args.seed)
+    if not has_cg_engine():
+        p.error(
+            "cg.game not found. Run this in the Kaggle/remote repo with the cg engine "
+            "available, or set PYTHONPATH to the parent directory containing cg/."
+        )
+
+    specs = list(args.entry)
+    for policy in args.policy:
+        specs.append(f"{Path(policy).stem}={policy}")
+    entries = load_entries(specs, args.deck, args.include_random)
+
+    mode = f"MCTS sims={args.mcts_sims} budget={args.time_budget}s" if args.mcts else "greedy"
+    print(f"Round-robin: {len(entries)} entries, {args.games} games/pair, {mode}", flush=True)
+    for e in entries:
+        kind = "random" if e.policy is None else e.policy_path
+        print(f"  {e.name}: {kind} | deck={e.deck_path}", flush=True)
+
+    results: dict[tuple[int, int], dict] = {}
+    total_pairs = len(entries) * (len(entries) - 1) // 2
+    t0 = time.time()
+    done_pairs = 0
+    for i in range(len(entries)):
+        for j in range(i + 1, len(entries)):
+            done_pairs += 1
+            print(f"\nPair {done_pairs}/{total_pairs}: {entries[i].name} vs {entries[j].name}", flush=True)
+            results[(i, j)] = play_matchup(
+                entries[i], entries[j], args.games, args.mcts, args.mcts_sims,
+                args.time_budget, args.max_turns, args.progress_every,
+            )
+            elapsed = time.time() - t0
+            print(f"Finished pair {done_pairs}/{total_pairs} in {elapsed:.0f}s total", flush=True)
+
+    print_matrix(entries, results, args.games)
+    if args.out_csv:
+        write_csv(args.out_csv, entries, results, args.games)
+
+
+if __name__ == "__main__":
+    main()

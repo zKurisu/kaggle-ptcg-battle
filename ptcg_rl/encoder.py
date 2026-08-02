@@ -181,13 +181,13 @@ class FastEncoder:
             opt_feats[i, 13] = 1.0 if pid == you else 0.0
 
             if area is not None and idx is not None:
-                c = self._get_card(cur, pid, area, idx)
+                c = self._get_card(cur, pid, area, idx, sel)
                 opt_card[i] = c
                 target = self._get_pokemon(cur, pid, area, idx)
                 opt_feats[i, 14] = self._damage_ratio(target)
                 opt_feats[i, 15] = self._energy_count(target) / 10.0
             if o.get("inPlayArea") is not None and o.get("inPlayIndex") is not None:
-                c2 = self._get_card(cur, pid, o.get("inPlayArea"), o.get("inPlayIndex"))
+                c2 = self._get_card(cur, pid, o.get("inPlayArea"), o.get("inPlayIndex"), sel)
                 opt_card2[i] = c2
                 target2 = self._get_pokemon(cur, pid, o.get("inPlayArea"), o.get("inPlayIndex"))
                 if target2:
@@ -246,12 +246,15 @@ class FastEncoder:
         return None
 
     @staticmethod
-    def _get_card(cur: dict, player_idx: int, area: int, index: int) -> int:
+    def _get_card(cur: dict, player_idx: int, area: int, index: int, sel: dict | None = None) -> int:
         """Resolve (player, area, index) → card_id. 0 = not found."""
         ps = cur["players"][player_idx]
         # AreaType: 1=DECK, 2=HAND, 3=DISCARD, 4=ACTIVE, 5=BENCH, 6=PRIZE, 7=STADIUM, 11=LOOKING
         if area == 1:  # DECK
-            return 0  # deck cards are not revealed
+            deck = (sel or {}).get("deck")
+            if deck and index < len(deck) and deck[index]:
+                return deck[index]["id"]
+            return 0
         elif area == 2:  # HAND
             h = ps.get("hand")
             if h and index < len(h) and h[index]:

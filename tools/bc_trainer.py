@@ -40,7 +40,7 @@ class BCTrainer:
         print(f"BC Trainer: {archetype} [{', '.join(score_bands)}]", flush=True)
 
     def _iter_batches(self, corpus_dir, archetype, bands, batch_size):
-        """Generator: yield batches directly from .npz arrays."""
+        """Generator: yield batches directly from .npz arrays, one file at a time."""
         arch_dir = os.path.join(corpus_dir, archetype.replace(' ', '_'))
         for band in bands:
             band_dir = os.path.join(arch_dir, band.replace(' ', '_'))
@@ -51,15 +51,13 @@ class BCTrainer:
                 for start in range(0, n, batch_size):
                     mb_idx = idx[start:start + batch_size]
                     if len(mb_idx) < 2: continue
-                    # Build batch directly from npz indices
                     mb = []
                     for i in mb_idx:
                         mb.append({
                             'board': data['board'][i], 'hand': data['hand'][i],
                             'feats': data['feats'][i], 'ot': data['ot'][i],
                             'oc': data['oc'][i], 'oc2': data['oc2'][i],
-                            'oa': data['oa'][i],
-                            'of': data['of_arr'][i],
+                            'oa': data['oa'][i], 'of': data['of_arr'][i],
                             'action': data['action'][i],
                             'min_c': int(data['min_c'][i]), 'max_c': int(data['max_c'][i]),
                         })
@@ -192,7 +190,7 @@ class BCTrainer:
                 total_loss += loss.item(); total_pol += pol_loss.item()
                 total_val += val_loss.item(); steps += 1
 
-                if steps % 20 == 0 or steps == n_total:
+                if steps % 5 == 0 or steps == 1:
                     avg_l = total_loss / steps; avg_p = total_pol / steps; avg_v = total_val / steps
                     self._progress(steps, n_total, t0, avg_l, avg_p, avg_v)
 

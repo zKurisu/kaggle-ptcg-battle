@@ -26,6 +26,46 @@ ARCHETYPES = {
     "N's Zoroark": [293, 320], "Hop Trevenant": [879], "Raging Bolt": [1065],
 }
 
+def load_leaderboard_scores(lb_csv_path: str = None) -> dict[str, float]:
+    """Load team_name → score from leaderboard CSV."""
+    if lb_csv_path is None:
+        # Download latest leaderboard
+        import subprocess, glob, tempfile
+        tmp = tempfile.mkdtemp()
+        subprocess.run(["kaggle", "competitions", "leaderboard",
+                       "pokemon-tcg-ai-battle", "--download", "-p", tmp],
+                       capture_output=True)
+        zips = glob.glob(f"{tmp}/*.zip")
+        if zips:
+            import zipfile
+            with zipfile.ZipFile(zips[0]) as zf:
+                csv_files = [n for n in zf.namelist() if n.endswith('.csv')]
+                if csv_files:
+                    raw = zf.read(csv_files[0]).decode('utf-8')
+                    lb_csv_path = os.path.join(tmp, csv_files[0])
+                    with open(lb_csv_path, 'w') as f: f.write(raw)
+
+    name_to_score = {}
+    if lb_csv_path and os.path.exists(lb_csv_path):
+        import csv
+        with open(lb_csv_path) as f:
+            for r in csv.DictReader(f):
+                name = r.get('TeamName', '')
+                score = float(r.get('Score', 0)) if r.get('Score') else 0
+                if name: name_to_score[name] = score
+    return name_to_score
+
+
+def score_band(score: float) -> str:
+    if score >= 1200: return "1200+"
+    if score >= 1100: return "1100-1199"
+    if score >= 1000: return "1000-1099"
+    if score >= 900:  return "900-999"
+    if score >= 800:  return "800-899"
+    if score >= 700:  return "700-799"
+    return "600-699"
+
+
 def classify(deck):
     cnt = Counter(deck); best, bs = "Other", 0
     for n, ks in ARCHETYPES.items():
@@ -34,7 +74,7 @@ def classify(deck):
     return best if bs >= 2 else "Other"
 
 
-def process_zip(zip_path, out_dir):
+def process_zip(zip_path, out_dir, name_to_score: dict):
     from ptcg_rl.encoder import FastEncoder
     encoder = FastEncoder()
 
@@ -43,7 +83,7 @@ def process_zip(zip_path, out_dir):
     print(f"{zip_path.name}: {len(fnames)} eps")
     t0 = time.time()
 
-    all_data = defaultdict(list)
+    all_data = defaultdict(list)  # key: "archetype|band"
     for i, fname in enumerate(fnames):
         try:
             raw = zf.read(fname).decode('utf-8')
@@ -53,6 +93,12 @@ def process_zip(zip_path, out_dir):
             if len(decks_raw) != 2: continue
             decks = [decks_raw[0], decks_raw[1]]
             if len(decks[0]) != 60 or len(decks[1]) != 60: continue
+
+            # Get scores from team names
+            info = data.get('info', {})
+            teams = info.get('TeamNames', [])
+            scores = [name_to_score.get(t, 0) for t in teams[:2]]
+            bands = [score_band(s) for s in scores]
 
             for step in steps[1:]:
                 for pi, pd in enumerate(step[:2]):
@@ -64,8 +110,10 @@ def process_zip(zip_path, out_dir):
                     if len(act) == 60: continue  # deck selection
 
                     arch = classify(decks[pi])
+                    band = bands[pi] if pi < len(bands) else "unknown"
+                    key = f"{arch}|{band}"
                     ed = encoder.encode(obs)
-                    all_data[arch].append({
+                    all_data[key].append({
                         'board': ed.board_cards.astype(np.int16),
                         'hand': ed.hand_cards.astype(np.int16),
                         'feats': ed.state_feats.astype(np.float16),
@@ -85,12 +133,14 @@ def process_zip(zip_path, out_dir):
             eta = elapsed / (i+1) * (len(fnames)-i-1)
             print(f"  {i+1}/{len(fnames)} | {total} decs | eta {eta:.0f}s")
 
-    # Save
+    # Save — directory: <Archetype>/<ScoreBand>/<date>.npz
     total = 0
-    for arch, decs in sorted(all_data.items()):
+    for key, decs in sorted(all_data.items()):
         n = len(decs); total += n
         if n < 100: continue
-        arch_dir = os.path.join(out_dir, arch.replace(' ', '_'))
+        parts = key.split('|')
+        arch, band = parts[0], parts[1] if len(parts) > 1 else "unknown"
+        arch_dir = os.path.join(out_dir, arch.replace(' ', '_'), band.replace(' ', '_'))
         os.makedirs(arch_dir, exist_ok=True)
         fbase = zip_path.name.replace('.zip', '')
         np.savez_compressed(
@@ -108,7 +158,7 @@ def process_zip(zip_path, out_dir):
             max_c=np.array([d['max_c'] for d in decs], dtype=np.int16),
         )
         mb = os.path.getsize(os.path.join(arch_dir, f'{fbase}.npz')) / 1024**2
-        print(f"  {arch}: {n} decs, {mb:.0f}MB")
+        print(f"  {key}: {n} decs, {mb:.0f}MB")
 
     elapsed = time.time() - t0
     print(f"  Done: {total} decs in {elapsed:.0f}s ({total/max(elapsed,1):.0f} dec/s)\n")
@@ -119,10 +169,14 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("episodes_dir")
     p.add_argument("--out", default="data/bc_corpus")
+    p.add_argument("--lb-csv", default=None, help="Leaderboard CSV path (auto-download if omitted)")
     args = p.parse_args()
 
+    name_to_score = load_leaderboard_scores(args.lb_csv)
+    print(f"Leaderboard: {len(name_to_score)} teams\n")
+
     for zf in sorted(Path(args.episodes_dir).glob("*.zip")):
-        process_zip(zf, args.out)
+        process_zip(zf, args.out, name_to_score)
 
 
 if __name__ == "__main__":

@@ -101,33 +101,22 @@ class BCTrainer:
         }
 
     def _progress(self, step, total, t0, loss, pol, val):
-        pct = step / max(total, 1) * 100
         elapsed = time.time() - t0
-        eta = elapsed / max(step, 1) * (total - step)
-        bar_len = 30
-        filled = int(bar_len * step / max(total, 1))
-        bar = "█" * filled + "░" * (bar_len - filled)
-        print(f"\r  {bar} {pct:5.1f}% | {step}/{total} | "
-              f"loss={loss:.3f} pol={pol:.3f} val={val:.3f} | "
-              f"{elapsed:.0f}s elapsed, {eta:.0f}s eta   ", end="", flush=True)
-
-    def _count_batches(self, batch_size):
-        """Count total batches without loading all data (just list files + estimate)."""
-        total = 0
-        arch_dir = os.path.join(self.corpus_dir, self.archetype.replace(' ', '_'))
-        for band in self.score_bands:
-            band_dir = os.path.join(arch_dir, band.replace(' ', '_'))
-            for npz_path in sorted(glob.glob(os.path.join(band_dir, "*.npz"))):
-                # Quick count from npz header
-                with np.load(npz_path, allow_pickle=True) as data:
-                    n = len(data['board'])
-                total += (n + batch_size - 1) // batch_size
-        return total
+        if total:
+            pct = step / max(total, 1) * 100
+            eta = elapsed / max(step, 1) * (total - step)
+            bar_len = 30; filled = int(bar_len * step / max(total, 1))
+            bar = "█" * filled + "░" * (bar_len - filled)
+            print(f"\r  {bar} {pct:5.0f}% | {step}/{total} | "
+                  f"loss={loss:.3f} pol={pol:.3f} val={val:.3f} | "
+                  f"{elapsed:.0f}s {eta:.0f}s eta   ", end="", flush=True)
+        else:
+            print(f"\r  {step} batches | loss={loss:.3f} pol={pol:.3f} val={val:.3f} | "
+                  f"{elapsed:.0f}s   ", end="", flush=True)
 
     def train(self, epochs: int = 10, batch_size: int = 128, save_path: str = "checkpoints/bc_policy.npz"):
-        print("  Counting batches...", end="", flush=True)
-        n_total = self._count_batches(batch_size)
-        print(f" {n_total} total", flush=True)
+        # Dynamic: count during first epoch
+        n_total = None
 
         for epoch in range(epochs):
             total_loss = 0.0; total_pol = 0.0; total_val = 0.0; steps = 0
@@ -207,11 +196,13 @@ class BCTrainer:
                     avg_l = total_loss / steps; avg_p = total_pol / steps; avg_v = total_val / steps
                     self._progress(steps, n_total, t0, avg_l, avg_p, avg_v)
 
-            # End of epoch
+            # End of epoch — record total for future progress bars
+            if n_total is None:
+                n_total = steps
             avg_l = total_loss / max(steps, 1); avg_p = total_pol / max(steps, 1)
             avg_v = total_val / max(steps, 1)
             self._progress(steps, n_total, t0, avg_l, avg_p, avg_v)
-            print(flush=True)  # newline
+            print(flush=True)
 
         # Save
         export_numpy(self.model, save_path)

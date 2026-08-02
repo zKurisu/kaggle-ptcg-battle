@@ -109,7 +109,7 @@ class NumpyPolicy:
             score_x = np.concatenate([hx, rows, px], axis=-1)
             logits = _linear(self.w["score_fc2.weight"], self.w["score_fc2.bias"],
                            _relu(_linear(self.w["score_fc1.weight"],
-                                        self.w["score_fc1.bias"], score_x)))
+                                        self.w["score_fc1.bias"], score_x))).reshape(-1)
             logits = np.where(avail, logits, NEG_INF)
             # Apply temperature
             if temperature != 1.0:

@@ -581,6 +581,26 @@ python3 tools/bc2_accuracy.py checkpoints/bc2_marnie_v8_value_w2.npz \
     --progress-every 5000
 ```
 
+弱卡组需要进一步跑 failure report。它会输出 context/type/option-count
+错误表、多选 set-style 指标、过早 END/ATTACK、漏攻击，以及一批错例：
+
+```bash
+python3 tools/bc2_failure_report.py checkpoints/bc2_dragapult_v8_mixed_1000_w2.npz \
+    --corpus data/bc_corpus_banded_v8 \
+    --archetype "Dragapult" \
+    --score-bands "1200+" "1100-1199" "1000-1099" \
+    --max-samples 50000 \
+    --batch-size 4096 \
+    --progress-every 5000 \
+    --out-prefix logs/bc2_failure_dragapult_v8_mixed
+```
+
+重点先看：
+
+- `context=MAIN`：是否过早 END、漏攻击、错误使用关键 Trainer/Ability。
+- `TO_HAND / DISCARD / TO_DECK / TO_BENCH`：搜索/弃牌/铺场是否破坏 game plan。
+- `DAMAGE_COUNTER*`：Dragapult/Dusknoir 这类卡组的伤害分配是否稳定。
+
 Deck-specific top-k 训练可以由 stats CSV 自动规划。规则默认是：
 `top1 share >= 75%` 只训 top1；否则训 top1 和覆盖 80% 决策量的 topK。
 

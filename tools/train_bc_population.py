@@ -89,6 +89,13 @@ def build_train_cmd(args: argparse.Namespace, job: Job) -> list[str]:
     ]
     if args.include_empty:
         cmd.append("--include-empty")
+    if args.winner_only:
+        cmd.append("--winner-only")
+    cmd.extend([
+        "--win-weight", str(args.win_weight),
+        "--loss-weight", str(args.loss_weight),
+        "--draw-weight", str(args.draw_weight),
+    ])
     if args.legacy_state_pool:
         cmd.append("--legacy-state-pool")
     return cmd
@@ -108,7 +115,7 @@ def preflight_corpus(args: argparse.Namespace, archetype: str) -> tuple[int, int
 
 
 def build_accuracy_cmd(args: argparse.Namespace, job: Job) -> list[str]:
-    return [
+    cmd = [
         sys.executable,
         "tools/bc2_accuracy.py",
         str(job.save),
@@ -120,6 +127,9 @@ def build_accuracy_cmd(args: argparse.Namespace, job: Job) -> list[str]:
         "--progress-every", str(args.accuracy_progress_every),
         "--device", "cuda:0" if job.gpu is not None else args.device,
     ]
+    if args.winner_only_accuracy:
+        cmd.append("--winner-only")
+    return cmd
 
 
 def launch_job(args: argparse.Namespace, job: Job, gpu: str | None) -> None:
@@ -230,6 +240,13 @@ def main() -> None:
     p.add_argument("--first-action-weight", type=float, default=1.5)
     p.add_argument("--option-weight", type=float, default=0.15)
     p.add_argument("--include-empty", action="store_true")
+    p.add_argument("--winner-only", action="store_true",
+                   help="train only on winning-game decisions; requires outcome metadata")
+    p.add_argument("--winner-only-accuracy", action="store_true",
+                   help="evaluate post-train accuracy only on winning-game labels")
+    p.add_argument("--win-weight", type=float, default=1.0)
+    p.add_argument("--loss-weight", type=float, default=1.0)
+    p.add_argument("--draw-weight", type=float, default=1.0)
     p.add_argument("--legacy-state-pool", action="store_true",
                    help="use old pooled board encoder instead of slot-aware active/bench encoder")
     p.add_argument("--checkpoint-every", type=int, default=1)

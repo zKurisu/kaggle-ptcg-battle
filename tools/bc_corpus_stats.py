@@ -77,6 +77,7 @@ def main() -> None:
     by_deck = defaultdict(lambda: {
         "raw": 0, "kept": 0, "empty": 0, "bad": 0, "scores": [], "teams": Counter(),
         "contexts": Counter(), "option_counts": Counter(), "files": Counter(), "episodes": set(),
+        "won": 0, "draw": 0,
     })
     global_counts = Counter()
     has_sig = True
@@ -105,6 +106,10 @@ def main() -> None:
                     row["teams"][team] += 1
             if "episode_id" in data:
                 row["episodes"].add(str(data["episode_id"][i]))
+            if "won" in data:
+                row["won"] += int(data["won"][i])
+            if "draw" in data:
+                row["draw"] += int(data["draw"][i])
             if status == "keep":
                 row["contexts"][context_id(data["feats"][i])] += 1
                 row["option_counts"][opt_bucket(len(data["ot"][i]))] += 1
@@ -134,6 +139,8 @@ def main() -> None:
             "episodes": len(row["episodes"]) or "",
             "avg_score": avg_score,
             "teams": len(row["teams"]),
+            "decision_win_rate": row["won"] / max(raw, 1),
+            "decision_draw_rate": row["draw"] / max(raw, 1),
             "top_team": top_team,
             "top_context": CONTEXT_NAMES.get(top_ctx[0], str(top_ctx[0])),
             "top_context_n": top_ctx[1],
@@ -147,7 +154,8 @@ def main() -> None:
         print(
             f"  {r['deck_sig']:12s} kept={r['kept']:8d} raw={r['raw']:8d} "
             f"episodes={str(r['episodes']):>5s} avg_score={r['avg_score']:.1f} "
-            f"teams={r['teams']:4d} ctx={r['top_context']} team={r['top_team'][:30]}"
+            f"win_dec={r['decision_win_rate']:.2f} teams={r['teams']:4d} "
+            f"ctx={r['top_context']} team={r['top_team'][:30]}"
         )
 
     if args.out_csv:

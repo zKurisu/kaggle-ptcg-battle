@@ -324,8 +324,9 @@ python3 -u tools/bc_extract_v2.py ../episodes_raw \
 ### Deck Metadata and Weak BC Repair
 
 新版本 `bc_extract_v2.py` 会额外写入 `deck_sig`、`team_name`、`score`、
-`episode_id` 和 `player_index`。旧 corpus 没有这些字段，不能做
-deck-specific 训练；需要重新抽取到新目录：
+`episode_id`、`player_index`、`reward/won/draw/final_status/game_steps`。
+旧 corpus 没有这些字段，不能做 deck-specific 或 winner-aware 训练；
+需要重新抽取到新目录：
 
 ```bash
 python3 -u tools/bc_extract_v2.py ../episodes_raw \
@@ -361,6 +362,39 @@ CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
     --device cuda:0 \
     --save checkpoints/bc2_alakazam_<deck_sig>_v7sig_w2.npz \
     > logs/bc2_alakazam_<deck_sig>_v7sig_w2.log 2>&1
+```
+
+如果某个 archetype 的输局决策污染明显，可以先试 winner-only 或
+win-weighted BC：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
+    --corpus data/bc_corpus_banded_v7sig \
+    --archetype "Alakazam" \
+    --score-bands "1200+" "1100-1199" "1000-1099" \
+    --winner-only \
+    --epochs 10 \
+    --batch-size 4096 \
+    --width 2.0 \
+    --device cuda:0 \
+    --save checkpoints/bc2_alakazam_winner_only_v7sig_w2.npz \
+    > logs/bc2_alakazam_winner_only_v7sig_w2.log 2>&1
+```
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
+    --corpus data/bc_corpus_banded_v7sig \
+    --archetype "Alakazam" \
+    --score-bands "1200+" "1100-1199" "1000-1099" \
+    --win-weight 1.5 \
+    --loss-weight 0.5 \
+    --draw-weight 0.8 \
+    --epochs 10 \
+    --batch-size 4096 \
+    --width 2.0 \
+    --device cuda:0 \
+    --save checkpoints/bc2_alakazam_winweighted_v7sig_w2.npz \
+    > logs/bc2_alakazam_winweighted_v7sig_w2.log 2>&1
 ```
 
 对应 accuracy：

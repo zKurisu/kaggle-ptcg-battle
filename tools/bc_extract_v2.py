@@ -119,7 +119,9 @@ def _valid_action(action: list, sel: dict) -> bool:
 def _append_decision(all_data, encoder, obs: dict, action: list,
                      deck: list[int], band: str, *, deck_sig: str = "",
                      team_name: str = "", score: float = 0.0,
-                     episode_id: str = "", player_index: int = -1) -> bool:
+                     episode_id: str = "", player_index: int = -1,
+                     reward: float = 0.0, won: int = 0, draw: int = 0,
+                     final_status: str = "", game_steps: int = 0) -> bool:
     sel = obs.get('select')
     if sel is None or len(sel.get('option', [])) == 0:
         return False
@@ -144,6 +146,11 @@ def _append_decision(all_data, encoder, obs: dict, action: list,
         'score': float(score),
         'episode_id': episode_id,
         'player_index': int(player_index),
+        'reward': float(reward),
+        'won': int(won),
+        'draw': int(draw),
+        'final_status': final_status,
+        'game_steps': int(game_steps),
     })
     return True
 
@@ -177,6 +184,12 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
                 scores = [name_to_score.get(t, 0) for t in teams[:2]]
                 bands = [score_band(s) for s in scores]
                 episode_id = str(data.get("id") or info.get("EpisodeId") or fname.rsplit("/", 1)[-1].split(".")[0])
+                rewards = data.get("rewards") or [0.0, 0.0]
+                statuses = data.get("statuses") or ["", ""]
+                rewards = [float(rewards[j]) if j < len(rewards) and rewards[j] is not None else 0.0 for j in range(2)]
+                statuses = [str(statuses[j]) if j < len(statuses) else "" for j in range(2)]
+                draws = [int(rewards[j] == rewards[1 - j]) for j in range(2)]
+                wins = [int(rewards[j] > rewards[1 - j]) for j in range(2)]
 
                 # Kaggle episode rows store the action that answered the
                 # previous ACTIVE observation for that player.
@@ -198,6 +211,11 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
                                     score=scores[pi] if pi < len(scores) else 0.0,
                                     episode_id=episode_id,
                                     player_index=pi,
+                                    reward=rewards[pi],
+                                    won=wins[pi],
+                                    draw=draws[pi],
+                                    final_status=statuses[pi],
+                                    game_steps=len(steps),
                                 )
                                 bad_actions += 0 if ok else 1
                             except Exception:
@@ -252,6 +270,11 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
             score=np.array([d['score'] for d in decs], dtype=np.float32),
             episode_id=np.array([d['episode_id'] for d in decs], dtype=object),
             player_index=np.array([d['player_index'] for d in decs], dtype=np.int8),
+            reward=np.array([d['reward'] for d in decs], dtype=np.float32),
+            won=np.array([d['won'] for d in decs], dtype=np.int8),
+            draw=np.array([d['draw'] for d in decs], dtype=np.int8),
+            final_status=np.array([d['final_status'] for d in decs], dtype=object),
+            game_steps=np.array([d['game_steps'] for d in decs], dtype=np.int16),
         )
         mb = os.path.getsize(os.path.join(arch_dir, f'{fbase}.npz')) / 1024**2
         print(f"  {key}: {n} decs, {mb:.0f}MB")

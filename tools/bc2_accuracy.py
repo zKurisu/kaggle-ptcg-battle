@@ -111,6 +111,8 @@ def main() -> None:
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--progress-every", type=int, default=5000)
     parser.add_argument("--include-empty", action="store_true")
+    parser.add_argument("--winner-only", action="store_true",
+                        help="evaluate only labels from games this player won; requires outcome metadata")
     parser.add_argument("--out-csv", default="", help="append grouped accuracy tables to CSV")
     args = parser.parse_args()
 
@@ -157,6 +159,7 @@ def main() -> None:
         state_feat_dim=state_feat_dim,
         opt_feat_dim=opt_feat_dim,
         deck_sigs=args.deck_sig,
+        winner_only=args.winner_only,
     )
     indices = corpus.all_indices()
     if args.stride > 1:

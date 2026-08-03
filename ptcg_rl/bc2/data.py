@@ -69,6 +69,10 @@ class BCCorpus:
         state_feat_dim: int = STATE_FEAT_DIM,
         opt_feat_dim: int = OPT_FEAT_DIM,
         deck_sigs: Iterable[str] | None = None,
+        winner_only: bool = False,
+        win_weight: float = 1.0,
+        loss_weight: float = 1.0,
+        draw_weight: float = 1.0,
     ):
         if not paths:
             raise FileNotFoundError("No BC corpus .npz files found")
@@ -77,9 +81,13 @@ class BCCorpus:
         self.state_feat_dim = int(state_feat_dim)
         self.opt_feat_dim = int(opt_feat_dim)
         self.deck_sigs = {str(x) for x in (deck_sigs or []) if str(x)}
+        self.winner_only = bool(winner_only)
+        self.win_weight = float(win_weight)
+        self.loss_weight = float(loss_weight)
+        self.draw_weight = float(draw_weight)
         self.npz_data: list[dict[str, np.ndarray]] = []
         self.groups: list[list[tuple[int, int]]] = []
-        self.stats = {"raw": 0, "kept": 0, "empty": 0, "bad": 0, "deck_filtered": 0}
+        self.stats = {"raw": 0, "kept": 0, "empty": 0, "bad": 0, "deck_filtered": 0, "outcome_filtered": 0}
 
         for path in paths:
             with np.load(path, allow_pickle=True) as z:
@@ -89,12 +97,20 @@ class BCCorpus:
                     "Corpus does not contain deck_sig metadata. Re-extract with the updated "
                     "tools/bc_extract_v2.py before using --deck-sig."
                 )
+            if self.winner_only and "won" not in data:
+                raise ValueError(
+                    "Corpus does not contain outcome metadata. Re-extract with the updated "
+                    "tools/bc_extract_v2.py before using --winner-only."
+                )
             di = len(self.npz_data)
             group: list[tuple[int, int]] = []
             for i in range(len(data["board"])):
                 self.stats["raw"] += 1
                 if self.deck_sigs and str(data["deck_sig"][i]) not in self.deck_sigs:
                     self.stats["deck_filtered"] += 1
+                    continue
+                if self.winner_only and int(data["won"][i]) != 1:
+                    self.stats["outcome_filtered"] += 1
                     continue
                 status = _label_status(data, i, include_empty)
                 if status == "keep":
@@ -164,6 +180,13 @@ class BCCorpus:
             first = actions[-1][0] if actions[-1] else -1
             true_first_types.append(int(opt_type[bi, first]) if first >= 0 else -1)
             weights[bi] += self.option_weight * np.log1p(float(n))
+            if "won" in data:
+                if int(data["won"][si]) == 1:
+                    weights[bi] *= self.win_weight
+                elif "draw" in data and int(data["draw"][si]) == 1:
+                    weights[bi] *= self.draw_weight
+                else:
+                    weights[bi] *= self.loss_weight
 
         max_steps = max(len(a) for a in actions) + 1
         targets = np.full((bsz, max_steps), -1, dtype=np.int64)

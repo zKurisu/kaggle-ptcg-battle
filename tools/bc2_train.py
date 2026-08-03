@@ -59,6 +59,14 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--val-fraction", type=float, default=0.1)
     parser.add_argument("--include-empty", action="store_true")
+    parser.add_argument("--winner-only", action="store_true",
+                        help="train only on decisions from games this player won; requires outcome metadata")
+    parser.add_argument("--win-weight", type=float, default=1.0,
+                        help="sample weight multiplier for winning-game decisions when outcome metadata exists")
+    parser.add_argument("--loss-weight", type=float, default=1.0,
+                        help="sample weight multiplier for losing-game decisions when outcome metadata exists")
+    parser.add_argument("--draw-weight", type=float, default=1.0,
+                        help="sample weight multiplier for drawn-game decisions when outcome metadata exists")
     parser.add_argument("--legacy-state-pool", action="store_true",
                         help="use old pooled board encoder instead of slot-aware active/bench encoder")
     parser.add_argument("--first-action-weight", type=float, default=1.5)
@@ -76,6 +84,10 @@ def main() -> None:
         include_empty=args.include_empty,
         option_weight=args.option_weight,
         deck_sigs=args.deck_sig,
+        winner_only=args.winner_only,
+        win_weight=args.win_weight,
+        loss_weight=args.loss_weight,
+        draw_weight=args.draw_weight,
     )
     train_idx, val_idx = corpus.split_indices(args.val_fraction, args.seed)
 
@@ -89,7 +101,9 @@ def main() -> None:
     print(
         f"BC2: {args.archetype} {args.score_bands} device={device} "
         f"width={args.width} slot_state={not args.legacy_state_pool} "
-        f"deck_sigs={args.deck_sig or 'all'} params={params/1e6:.1f}M",
+        f"deck_sigs={args.deck_sig or 'all'} winner_only={args.winner_only} "
+        f"win/loss/draw_weight={args.win_weight}/{args.loss_weight}/{args.draw_weight} "
+        f"params={params/1e6:.1f}M",
         flush=True,
     )
     print(f"Corpus: files={len(paths)} stats={corpus.stats}", flush=True)

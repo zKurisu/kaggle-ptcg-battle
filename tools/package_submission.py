@@ -3,9 +3,16 @@
 import argparse
 import os
 import shutil
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+_REPO = _HERE.parent
+sys.path.insert(0, str(_REPO))
+
+from ptcg_rl.deck_registry import registry_deck_for_policy
 
 
 def _copytree(src: Path, dst: Path):
@@ -24,14 +31,25 @@ def main():
     repo = Path(__file__).resolve().parent.parent
     p = argparse.ArgumentParser()
     p.add_argument("--policy", required=True, help="trained .npz checkpoint")
-    p.add_argument("--deck", default=str(repo / "deck.csv"))
+    p.add_argument("--deck", default="")
+    p.add_argument("--registry", default="",
+                   help="CSV mapping policy_path to deck_path; used when --deck is omitted")
+    p.add_argument("--auto-deck", action="store_true",
+                   help="fail if --registry cannot resolve the policy deck")
     p.add_argument("--cg-dir", default=None,
                    help="path to cg engine directory; defaults to nearby ../cg")
     p.add_argument("--out", default=str(repo / "submission.tar.gz"))
     args = p.parse_args()
 
     policy = Path(args.policy).resolve()
-    deck = Path(args.deck).resolve()
+    deck_arg = args.deck
+    if not deck_arg and args.registry:
+        deck_arg = registry_deck_for_policy(args.registry, str(policy)) or registry_deck_for_policy(args.registry, args.policy) or ""
+    if not deck_arg:
+        if args.auto_deck:
+            raise FileNotFoundError(f"no registry deck found for policy: {policy}")
+        deck_arg = str(repo / "deck.csv")
+    deck = Path(deck_arg).resolve()
     cg_dir = Path(args.cg_dir).resolve() if args.cg_dir else _default_cg_dir(repo)
     out = Path(args.out).resolve()
 

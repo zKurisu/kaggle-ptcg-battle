@@ -9,7 +9,7 @@ Output per zip × per archetype:
     data/bc_corpus/<Archetype>/<date>.npz
 """
 
-import sys, os, hashlib, json, zipfile, time, argparse, tempfile, numpy as np
+import sys, os, json, zipfile, time, argparse, tempfile, numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import defaultdict, Counter
 from pathlib import Path
@@ -17,6 +17,8 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 _REPO = _HERE.parent; _WS = _REPO.parent
 sys.path.insert(0, str(_REPO)); sys.path.insert(0, str(_WS))
+
+from ptcg_rl.deck_registry import deck_signature
 
 ARCHETYPES = {
     "Marnie Grimmsnarl": [648], "Alakazam": [743, 245, 741, 742],
@@ -96,11 +98,6 @@ def classify(deck):
         s = sum(cnt.get(k, 0) for k in ks)
         if s > bs: bs, best = s, n
     return best if bs >= 2 else "Other"
-
-
-def deck_signature(deck: list[int]) -> str:
-    compact = ",".join(f"{card}:{count}" for card, count in sorted(Counter(map(int, deck)).items()))
-    return hashlib.sha1(compact.encode("ascii")).hexdigest()[:12]
 
 
 def _valid_action(action: list, sel: dict) -> bool:

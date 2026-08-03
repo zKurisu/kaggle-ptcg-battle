@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from ptcg_rl.numpy_policy import NumpyPolicy
+from ptcg_rl.deck_registry import registry_deck_for_policy
 
 _WORKER_A: "Entry | None" = None
 _WORKER_B: "Entry | None" = None
@@ -84,7 +85,7 @@ def policy_action(entry: Entry, obs: dict, use_mcts: bool, sims: int, time_budge
     return legal_random(sel)
 
 
-def parse_entry(spec: str, default_deck: str) -> tuple[str, str, str]:
+def parse_entry(spec: str, default_deck: str, registry: str = "") -> tuple[str, str, str]:
     """Parse NAME=POLICY[:DECK]. POLICY can be 'random'."""
     if "=" in spec:
         name, rest = spec.split("=", 1)
@@ -93,20 +94,26 @@ def parse_entry(spec: str, default_deck: str) -> tuple[str, str, str]:
         name = "random" if rest == "random" else Path(rest).stem
     parts = rest.split(":", 1)
     policy_path = parts[0]
-    deck_path = parts[1] if len(parts) == 2 else default_deck
+    if len(parts) == 2:
+        deck_path = parts[1]
+    elif registry and policy_path != "random":
+        deck_path = registry_deck_for_policy(registry, policy_path) or default_deck
+    else:
+        deck_path = default_deck
     if not name:
         raise ValueError(f"empty entry name: {spec}")
     return name, policy_path, deck_path
 
 
-def load_entries(specs: list[str], default_deck: str, include_random: bool) -> list[Entry]:
+def load_entries(specs: list[str], default_deck: str, include_random: bool,
+                 registry: str = "") -> list[Entry]:
     entries: list[Entry] = []
     if include_random:
         specs = [f"random=random:{default_deck}"] + specs
 
     seen: set[str] = set()
     for spec in specs:
-        name, policy_path, deck_path = parse_entry(spec, default_deck)
+        name, policy_path, deck_path = parse_entry(spec, default_deck, registry)
         if name in seen:
             raise ValueError(f"duplicate entry name: {name}")
         seen.add(name)
@@ -283,6 +290,8 @@ def main() -> None:
     p.add_argument("--policy", action="append", default=[],
                    help="Shortcut for --entry basename=POLICY using --deck.")
     p.add_argument("--deck", default="deck.csv", help="default deck for entries without :DECK")
+    p.add_argument("--registry", default="",
+                   help="CSV mapping policy_path to deck_path for entries without explicit :DECK")
     p.add_argument("--include-random", action="store_true", help="prepend random=random:DECK")
     p.add_argument("--games", type=int, default=50, help="games per pair")
     p.add_argument("--mcts", action="store_true", help="use NumpyPolicy.select_mcts for policy entries")
@@ -306,7 +315,7 @@ def main() -> None:
     specs = list(args.entry)
     for policy in args.policy:
         specs.append(f"{Path(policy).stem}={policy}")
-    entries = load_entries(specs, args.deck, args.include_random)
+    entries = load_entries(specs, args.deck, args.include_random, args.registry)
 
     mode = f"MCTS sims={args.mcts_sims} budget={args.time_budget}s" if args.mcts else "greedy"
     print(f"Round-robin: {len(entries)} entries, {args.games} games/pair, {mode}", flush=True)

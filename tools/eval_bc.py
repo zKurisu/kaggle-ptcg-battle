@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from ptcg_rl.numpy_policy import NumpyPolicy
+from ptcg_rl.deck_registry import registry_deck_for_policy
 
 _WORKER_POLICY = None
 _WORKER_DECK = None
@@ -150,7 +151,11 @@ def eval_vs_random(policy, deck, policy_path, games=20, use_mcts=False, sims=48,
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("policy", help="path to policy.npz")
-    p.add_argument("--deck", default="deck.csv")
+    p.add_argument("--deck", default="")
+    p.add_argument("--registry", default="",
+                   help="CSV mapping policy_path to deck_path; used when --deck is omitted")
+    p.add_argument("--auto-deck", action="store_true",
+                   help="resolve --deck from --registry; implied when --registry is passed without --deck")
     p.add_argument("--games", type=int, default=20)
     p.add_argument("--mcts", action="store_true",
                    help="evaluate with the same policy.select_mcts fallback used by main.py")
@@ -164,6 +169,13 @@ def main():
                    help="parallel game worker processes; each worker loads the policy once")
     p.add_argument("--seed", type=int, default=1)
     args = p.parse_args()
+
+    if not args.deck and args.registry:
+        args.deck = registry_deck_for_policy(args.registry, args.policy) or ""
+    if not args.deck:
+        args.deck = "deck.csv"
+        if args.auto_deck:
+            raise FileNotFoundError(f"no registry deck found for policy: {args.policy}")
 
     policy = NumpyPolicy.load(args.policy)
     deck = load_deck(args.deck)

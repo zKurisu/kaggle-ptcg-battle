@@ -410,6 +410,35 @@ python3 tools/bc2_accuracy.py checkpoints/bc2_alakazam_<deck_sig>_v7sig_w2.npz \
     --progress-every 5000
 ```
 
+### Policy-Deck Registry
+
+为避免 checkpoint 和 deck CSV 手动错配，先从 ladder pool 生成 registry：
+
+```bash
+python3 tools/build_policy_registry.py \
+    --checkpoint-glob "checkpoints/*v7sig*.npz" \
+    --manifest logs/ladder_pool_v2/pool_manifest.csv \
+    --out logs/policy_deck_registry_v7sig.csv
+```
+
+之后评测或打包时可以省略 `--deck`：
+
+```bash
+python3 tools/eval_bc.py checkpoints/bc2_alakazam_cee_winweighted_v7sig_w2.npz \
+    --registry logs/policy_deck_registry_v7sig.csv \
+    --auto-deck \
+    --games 500 \
+    --workers 8
+```
+
+```bash
+python3 tools/package_submission.py \
+    --policy checkpoints/bc2_alakazam_cee_winweighted_v7sig_w2.npz \
+    --registry logs/policy_deck_registry_v7sig.csv \
+    --auto-deck \
+    --out submission.tar.gz
+```
+
 ## Kaggle 提交
 
 ```bash

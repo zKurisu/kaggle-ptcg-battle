@@ -613,6 +613,8 @@ python3 -u tools/bc_extract_v2.py ../episodes_raw \
 
 Deck-specific top-k 训练可以由 stats CSV 自动规划。规则默认是：
 `top1 share >= 75%` 只训 top1；否则训 top1 和覆盖 80% 决策量的 topK。
+Mega Lucario 和 Mega Lopunny 这类特殊卡组不要直接套通用批量脚本，具体配方见
+`docs/07_specialist_bc_recipes.md`。
 
 ```bash
 python3 tools/plan_deck_specific_bc.py \

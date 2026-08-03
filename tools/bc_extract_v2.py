@@ -99,8 +99,8 @@ def classify(deck):
 
 
 def deck_signature(deck: list[int]) -> str:
-    ids = " ".join(str(int(x)) for x in sorted(deck))
-    return hashlib.sha1(ids.encode("utf-8")).hexdigest()[:12]
+    compact = ",".join(f"{card}:{count}" for card, count in sorted(Counter(map(int, deck)).items()))
+    return hashlib.sha1(compact.encode("ascii")).hexdigest()[:12]
 
 
 def _valid_action(action: list, sel: dict) -> bool:

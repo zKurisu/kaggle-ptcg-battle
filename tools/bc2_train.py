@@ -197,7 +197,17 @@ def main() -> None:
         multi_select_weight=args.multi_select_weight,
         load_progress_every=args.load_progress_every,
     )
+    if corpus.stats["kept"] <= 0:
+        raise RuntimeError(
+            "No training samples kept after filters. Check --score-bands, --deck-sig, "
+            "--winner-only, and corpus path before training."
+        )
     train_idx, val_idx = corpus.split_indices(args.val_fraction, args.seed)
+    if len(train_idx) < 2 or len(val_idx) < 1:
+        raise RuntimeError(
+            f"Not enough samples after split: train={len(train_idx)} val={len(val_idx)}. "
+            "Relax filters or lower --val-fraction."
+        )
 
     model = PolicyValueNet(width=args.width, slot_state=not args.legacy_state_pool).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)

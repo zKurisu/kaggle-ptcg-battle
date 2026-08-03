@@ -228,6 +228,12 @@ def train_cmd(args: argparse.Namespace, row: dict) -> str:
             row["save"],
         ]
     )
+    for spec in args.context_weight:
+        cmd.extend(["--context-weight", spec])
+    for spec in args.type_weight:
+        cmd.extend(["--type-weight", spec])
+    if args.multi_select_weight != 1.0:
+        cmd.extend(["--multi-select-weight", str(args.multi_select_weight)])
     if args.winner_only:
         cmd.append("--winner-only")
     if args.legacy_state_pool:
@@ -410,6 +416,11 @@ def main() -> None:
     p.add_argument("--width", type=float, default=2.0)
     p.add_argument("--first-action-weight", type=float, default=1.5)
     p.add_argument("--option-weight", type=float, default=0.15)
+    p.add_argument("--context-weight", action="append", default=[],
+                   help="repeatable context multiplier passed to bc2_train.py")
+    p.add_argument("--type-weight", action="append", default=[],
+                   help="repeatable option type multiplier passed to bc2_train.py")
+    p.add_argument("--multi-select-weight", type=float, default=1.0)
     p.add_argument("--win-weight", type=float, default=1.5)
     p.add_argument("--loss-weight", type=float, default=0.4)
     p.add_argument("--draw-weight", type=float, default=0.8)

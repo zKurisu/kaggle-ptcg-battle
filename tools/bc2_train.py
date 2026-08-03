@@ -18,6 +18,92 @@ from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, sequence_nll
 from ptcg_rl.model import PolicyValueNet
 
 
+CONTEXT_IDS = {
+    "MAIN": 0,
+    "SETUP_ACTIVE": 1,
+    "SETUP_BENCH": 2,
+    "SWITCH": 3,
+    "TO_ACTIVE": 4,
+    "TO_BENCH": 5,
+    "TO_FIELD": 6,
+    "TO_HAND": 7,
+    "DISCARD": 8,
+    "TO_DECK": 9,
+    "TO_DECK_BOTTOM": 10,
+    "TO_PRIZE": 11,
+    "NOT_MOVE": 12,
+    "DAMAGE_COUNTER": 13,
+    "DAMAGE_COUNTER_ANY": 14,
+    "DAMAGE": 15,
+    "REMOVE_DAMAGE_COUNTER": 16,
+    "HEAL": 17,
+    "EVOLVES_FROM": 18,
+    "EVOLVES_TO": 19,
+    "DEVOLVE": 20,
+    "ATTACH_FROM": 21,
+    "ATTACH_TO": 22,
+    "DETACH_FROM": 23,
+    "LOOK": 24,
+    "EFFECT_TARGET": 25,
+    "DISCARD_ENERGY_CARD": 26,
+    "DISCARD_TOOL_CARD": 27,
+    "SWITCH_ENERGY_CARD": 28,
+    "DISCARD_CARD_OR_ATTACHED_CARD": 29,
+    "DISCARD_ENERGY": 30,
+    "TO_HAND_ENERGY": 31,
+    "TO_DECK_ENERGY": 32,
+    "SWITCH_ENERGY": 33,
+    "SKILL_ORDER": 34,
+    "ATTACK": 35,
+    "DISABLE_ATTACK": 36,
+    "EVOLVE": 37,
+    "DRAW_COUNT": 38,
+    "DAMAGE_COUNTER_COUNT": 39,
+    "REMOVE_DAMAGE_COUNTER_COUNT": 40,
+    "IS_FIRST": 41,
+    "MULLIGAN": 42,
+    "ACTIVATE": 43,
+}
+
+TYPE_IDS = {
+    "NUMBER": 0,
+    "YES": 1,
+    "NO": 2,
+    "CARD": 3,
+    "TOOL_CARD": 4,
+    "ENERGY_CARD": 5,
+    "ENERGY": 6,
+    "PLAY": 7,
+    "ATTACH": 8,
+    "EVOLVE": 9,
+    "ABILITY": 10,
+    "DISCARD": 11,
+    "RETREAT": 12,
+    "ATTACK": 13,
+    "END": 14,
+    "SKILL": 15,
+    "SPECIAL_CONDITION": 16,
+}
+
+
+def _parse_weight_specs(specs: list[str], names: dict[str, int], label: str) -> dict[int, float]:
+    out: dict[int, float] = {}
+    for spec in specs:
+        if "=" not in spec:
+            raise ValueError(f"{label} weight must be NAME=WEIGHT or ID=WEIGHT, got {spec!r}")
+        key, value = spec.split("=", 1)
+        key = key.strip().upper()
+        if key.lstrip("-").isdigit():
+            idx = int(key)
+        elif key in names:
+            idx = names[key]
+        else:
+            known = ", ".join(sorted(names)[:12])
+            raise ValueError(f"unknown {label} {key!r}; use numeric id or one of: {known}, ...")
+        out[idx] = float(value)
+    return out
+
+
 def _save_npz(model: torch.nn.Module, path: str) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     np.savez_compressed(path, **{k: v.detach().cpu().numpy() for k, v in model.state_dict().items()})
@@ -81,6 +167,12 @@ def main() -> None:
     parser.add_argument("--value-weight", type=float, default=0.0,
                         help="optional auxiliary outcome-value MSE weight; requires outcome metadata")
     parser.add_argument("--option-weight", type=float, default=0.15)
+    parser.add_argument("--context-weight", action="append", default=[],
+                        help="repeatable context multiplier, e.g. MAIN=2.0 or 21=2.5")
+    parser.add_argument("--type-weight", action="append", default=[],
+                        help="repeatable true first option type multiplier, e.g. ATTACK=2.5")
+    parser.add_argument("--multi-select-weight", type=float, default=1.0,
+                        help="sample multiplier when the labeled action selects more than one option")
     parser.add_argument("--checkpoint-every", type=int, default=1)
     parser.add_argument("--save", default="checkpoints/bc2_marnie_w2.npz")
     args = parser.parse_args()
@@ -89,6 +181,8 @@ def main() -> None:
     torch.manual_seed(args.seed)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     paths = discover_npz_paths(args.corpus, args.archetype, args.score_bands)
+    context_weights = _parse_weight_specs(args.context_weight, CONTEXT_IDS, "context")
+    type_weights = _parse_weight_specs(args.type_weight, TYPE_IDS, "type")
     corpus = BCCorpus(
         paths,
         include_empty=args.include_empty,
@@ -98,6 +192,9 @@ def main() -> None:
         win_weight=args.win_weight,
         loss_weight=args.loss_weight,
         draw_weight=args.draw_weight,
+        context_weights=context_weights,
+        type_weights=type_weights,
+        multi_select_weight=args.multi_select_weight,
         load_progress_every=args.load_progress_every,
     )
     train_idx, val_idx = corpus.split_indices(args.val_fraction, args.seed)
@@ -114,6 +211,8 @@ def main() -> None:
         f"width={args.width} slot_state={not args.legacy_state_pool} "
         f"deck_sigs={args.deck_sig or 'all'} winner_only={args.winner_only} "
         f"win/loss/draw_weight={args.win_weight}/{args.loss_weight}/{args.draw_weight} "
+        f"context_weights={context_weights or '{}'} type_weights={type_weights or '{}'} "
+        f"multi_select_weight={args.multi_select_weight} "
         f"params={params/1e6:.1f}M",
         flush=True,
     )

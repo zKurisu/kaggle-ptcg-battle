@@ -17,6 +17,7 @@ _REPO = _HERE.parent
 sys.path.insert(0, str(_REPO))
 
 from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, greedy_decode
+from ptcg_rl.deck_plans import get_plan, tag_cards
 from ptcg_rl.model import PolicyValueNet
 from tools.bc2_accuracy import CONTEXT_NAMES, OPT_NAMES, SET_CONTEXTS, first_action_topk
 
@@ -221,6 +222,7 @@ def main() -> None:
     p.add_argument("--out-prefix", default="")
     args = p.parse_args()
 
+    plan = get_plan(args.archetype)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     model, state_feat_dim, opt_feat_dim = _load_model(args.policy, args.width, device)
     paths = discover_npz_paths(args.corpus, args.archetype, args.score_bands)
@@ -279,6 +281,8 @@ def main() -> None:
             confusion[(true_type, pred_type)] += 1
             if not exact_ok and len(examples) < args.max_examples:
                 meta = _row_id(corpus, idx)
+                true_cards = _seq_cards(batch, bi, true)
+                pred_cards = _seq_cards(batch, bi, pred)
                 examples.append({
                     **meta,
                     "context": ctx,
@@ -290,8 +294,10 @@ def main() -> None:
                     "pred_action": " ".join(map(str, pred)),
                     "true_types": " ".join(OPT_NAMES.get(x, str(x)) for x in _seq_types(batch, bi, true)),
                     "pred_types": " ".join(OPT_NAMES.get(x, str(x)) for x in _seq_types(batch, bi, pred)),
-                    "true_cards": " ".join(map(str, _seq_cards(batch, bi, true))),
-                    "pred_cards": " ".join(map(str, _seq_cards(batch, bi, pred))),
+                    "true_cards": " ".join(map(str, true_cards)),
+                    "pred_cards": " ".join(map(str, pred_cards)),
+                    "true_plan_tags": " ".join(tag_cards(plan, true_cards)),
+                    "pred_plan_tags": " ".join(tag_cards(plan, pred_cards)),
                     "top3_first": " ".join(map(str, topk[bi])),
                 })
         if next_progress is not None and (n >= next_progress or n == len(indices)):
@@ -327,6 +333,8 @@ def main() -> None:
             w.writerow([tt, OPT_NAMES.get(tt, "STOP"), pt, OPT_NAMES.get(pt, "STOP"), cnt])
 
     print(f"Policy: {args.policy}")
+    if plan:
+        print(f"Deck plan: {plan.archetype}")
     print(f"Samples: {n} from {len(paths)} files")
     print(f"Corpus labels: {corpus.stats}")
     print(f"Exact={exact/max(n,1):.3f} First={first/max(n,1):.3f} Top3={top3/max(n,1):.3f}")

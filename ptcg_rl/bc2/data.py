@@ -68,6 +68,7 @@ class BCCorpus:
         option_weight: float = 0.0,
         state_feat_dim: int = STATE_FEAT_DIM,
         opt_feat_dim: int = OPT_FEAT_DIM,
+        deck_sigs: Iterable[str] | None = None,
     ):
         if not paths:
             raise FileNotFoundError("No BC corpus .npz files found")
@@ -75,17 +76,26 @@ class BCCorpus:
         self.option_weight = float(option_weight)
         self.state_feat_dim = int(state_feat_dim)
         self.opt_feat_dim = int(opt_feat_dim)
+        self.deck_sigs = {str(x) for x in (deck_sigs or []) if str(x)}
         self.npz_data: list[dict[str, np.ndarray]] = []
         self.groups: list[list[tuple[int, int]]] = []
-        self.stats = {"raw": 0, "kept": 0, "empty": 0, "bad": 0}
+        self.stats = {"raw": 0, "kept": 0, "empty": 0, "bad": 0, "deck_filtered": 0}
 
         for path in paths:
             with np.load(path, allow_pickle=True) as z:
                 data = {k: z[k] for k in z.files}
+            if self.deck_sigs and "deck_sig" not in data:
+                raise ValueError(
+                    "Corpus does not contain deck_sig metadata. Re-extract with the updated "
+                    "tools/bc_extract_v2.py before using --deck-sig."
+                )
             di = len(self.npz_data)
             group: list[tuple[int, int]] = []
             for i in range(len(data["board"])):
                 self.stats["raw"] += 1
+                if self.deck_sigs and str(data["deck_sig"][i]) not in self.deck_sigs:
+                    self.stats["deck_filtered"] += 1
+                    continue
                 status = _label_status(data, i, include_empty)
                 if status == "keep":
                     group.append((di, i))

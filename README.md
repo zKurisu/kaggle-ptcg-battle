@@ -321,6 +321,61 @@ python3 -u tools/bc_extract_v2.py ../episodes_raw \
     > logs/bc_extract_v6wide.log 2>&1
 ```
 
+### Deck Metadata and Weak BC Repair
+
+新版本 `bc_extract_v2.py` 会额外写入 `deck_sig`、`team_name`、`score`、
+`episode_id` 和 `player_index`。旧 corpus 没有这些字段，不能做
+deck-specific 训练；需要重新抽取到新目录：
+
+```bash
+python3 -u tools/bc_extract_v2.py ../episodes_raw \
+    --out data/bc_corpus_banded_v7sig \
+    --workers 9 \
+    --progress-every 500 \
+    > logs/bc_extract_v7sig.log 2>&1
+```
+
+诊断某个弱 BC 是否由 deck 混杂导致：
+
+```bash
+python3 tools/bc_corpus_stats.py \
+    --corpus data/bc_corpus_banded_v7sig \
+    --archetype "Alakazam" \
+    --score-bands "1200+" "1100-1199" "1000-1099" \
+    --top 20 \
+    --out-csv logs/bc_corpus_stats_alakazam_v7sig.csv
+```
+
+如果 top deck signature 之间样本量差异很大，或 team/score 分布混杂，
+优先训练 deck-specific BC：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
+    --corpus data/bc_corpus_banded_v7sig \
+    --archetype "Alakazam" \
+    --score-bands "1200+" "1100-1199" "1000-1099" \
+    --deck-sig <deck_sig> \
+    --epochs 10 \
+    --batch-size 2048 \
+    --width 2.0 \
+    --device cuda:0 \
+    --save checkpoints/bc2_alakazam_<deck_sig>_v7sig_w2.npz \
+    > logs/bc2_alakazam_<deck_sig>_v7sig_w2.log 2>&1
+```
+
+对应 accuracy：
+
+```bash
+python3 tools/bc2_accuracy.py checkpoints/bc2_alakazam_<deck_sig>_v7sig_w2.npz \
+    --corpus data/bc_corpus_banded_v7sig \
+    --archetype "Alakazam" \
+    --score-bands "1200+" "1100-1199" "1000-1099" \
+    --deck-sig <deck_sig> \
+    --max-samples 50000 \
+    --batch-size 4096 \
+    --progress-every 5000
+```
+
 ## Kaggle 提交
 
 ```bash

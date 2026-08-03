@@ -49,6 +49,8 @@ def main() -> None:
     parser.add_argument("--corpus", default="data/bc_corpus_banded_v4")
     parser.add_argument("--archetype", default="Marnie Grimmsnarl")
     parser.add_argument("--score-bands", nargs="+", default=["1200+", "1100-1199", "1000-1099"])
+    parser.add_argument("--deck-sig", action="append", default=[],
+                        help="filter to one or more deck signatures; repeatable. Requires freshly extracted corpus metadata.")
     parser.add_argument("--epochs", type=int, default=12)
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -69,7 +71,12 @@ def main() -> None:
     torch.manual_seed(args.seed)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     paths = discover_npz_paths(args.corpus, args.archetype, args.score_bands)
-    corpus = BCCorpus(paths, include_empty=args.include_empty, option_weight=args.option_weight)
+    corpus = BCCorpus(
+        paths,
+        include_empty=args.include_empty,
+        option_weight=args.option_weight,
+        deck_sigs=args.deck_sig,
+    )
     train_idx, val_idx = corpus.split_indices(args.val_fraction, args.seed)
 
     model = PolicyValueNet(width=args.width, slot_state=not args.legacy_state_pool).to(device)
@@ -81,7 +88,8 @@ def main() -> None:
 
     print(
         f"BC2: {args.archetype} {args.score_bands} device={device} "
-        f"width={args.width} slot_state={not args.legacy_state_pool} params={params/1e6:.1f}M",
+        f"width={args.width} slot_state={not args.legacy_state_pool} "
+        f"deck_sigs={args.deck_sig or 'all'} params={params/1e6:.1f}M",
         flush=True,
     )
     print(f"Corpus: files={len(paths)} stats={corpus.stats}", flush=True)

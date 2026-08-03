@@ -9,7 +9,7 @@ Output per zip × per archetype:
     data/bc_corpus/<Archetype>/<date>.npz
 """
 
-import sys, os, json, zipfile, time, argparse, tempfile, numpy as np
+import sys, os, hashlib, json, zipfile, time, argparse, tempfile, numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import defaultdict, Counter
 from pathlib import Path
@@ -98,6 +98,11 @@ def classify(deck):
     return best if bs >= 2 else "Other"
 
 
+def deck_signature(deck: list[int]) -> str:
+    ids = " ".join(str(int(x)) for x in sorted(deck))
+    return hashlib.sha1(ids.encode("utf-8")).hexdigest()[:12]
+
+
 def _valid_action(action: list, sel: dict) -> bool:
     n_opt = len(sel.get('option', []))
     mn = int(sel.get('minCount', 0))
@@ -112,7 +117,9 @@ def _valid_action(action: list, sel: dict) -> bool:
 
 
 def _append_decision(all_data, encoder, obs: dict, action: list,
-                     deck: list[int], band: str) -> bool:
+                     deck: list[int], band: str, *, deck_sig: str = "",
+                     team_name: str = "", score: float = 0.0,
+                     episode_id: str = "", player_index: int = -1) -> bool:
     sel = obs.get('select')
     if sel is None or len(sel.get('option', [])) == 0:
         return False
@@ -132,6 +139,11 @@ def _append_decision(all_data, encoder, obs: dict, action: list,
         'of': ed.opt_feats.astype(np.float16),
         'action': np.array(action, dtype=np.int16),
         'min_c': ed.min_count, 'max_c': ed.max_count,
+        'deck_sig': deck_sig,
+        'team_name': team_name,
+        'score': float(score),
+        'episode_id': episode_id,
+        'player_index': int(player_index),
     })
     return True
 
@@ -157,12 +169,14 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
                 if len(decks_raw) != 2: continue
                 decks = [decks_raw[0], decks_raw[1]]
                 if len(decks[0]) != 60 or len(decks[1]) != 60: continue
+                deck_sigs = [deck_signature(decks[0]), deck_signature(decks[1])]
 
                 # Get scores from team names
                 info = data.get('info', {})
                 teams = info.get('TeamNames', [])
                 scores = [name_to_score.get(t, 0) for t in teams[:2]]
                 bands = [score_band(s) for s in scores]
+                episode_id = str(data.get("id") or info.get("EpisodeId") or fname.rsplit("/", 1)[-1].split(".")[0])
 
                 # Kaggle episode rows store the action that answered the
                 # previous ACTIVE observation for that player.
@@ -177,7 +191,14 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
                             obs_prev = pending[pi]
                             band = bands[pi] if pi < len(bands) else "unknown"
                             try:
-                                ok = _append_decision(all_data, encoder, obs_prev, action, decks[pi], band)
+                                ok = _append_decision(
+                                    all_data, encoder, obs_prev, action, decks[pi], band,
+                                    deck_sig=deck_sigs[pi],
+                                    team_name=teams[pi] if pi < len(teams) else "",
+                                    score=scores[pi] if pi < len(scores) else 0.0,
+                                    episode_id=episode_id,
+                                    player_index=pi,
+                                )
                                 bad_actions += 0 if ok else 1
                             except Exception:
                                 errors += 1
@@ -226,6 +247,11 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
             action=np.array([d['action'] for d in decs], dtype=object),
             min_c=np.array([d['min_c'] for d in decs], dtype=np.int16),
             max_c=np.array([d['max_c'] for d in decs], dtype=np.int16),
+            deck_sig=np.array([d['deck_sig'] for d in decs], dtype=object),
+            team_name=np.array([d['team_name'] for d in decs], dtype=object),
+            score=np.array([d['score'] for d in decs], dtype=np.float32),
+            episode_id=np.array([d['episode_id'] for d in decs], dtype=object),
+            player_index=np.array([d['player_index'] for d in decs], dtype=np.int8),
         )
         mb = os.path.getsize(os.path.join(arch_dir, f'{fbase}.npz')) / 1024**2
         print(f"  {key}: {n} decs, {mb:.0f}MB")

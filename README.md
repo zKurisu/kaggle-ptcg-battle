@@ -1,660 +1,1007 @@
 # PTCG RL Training Pipeline
 
-Pokémon TCG AI Battle 强化学习训练管线。
+Pokemon TCG AI Battle 的 BC/RL 训练、评测、Kaggle 提交流程。
 
-## 环境搭建
+这份 README 是操作手册，按真实工作顺序组织：
+
+1. 下载 Kaggle replay / episode 数据
+2. 抽取 BC corpus
+3. 统计环境和卡组分布
+4. 选择 deck signature 和训练方案
+5. 训练单个 checkpoint 或批量 population
+6. 建立 checkpoint -> deck registry
+7. 做 accuracy / random / round-robin / Kaggle replay 分析
+8. 打包和提交
+9. 根据结果迭代
+
+## 0. 环境和目录
+
+推荐在远端训练机运行，路径约定如下：
 
 ```bash
-# 依赖
+cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git
+mkdir -p logs checkpoints data
+```
+
+引擎目录需要能被打包脚本找到，通常在 repo 邻近目录：
+
+```bash
+ls ../cg/libcg.so
+```
+
+最小依赖：
+
+```bash
 pip install torch numpy
-
-# 确保 cg/ 引擎在 workspace 根目录
-ls /home/jie/Do/0_PTCG/workspace/cg/libcg.so  # 应该存在
-
-# 克隆
-cd /home/jie/Do/0_PTCG/workspace
-git clone <repo> ptcg_rl_git
-cd ptcg_rl_git
 ```
 
-## 目录结构
+常用目录：
 
-```
-ptcg_rl_git/
-├── README.md              ← 本文件
-├── docs/                  ← 文档
-│   ├── 01_architecture.md
-│   ├── 02_meta_analysis.md
-│   ├── 03_roadmap.md
-│   ├── 04_bc_extraction.md
-│   ├── 05_rl_training.md
-│   └── 06_bc_design.md
-├── tools/                 ← 工具脚本
-│   ├── bc_extract_v2.py   ← 提取 Kaggle episode → 训练数据
-│   ├── bc_trainer.py      ← BC 模仿学习训练
-│   ├── deck_battle.py     ← 本地卡组对战测试
-│   ├── ladder_decks.py    ← 天梯卡组分类
-│   └── convert_deck.py    ← PTCGL 文本 → deck.csv
-├── agents/                ← 规则型 agent
-│   └── marnie_grimmsnarl.py
-├── ptcg_rl/               ← 核心库
-│   ├── encoder.py         ← FastEncoder (0.21ms/decision)
-│   ├── model.py           ← PolicyValueNet (501K params)
-│   ├── trainer.py         ← PPO 训练器
-│   └── numpy_policy.py    ← Kaggle 提交推理 (无 torch)
-├── deck.csv               ← 主卡组 (Marnie Grimmsnarl)
-├── decks/                 ← 对手卡组池 (30 套)
-├── train.py               ← RL 训练入口
-└── main.py                ← Kaggle 提交 agent
+```text
+../episodes_raw/                 Kaggle daily episode zip
+data/bc_corpus_banded_v*/        抽取后的 BC corpus
+logs/ladder_pool_*/              ladder 对手池、deck manifest、统计
+logs/opp_decks_*/                从 Kaggle replay 提取的对手 deck
+checkpoints/*.npz                BC checkpoint
+submission.tar.gz                Kaggle 提交包
 ```
 
-## 数据准备
+## 1. 下载 Kaggle Episode 数据
 
-### 1. 下载 Kaggle Episode 数据
+在 repo 外层放原始 zip，避免误提交大文件：
 
 ```bash
-# 在 workspace 根目录
-mkdir episodes_raw && cd episodes_raw
+cd /home/jie/Do/0_PTCG/workspace
+mkdir -p episodes_raw
+cd episodes_raw
 
-# 下载最近几天（每天 ~710MB 压缩，解压后 ~21GB）
+kaggle datasets download kaggle/pokemon-tcg-ai-battle-episodes-2026-08-02
 kaggle datasets download kaggle/pokemon-tcg-ai-battle-episodes-2026-08-01
+kaggle datasets download kaggle/pokemon-tcg-ai-battle-episodes-2026-07-31
 kaggle datasets download kaggle/pokemon-tcg-ai-battle-episodes-2026-07-30
 kaggle datasets download kaggle/pokemon-tcg-ai-battle-episodes-2026-07-29
 kaggle datasets download kaggle/pokemon-tcg-ai-battle-episodes-2026-07-28
 ```
 
-### 2. 提取决策数据（按卡组 + 分数段分类）
+不要手动解压。`bc_extract_v2.py`、`build_ladder_pool.py` 会直接读取 zip。
+
+如果在本机下载更快，再传到训练机：
 
 ```bash
-cd ptcg_rl_git
+scp /home/jie/Do/0_PTCG/raw_episode/*.zip \
+  ks:/home/jie/Do/0_PTCG/workspace/episodes_raw/
+```
 
-# 下载排行榜（用于分数段标记）
+## 2. 下载 Leaderboard CSV
+
+Leaderboard 用来给 episode 标记 score band。
+
+```bash
+mkdir -p /tmp/lb
 kaggle competitions leaderboard pokemon-tcg-ai-battle --download -p /tmp/lb
-unzip -o /tmp/lb/pokemon-tcg-ai-battle.zip -d /tmp/lb/
-
-# 提取（~10 分钟/天，500K-1.5M decisions）
+unzip -o /tmp/lb/pokemon-tcg-ai-battle.zip -d /tmp/lb
 LB_CSV=$(ls /tmp/lb/*.csv | head -1)
-python3 -u tools/bc_extract_v2.py ../episodes_raw/ \
-    --out data/bc_corpus_banded/ \
-    --lb-csv "$LB_CSV"
+echo "$LB_CSV"
 ```
 
-输出结构：
-```
-data/bc_corpus_banded/
-  Marnie_Grimmsnarl/
-    1200+/            ← 顶尖高手决策
-    1100-1199/
-    1000-1099/
-    ...
-  Alakazam/
-    1200+/
-    ...
-```
+如果 `bc_extract_v2.py --lb-csv` 省略，脚本会尝试自动下载；但为了可复现，推荐显式传 `LB_CSV`。
 
-## 训练流程
+## 3. 抽取 BC Corpus
 
-### BC2 模仿学习（当前主线）
+当前主线使用 `bc_extract_v2.py`。它会写入：
 
-`bc2` 是新的干净训练入口：仍然输出可被 `main.py`/`numpy_policy.py`
-直接加载的 `.npz`，但数据加载、过滤、mask、loss 和诊断已经拆成独立模块。
-默认会提高第一步动作和大候选集合的权重，因为当前弱点主要集中在
-`TO_HAND`、`ATTACK`、`ABILITY` 和 6+ 候选的排序。
+- `state` / `options` / `actions`
+- `archetype`
+- `score_band`
+- `deck_sig`
+- `team_name`
+- `score`
+- `episode_id`
+- `player_index`
+- `reward` / `won` / `draw`
+- `final_status` / `game_steps`
 
-2026-08-02 之后的 encoder 修复了 `Play`/`Skill` option 没有卡牌身份的问题，
-并且模型新增了 `context/area/index` embedding。建议重新抽取到 v4：
+这些字段是 deck-specific、winner-aware、trajectory-aware 训练的基础。
 
 ```bash
-LB_CSV=$(ls /tmp/lb/*.csv | head -1)
+cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git
+mkdir -p logs data
+
 python3 -u tools/bc_extract_v2.py ../episodes_raw \
-    --out data/bc_corpus_banded_v4 \
-    --lb-csv "$LB_CSV" \
-    --workers 4 \
-    > logs/bc_extract_v4.log 2>&1
+  --out data/bc_corpus_banded_v9 \
+  --lb-csv "$LB_CSV" \
+  --workers 9 \
+  --progress-every 500 \
+  2>&1 | tee logs/bc_extract_v9.log
 ```
 
-训练前先审计 raw option 字段，确认低分场景的 option 身份是否已被暴露：
+抽取前后可以审计原始 option 身份是否完整：
 
 ```bash
 python3 tools/audit_episode_options.py ../episodes_raw \
-    --max-episodes 2000 \
-    --option-types PLAY ABILITY ATTACK SKILL CARD
+  --max-episodes 2000 \
+  --option-types PLAY ABILITY ATTACK SKILL CARD \
+  --progress-every 200
 ```
+
+如果改了 encoder、option 特征、deck metadata、game-plan 特征，就需要重新抽取 corpus；只改训练 loss 或权重不需要重新抽取。
+
+## 4. 看当天环境和卡组分布
+
+### 4.1 构建 Ladder Pool
+
+`build_ladder_pool.py` 从 daily episodes 和个人 Kaggle replay loss deck 中抽取对手池。
 
 ```bash
-mkdir -p logs checkpoints
-CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
-    --corpus data/bc_corpus_banded_v4 \
-    --archetype "Marnie Grimmsnarl" \
-    --score-bands "1200+" "1100-1199" "1000-1099" \
-    --epochs 12 --batch-size 4096 --width 2.0 --device cuda:0 \
-    --first-action-weight 1.5 --option-weight 0.15 \
-    --checkpoint-every 1 \
-    --save checkpoints/bc2_marnie_1000_w2.npz \
-    > logs/bc2_marnie_1000_w2.log 2>&1
+python3 tools/build_ladder_pool.py \
+  --episodes-dir ../episodes_raw \
+  --out logs/ladder_pool_0802_all \
+  --lb-csv "$LB_CSV" \
+  --top 120 \
+  --min-games 1 \
+  --workers 9 \
+  --progress-every 1000
 ```
 
-离线 first-action/分场景诊断：
+如果已有自己提交输过的对手 deck，加入 personal loss 权重：
 
 ```bash
-python3 tools/bc2_accuracy.py checkpoints/bc2_marnie_1000_w2.npz \
-    --corpus data/bc_corpus_banded_v4 \
-    --archetype "Marnie Grimmsnarl" \
-    --score-bands "1200+" "1100-1199" "1000-1099" \
-    --max-samples 50000 --batch-size 4096 --progress-every 5000
+python3 tools/build_ladder_pool.py \
+  --episodes-dir ../episodes_raw \
+  --out logs/ladder_pool_today \
+  --lb-csv "$LB_CSV" \
+  --personal-loss-dir logs/opp_decks_55207693/55207693 \
+  --personal-loss-dir logs/opp_decks_55212562/55212562 \
+  --personal-loss-weight 25 \
+  --top 120 \
+  --workers 9
 ```
 
-对 random 实战：
-
-```bash
-python3 tools/eval_bc.py checkpoints/bc2_marnie_1000_w2.npz \
-    --deck deck.csv --games 200
-```
-
-### 批量训练 BC Population
-
-先用同一份 v4 corpus 训练多个有足够 replay 数据的 archetype，形成后续
-round-robin 和 RL opponent pool。脚本启动前会统计每个卡组在所选
-score bands 下的 corpus 文件数和 decisions 数；低于 `--min-decisions`
-会直接跳过，避免子进程启动后才失败。
-
-默认列表会避开当前 v4 corpus 中只有几百到几千 decisions 的卡组，包括：
-Marnie、Alakazam、Crustle、Team Rocket Mewtwo、Teal Mask Ogerpon、
-Mega Lopunny、Dragapult、Festival Lead、Cynthia Garchomp。
-
-先 dry-run 检查命令和输出路径：
-
-```bash
-python3 tools/train_bc_population.py \
-    --corpus data/bc_corpus_banded_v4 \
-    --gpus 0,1,2,3 \
-    --epochs 8 \
-    --batch-size 4096 \
-    --width 2.0 \
-    --tag v4_1000_w2 \
-    --min-decisions 20000 \
-    --dry-run
-```
-
-正式启动 4 卡并行训练；每个 job 完成后会自动跑一次 `bc2_accuracy`：
-
-```bash
-python3 -u tools/train_bc_population.py \
-    --corpus data/bc_corpus_banded_v4 \
-    --gpus 0,1,2,3 \
-    --epochs 8 \
-    --batch-size 4096 \
-    --width 2.0 \
-    --tag v4_1000_w2 \
-    --min-decisions 20000 \
-    --accuracy-samples 50000 \
-    --poll-seconds 30 \
-    > logs/train_bc_population_v4_1000_w2.log 2>&1
-```
-
-只训练指定卡组时重复 `--archetype`：
-
-```bash
-python3 -u tools/train_bc_population.py \
-    --archetype "Crustle Wall" \
-    --archetype "Team Rocket Mewtwo" \
-    --archetype "Teal Mask Ogerpon" \
-    --corpus data/bc_corpus_banded_v4 \
-    --score-bands "1200+" "1100-1199" "1000-1099" "900-999" \
-    --gpus 0,1,2 \
-    --tag v4_900_w2 \
-    --min-decisions 20000
-```
-
-输出命名示例：
+主要输出：
 
 ```text
-checkpoints/bc2_marnie_grimmsnarl_v4_1000_w2.npz
-logs/bc2_marnie_grimmsnarl_v4_1000_w2.log
-logs/bc2_marnie_grimmsnarl_v4_1000_w2_accuracy.log
+logs/ladder_pool_today/archetype_stats.csv
+logs/ladder_pool_today/pool_manifest.csv
+logs/ladder_pool_today/decks/*.csv
 ```
 
-### 旧 BC 模仿学习
-
-从高分 replay 学习人类决策：
+### 4.2 查看各分段卡组分布
 
 ```bash
-cd ptcg_rl_git
-CUDA_VISIBLE_DEVICES=1 python3 -u tools/bc_trainer.py \
-    --archetype "Marnie Grimmsnarl" \
-    --score-bands "1200+" "1100-1199" \
-    --epochs 30 --batch-size 2048 --width 2.0 --device cuda:0 \
-    --checkpoint-every 5 \
-    --save checkpoints/bc_marnie_1100.npz
+column -s, -t logs/ladder_pool_today/archetype_stats.csv | head -40
 ```
 
-输出 `checkpoints/bc_marnie_1100.npz` 可直接用于 Kaggle 提交。
-
-`bc_trainer.py` 默认过滤空 action，避免无梯度样本浪费 batch。需要学习
-“不选择任何 option 直接 STOP”的场景时，显式加 `--include-empty`。
-
-当前 BC 训练是单进程单卡；`CUDA_VISIBLE_DEVICES=1 --device cuda:0` 表示使用
-可见设备列表中的第 0 张卡，也就是物理 GPU 1。4 卡 A800 不会自动并行，
-需要另做 DDP/多进程训练。
-
-### RL 训练（PPO + MCTS）
+按 score band 汇总 manifest：
 
 ```bash
-python3 -u train.py \
-    --iterations 500 --games 32 --device cuda:0 \
-    --mcts --mcts-sims 32
+python3 tools/summarize_ladder_manifest.py \
+  logs/ladder_pool_today/pool_manifest.csv \
+  --top 12 \
+  --out logs/ladder_pool_today/band_archetype_summary.csv
 ```
 
-### 本地评估
+读法：
 
-```bash
-# 小规模对战测试
-python3 tools/deck_battle.py battle deck.csv decks/ --games 10
+- `games`：该 archetype 在 replay 中出现次数。
+- `decks`：不同 deck signature 数。
+- `weight`：构建对手池时的权重，通常比 raw games 更适合决定测试优先级。
+- 如果一个 archetype deck 很多，优先做 deck-specific，不要直接 mixed。
 
-# 单 checkpoint 对 legal random
-python3 tools/eval_bc.py checkpoints/bc2_marnie_1000_w2_v4_ep003.npz \
-    --deck deck.csv \
-    --games 500 \
-    --progress-every 25
+## 5. 从环境统计中选择训练目标
 
-# population round-robin：行胜列的胜率矩阵
-python3 tools/eval_round_robin.py \
-    --include-random \
-    --policy checkpoints/bc2_marnie_1000_w2_v4_ep003.npz \
-    --policy checkpoints/bc2_marnie_1000_w2_v4.npz \
-    --deck deck.csv \
-    --games 100 \
-    --progress-every 10 \
-    --out-csv logs/round_robin_marnie.csv
-
-# 不同卡组/不同 checkpoint 时，用 NAME=POLICY:DECK
-python3 tools/eval_round_robin.py \
-    --entry marnie=checkpoints/bc2_marnie_1000_w2_v4.npz:deck.csv \
-    --entry lucario=checkpoints/bc2_lucario_1000_w2.npz:decks/lucario.csv \
-    --entry random=random:deck.csv \
-    --games 100 \
-    --progress-every 10
-```
-
-`eval_round_robin.py` 会交替先后手，draw/error 计入总局数但不算任一方胜。
-这个矩阵比只看 random 更接近 Kaggle ladder：random 100% 只说明 agent
-基本可用，能否过 800-1000 分段要看它对其他 BC/规则型 population 的胜率。
-
-### Slot-Aware BC v5
-
-v5 模型默认启用 slot-aware board encoder：不再把 active 和 bench 混在一个
-pool 里，而是分别编码我方 active、我方 bench、对方 active、对方 bench、手牌。
-这不需要重建 corpus，直接复用 `data/bc_corpus_banded_v4`。
-
-适合重点改善 `ATTACH`、`RETREAT`、`DISCARD` 和多候选选择。旧 checkpoint
-仍可加载；需要回退旧结构做 ablation 时加 `--legacy-state-pool`。
-
-```bash
-python3 -u tools/train_bc_population.py \
-    --corpus data/bc_corpus_banded_v4 \
-    --gpus 0,1,2,3 \
-    --epochs 8 \
-    --batch-size 4096 \
-    --width 2.0 \
-    --tag v5_slot_1000_w2 \
-    --min-decisions 20000 \
-    --accuracy-samples 50000 \
-    --poll-seconds 30 \
-    > logs/train_bc_population_v5_slot_1000_w2.log 2>&1
-```
-
-### Expanded Features v6
-
-v6 在重新抽取 corpus 时把标量特征从 `state=32/options=16` 扩到
-`state=48/options=32`。新增特征只使用 observation 中稳定存在的信息：
-active/target 的 HP、retreat cost、stage、ex/mega、tool 数、异常状态、
-discard 数量，以及 option 指向 active/bench/self/opponent 的标志。
-
-旧 v4/v5 checkpoint 仍可加载；推理和 accuracy 会按 checkpoint 维度自动截断
-或补零。新特征需要重新抽取 corpus：
-
-```bash
-python3 -u tools/bc_extract_v2.py ../episodes_raw \
-    --out data/bc_corpus_banded_v6wide \
-    --workers 9 \
-    --progress-every 500 \
-    > logs/bc_extract_v6wide.log 2>&1
-```
-
-### Deck Metadata and Weak BC Repair
-
-新版本 `bc_extract_v2.py` 会额外写入 `deck_sig`、`team_name`、`score`、
-`episode_id`、`player_index`、`reward/won/draw/final_status/game_steps`。
-旧 corpus 没有这些字段，不能做 deck-specific 或 winner-aware 训练；
-需要重新抽取到新目录：
-
-```bash
-python3 -u tools/bc_extract_v2.py ../episodes_raw \
-    --out data/bc_corpus_banded_v7sig \
-    --workers 9 \
-    --progress-every 500 \
-    > logs/bc_extract_v7sig.log 2>&1
-```
-
-诊断某个弱 BC 是否由 deck 混杂导致：
+先看某个 archetype 里 deck signature 是否混杂：
 
 ```bash
 python3 tools/bc_corpus_stats.py \
-    --corpus data/bc_corpus_banded_v7sig \
-    --archetype "Alakazam" \
-    --score-bands "1200+" "1100-1199" "1000-1099" \
+  --corpus data/bc_corpus_banded_v9 \
+  --archetype "Teal Mask Ogerpon" \
+  --score-bands "1200+" "1100-1199" "1000-1099" \
+  --top 20 \
+  --out-csv logs/bc_corpus_stats_ogerpon_v9.csv
+```
+
+常见判断：
+
+- top deck sig 占比很高，且 random/round-robin 弱：训练 top1 或该 team trajectory。
+- top2/top3 都是高质量变体：训练 top-k high-quality sig。
+- 多个 sig 胜率、队伍、构筑差异很大：不要 `mixed all`，先 deck-specific。
+- 样本很少但 ladder 出现频繁：考虑放宽 score bands 到 `900-999` 或 `800-899`，并优先 winner-only / team-name。
+- random 强但 Kaggle 弱：说明本地对手池缺真实策略，先分析 Kaggle replay。
+
+### 5.1 追踪高分用户/卡组路径
+
+构建 team + deck signature trajectory 表：
+
+```bash
+python3 tools/build_team_deck_trajectories.py \
+  --corpus data/bc_corpus_banded_v9 \
+  --score-bands "1200+" "1100-1199" "1000-1099" "900-999" \
+  --min-decisions 1000 \
+  --min-episodes 10 \
+  --top 80 \
+  --progress-every-files 10 \
+  --out logs/team_deck_trajectories_v9.csv
+```
+
+用它找：
+
+- 同一 team + deck_sig 的长期样本。
+- max score 高、episodes 多、decision win rate 高的 trajectory。
+- 适合 `--team-name` + `--deck-sig` 的 specialist。
+
+## 6. 当前推荐训练方法
+
+当前主线是 `bc2_train.py`。默认模型使用 slot-aware board encoder；旧 `bc_trainer.py` 只保留作历史参考。
+
+### 6.1 单 deck signature 训练
+
+适合 Alakazam、Lucario、Lopunny 等构筑差异大、mixed 会污染的卡组。
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
+  --corpus data/bc_corpus_banded_v9 \
+  --archetype "Mega Lucario" \
+  --score-bands "1100-1199" "900-999" "800-899" \
+  --deck-sig 43d6d8b0fce9 \
+  --winner-only \
+  --epochs 30 \
+  --batch-size 1024 \
+  --width 2.0 \
+  --device cuda:0 \
+  --first-action-weight 2.0 \
+  --option-weight 0.35 \
+  --multi-select-weight 1.5 \
+  --context-weight MAIN=1.6 \
+  --context-weight TO_HAND=2.0 \
+  --context-weight ATTACH_FROM=3.0 \
+  --context-weight ATTACH_TO=2.5 \
+  --type-weight ATTACK=1.8 \
+  --type-weight ATTACH=2.5 \
+  --type-weight PLAY=1.4 \
+  --type-weight EVOLVE=1.6 \
+  --save checkpoints/bc2_mega_lucario_top1_v9_gameplan_w2.npz \
+  2>&1 | tee logs/train_mega_lucario_top1_v9_gameplan_w2.log
+```
+
+### 6.2 Top-k high-quality deck sig 训练
+
+适合 Ogerpon 这类有多个高质量变体、但 all mixed 会学坏的 archetype。
+
+复现当前 Ogerpon 高分思路时，不要全 mixed，也不要只训 `697a82e582d5`。优先复现 top2：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
+  --corpus data/bc_corpus_banded_v9 \
+  --archetype "Teal Mask Ogerpon" \
+  --score-bands "1200+" "1100-1199" "1000-1099" \
+  --deck-sig 697a82e582d5 \
+  --deck-sig 2a5072194fdf \
+  --epochs 8 \
+  --batch-size 4096 \
+  --width 2.0 \
+  --device cuda:0 \
+  --win-weight 1.5 \
+  --loss-weight 0.4 \
+  --draw-weight 0.8 \
+  --save checkpoints/bc2_ogerpon_top2_repro_v9_w2.npz \
+  2>&1 | tee logs/train_ogerpon_top2_repro_v9_w2.log
+```
+
+参考已知结果：
+
+- `bc2_ogerpon_top2_v7sig_w2.npz`：曾到 Kaggle 965.9。
+- 它训练的是两个高质量 sig 的 winweighted 混合，不是全 Ogerpon mixed。
+- `bc2_teal_mask_ogerpon_v8_mixed_1000_w2.npz` 离线 accuracy 高，但 Kaggle 低，说明 all mixed 会丢 game plan。
+
+### 6.3 Team trajectory specialist
+
+适合追踪某个高分用户的固定构筑。
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python3 -u tools/bc2_train.py \
+  --corpus data/bc_corpus_banded_v9 \
+  --archetype "Teal Mask Ogerpon" \
+  --score-bands "1200+" "1100-1199" "1000-1099" "900-999" \
+  --deck-sig 2a5072194fdf \
+  --team-name "James Cox & Henry Chao" \
+  --winner-only \
+  --epochs 12 \
+  --batch-size 4096 \
+  --width 2.0 \
+  --device cuda:0 \
+  --first-action-weight 2.0 \
+  --option-weight 0.35 \
+  --multi-select-weight 1.5 \
+  --save checkpoints/bc2_ogerpon_box_james_traj_v9_w2.npz \
+  2>&1 | tee logs/train_ogerpon_box_james_traj_v9_w2.log
+```
+
+注意：trajectory specialist 不一定比 top-k 更强。它更纯，但样本更少；必须经过 random 和 failure-pool 测试。
+
+### 6.4 Win-weighted mixed
+
+只适合构筑高度一致、deck sig 差异不大的 archetype。
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
+  --corpus data/bc_corpus_banded_v9 \
+  --archetype "Marnie Grimmsnarl" \
+  --score-bands "1200+" "1100-1199" "1000-1099" \
+  --epochs 8 \
+  --batch-size 4096 \
+  --width 2.0 \
+  --device cuda:0 \
+  --win-weight 1.5 \
+  --loss-weight 0.4 \
+  --draw-weight 0.8 \
+  --save checkpoints/bc2_marnie_v9_winweighted_w2.npz \
+  2>&1 | tee logs/train_marnie_v9_winweighted_w2.log
+```
+
+### 6.5 Value head 实验
+
+`--value-weight` 当前是实验项，不是默认最佳。只在和 no-value 同 epoch 做 A/B 时使用：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
+  --corpus data/bc_corpus_banded_v9 \
+  --archetype "Marnie Grimmsnarl" \
+  --score-bands "1200+" "1100-1199" "1000-1099" \
+  --epochs 8 \
+  --batch-size 4096 \
+  --width 2.0 \
+  --device cuda:0 \
+  --win-weight 1.5 \
+  --loss-weight 0.4 \
+  --draw-weight 0.8 \
+  --value-weight 0.005 \
+  --save checkpoints/bc2_marnie_v9_value0005_w2.npz \
+  2>&1 | tee logs/train_marnie_v9_value0005_w2.log
+```
+
+## 7. 批量训练 Population
+
+### 7.1 Archetype-level 批量训练
+
+适合先铺一组 baseline population。
+
+```bash
+python3 tools/train_bc_population.py \
+  --corpus data/bc_corpus_banded_v9 \
+  --gpus 0,1,2,3 \
+  --epochs 8 \
+  --batch-size 4096 \
+  --width 2.0 \
+  --tag v9_1000_w2 \
+  --min-decisions 20000 \
+  --dry-run
+```
+
+正式启动：
+
+```bash
+python3 -u tools/train_bc_population.py \
+  --corpus data/bc_corpus_banded_v9 \
+  --gpus 0,1,2,3 \
+  --epochs 8 \
+  --batch-size 4096 \
+  --width 2.0 \
+  --tag v9_1000_w2 \
+  --min-decisions 20000 \
+  --accuracy-samples 50000 \
+  --poll-seconds 30 \
+  2>&1 | tee logs/train_bc_population_v9_1000_w2.log
+```
+
+只训练指定 archetype：
+
+```bash
+python3 -u tools/train_bc_population.py \
+  --archetype "Marnie Grimmsnarl" \
+  --archetype "Crustle Wall" \
+  --archetype "Team Rocket Mewtwo" \
+  --corpus data/bc_corpus_banded_v9 \
+  --score-bands "1200+" "1100-1199" "1000-1099" \
+  --gpus 0,1,2,3 \
+  --tag v9_core_w2 \
+  --min-decisions 20000 \
+  2>&1 | tee logs/train_bc_population_v9_core_w2.log
+```
+
+### 7.2 Deck-specific 自动计划
+
+先为多个 archetype 生成 stats：
+
+```bash
+for arch in \
+  "Marnie Grimmsnarl" "Teal Mask Ogerpon" "Mega Lopunny" \
+  "Dragapult" "Festival Lead" "Mega Lucario"; do
+  slug=$(echo "$arch" | tr "[:upper:] " "[:lower:]_" | tr -cd "a-z0-9_")
+  python3 tools/bc_corpus_stats.py \
+    --corpus data/bc_corpus_banded_v9 \
+    --archetype "$arch" \
+    --score-bands "1200+" "1100-1199" "1000-1099" "900-999" \
     --top 20 \
-    --out-csv logs/bc_corpus_stats_alakazam_v7sig.csv
+    --out-csv "logs/bc_corpus_stats_${slug}_v9.csv"
+done
 ```
 
-如果 top deck signature 之间样本量差异很大，或 team/score 分布混杂，
-优先训练 deck-specific BC：
+生成训练和评测脚本：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
-    --corpus data/bc_corpus_banded_v7sig \
-    --archetype "Alakazam" \
-    --score-bands "1200+" "1100-1199" "1000-1099" \
-    --deck-sig <deck_sig> \
-    --epochs 10 \
-    --batch-size 2048 \
-    --width 2.0 \
-    --device cuda:0 \
-    --save checkpoints/bc2_alakazam_<deck_sig>_v7sig_w2.npz \
-    > logs/bc2_alakazam_<deck_sig>_v7sig_w2.log 2>&1
+python3 tools/plan_deck_specific_bc.py \
+  --stats-glob "logs/bc_corpus_stats_*_v9.csv" \
+  --corpus data/bc_corpus_banded_v9 \
+  --score-bands "1200+" "1100-1199" "1000-1099" "900-999" \
+  --tag v9_topdeck_w2 \
+  --manifest logs/ladder_pool_0802_all/pool_manifest.csv \
+  --registry logs/policy_deck_registry_v9_topdeck.csv \
+  --out logs/deck_specific_bc_plan_v9.csv \
+  --script logs/train_deck_specific_v9.sh \
+  --eval-script logs/eval_deck_specific_v9.sh \
+  --gpus 0,1,2,3 \
+  --epochs 8 \
+  --batch-size 4096 \
+  --width 2.0 \
+  --win-weight 1.5 \
+  --loss-weight 0.4 \
+  --draw-weight 0.8 \
+  --random-games 500 \
+  --ladder-games 100 \
+  --workers 8
 ```
 
-如果某个 archetype 的输局决策污染明显，可以先试 winner-only 或
-win-weighted BC：
+运行：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
-    --corpus data/bc_corpus_banded_v7sig \
-    --archetype "Alakazam" \
-    --score-bands "1200+" "1100-1199" "1000-1099" \
-    --winner-only \
-    --epochs 10 \
-    --batch-size 4096 \
-    --width 2.0 \
-    --device cuda:0 \
-    --save checkpoints/bc2_alakazam_winner_only_v7sig_w2.npz \
-    > logs/bc2_alakazam_winner_only_v7sig_w2.log 2>&1
+bash logs/train_deck_specific_v9.sh
+bash logs/eval_deck_specific_v9.sh
 ```
 
-```bash
-CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
-    --corpus data/bc_corpus_banded_v7sig \
-    --archetype "Alakazam" \
-    --score-bands "1200+" "1100-1199" "1000-1099" \
-    --win-weight 1.5 \
-    --loss-weight 0.5 \
-    --draw-weight 0.8 \
-    --epochs 10 \
-    --batch-size 4096 \
-    --width 2.0 \
-    --device cuda:0 \
-    --save checkpoints/bc2_alakazam_winweighted_v7sig_w2.npz \
-    > logs/bc2_alakazam_winweighted_v7sig_w2.log 2>&1
-```
+如果脚本后期只剩单个 job，是正常的长尾调度；如需更高吞吐，增加 `--jobs-per-gpu` 或拆分重跑剩余 checkpoint。
 
-对应 accuracy：
+## 8. 建立 Checkpoint -> Deck Registry
 
-```bash
-python3 tools/bc2_accuracy.py checkpoints/bc2_alakazam_<deck_sig>_v7sig_w2.npz \
-    --corpus data/bc_corpus_banded_v7sig \
-    --archetype "Alakazam" \
-    --score-bands "1200+" "1100-1199" "1000-1099" \
-    --deck-sig <deck_sig> \
-    --max-samples 50000 \
-    --batch-size 4096 \
-    --progress-every 5000
-```
-
-### Policy-Deck Registry
-
-为避免 checkpoint 和 deck CSV 手动错配，先从 ladder pool 生成 registry：
+不要手动猜 checkpoint 对应 deck。先建 registry：
 
 ```bash
 python3 tools/build_policy_registry.py \
-    --checkpoint-glob "checkpoints/*v7sig*.npz" \
-    --manifest logs/ladder_pool_v2/pool_manifest.csv \
-    --out logs/policy_deck_registry_v7sig.csv
+  --checkpoint-glob "checkpoints/*v9*.npz" \
+  --manifest logs/ladder_pool_0802_all/pool_manifest.csv \
+  --out logs/policy_deck_registry_v9.csv
 ```
 
-之后评测或打包时可以省略 `--deck`：
+检查某个 checkpoint：
 
 ```bash
-python3 tools/eval_bc.py checkpoints/bc2_alakazam_cee_winweighted_v7sig_w2.npz \
-    --registry logs/policy_deck_registry_v7sig.csv \
-    --auto-deck \
-    --games 500 \
-    --workers 8
+grep "ogerpon" logs/policy_deck_registry_v9.csv
 ```
+
+如果 registry 没有匹配，测试和打包时显式传 `--deck`。特别注意：
+
+- 文件名里没有 deck sig 时，registry 只能按 archetype 选 manifest top deck。
+- `top-k` checkpoint 可能训练了多个 sig，但只能提交一套 deck；必须人工确认提交 deck 是否和训练目标兼容。
+- Ogerpon 历史上出现过 `checkpoint 学 top2，但 registry 配到 top1 deck` 的情况；这类要在训练日志和 registry 之间人工核对。
+
+## 9. 测试顺序
+
+推荐顺序固定为：
+
+1. `bc2_accuracy.py`：确认没有明显训练/抽取 bug。
+2. `eval_bc.py` vs random：确认 agent 能正常执行、不会超时、基础胜率过线。
+3. `eval_round_robin.py` vs core population：确认不是只会打 random。
+4. `eval_round_robin.py` vs ladder/failure pool：确认能穿过当前低分环境。
+5. Kaggle submit：最终验证。
+6. `analyze_kaggle_replays.py` + `analyze_replay_decisions.py`：复盘输给谁、怎么输。
+
+### 9.1 Accuracy
+
+单 checkpoint：
+
+```bash
+python3 tools/bc2_accuracy.py checkpoints/bc2_ogerpon_top2_repro_v9_w2.npz \
+  --corpus data/bc_corpus_banded_v9 \
+  --archetype "Teal Mask Ogerpon" \
+  --score-bands "1200+" "1100-1199" "1000-1099" \
+  --deck-sig 697a82e582d5 \
+  --deck-sig 2a5072194fdf \
+  --max-samples 50000 \
+  --batch-size 4096 \
+  --progress-every 5000 \
+  --out-csv logs/bc2_accuracy_ogerpon_top2_repro_v9_w2.csv
+```
+
+指标读法：
+
+- `First action`：第一步选择准确率，优先看。
+- `Top-3 first`：如果高而 top-1 低，说明候选排序接近，可以考虑采样/MCTS/rerank。
+- `Length match`：多选长度是否学对。
+- `By context`：重点看 `MAIN`、`TO_HAND`、`ATTACH_FROM`、`ATTACH_TO`、`DISCARD`。
+- `By option count`：`11+` 和 `6-10` 低，说明大候选集合排序弱。
+
+注意：accuracy 高不保证 Kaggle 高。`v8 Ogerpon mixed` 就是 accuracy 高但实战弱。
+
+### 9.2 Random Test
+
+显式 deck：
+
+```bash
+python3 tools/eval_bc.py checkpoints/bc2_ogerpon_top2_repro_v9_w2.npz \
+  --deck logs/ladder_pool_0802_all/decks/697a82e582d5_teal_mask_ogerpon_majkel1337.csv \
+  --games 500 \
+  --workers 8 \
+  --max-turns 700 \
+  --progress-every 50 \
+  2>&1 | tee logs/eval_random_ogerpon_top2_repro_v9_w2.log
+```
+
+用 registry 自动找 deck：
+
+```bash
+python3 tools/eval_bc.py checkpoints/bc2_marnie_v9_winweighted_w2.npz \
+  --registry logs/policy_deck_registry_v9.csv \
+  --auto-deck \
+  --games 500 \
+  --workers 8 \
+  --max-turns 700 \
+  --progress-every 50
+```
+
+经验线：
+
+- `<70%`：大概率 broken 或 deck mismatch。
+- `70%-90%`：可用但弱。
+- `90%-97%`：基本可测 round-robin。
+- `98%-100%`：只说明能打 random，不代表能上分。
+
+### 9.3 Core Round-robin
+
+手写 entry 最可靠：
+
+```bash
+python3 tools/eval_round_robin.py \
+  --entry candidate=checkpoints/bc2_ogerpon_top2_repro_v9_w2.npz:logs/ladder_pool_0802_all/decks/697a82e582d5_teal_mask_ogerpon_majkel1337.csv \
+  --entry marnie=checkpoints/bc2_marnie_v8_mixed_w2.npz:logs/ladder_pool_0802_all/decks/b8f251a476e7_marnie_grimmsnarl_szlachetny_snieg.csv \
+  --entry crustle=checkpoints/bc2_crustle_v8_mixed_w2.npz:logs/ladder_pool_0802_all/decks/47756cdfd20f_crustle_wall_flg.csv \
+  --entry cynthia=checkpoints/bc2_cynthia_v8_mixed_w2.npz:logs/ladder_pool_0802_all/decks/52f467394857_cynthia_garchomp_junlee789.csv \
+  --entry mewtwo=checkpoints/bc2_team_rocket_mewtwo_v8_mixed_w2.npz:logs/ladder_pool_0802_all/decks/f0bac971c56d_team_rocket_mewtwo_flg.csv \
+  --include-random \
+  --games 200 \
+  --workers 8 \
+  --max-turns 700 \
+  --progress-every 20 \
+  --out-csv logs/round_robin_ogerpon_top2_repro_vs_core.csv \
+  2>&1 | tee logs/round_robin_ogerpon_top2_repro_vs_core.log
+```
+
+汇总：
+
+```bash
+python3 tools/summarize_round_robin.py \
+  logs/round_robin_ogerpon_top2_repro_vs_core.csv \
+  --top 20 \
+  --out logs/round_robin_ogerpon_top2_repro_vs_core_summary.csv
+```
+
+指标读法：
+
+- `avg_no_random`：总体强度。
+- `min_no_random`：最差 matchup；决定是否容易被低分区拦截。
+- `random_wr`：基础 sanity。
+- `losses`：输给多少个对手。
+- `worst`：下一个优先修复的 matchup。
+
+### 9.4 Ladder Pool / Failure Pool
+
+从 manifest 生成 opponent entries：
+
+```bash
+OPPS=$(python3 tools/emit_ladder_pool_entries.py \
+  logs/ladder_pool_0802_all/pool_manifest.csv \
+  --top 30 \
+  --one-per-archetype)
+```
+
+候选只打对手，不让对手之间互打：
+
+```bash
+python3 tools/eval_round_robin.py \
+  --entry candidate=checkpoints/bc2_ogerpon_top2_repro_v9_w2.npz:logs/ladder_pool_0802_all/decks/697a82e582d5_teal_mask_ogerpon_majkel1337.csv \
+  $OPPS \
+  --candidate-only \
+  --skip-bad-entries \
+  --games 200 \
+  --workers 8 \
+  --max-turns 700 \
+  --progress-every 20 \
+  --out-csv logs/round_robin_ogerpon_top2_repro_vs_ladder_pool.csv \
+  2>&1 | tee logs/round_robin_ogerpon_top2_repro_vs_ladder_pool.log
+```
+
+从 Kaggle 失败 replay deck 构建 failure pool：
+
+```bash
+python3 tools/make_kaggle_opp_round_robin_cmd.py \
+  --policy-name candidate \
+  --policy checkpoints/bc2_ogerpon_top2_repro_v9_w2.npz \
+  --deck logs/ladder_pool_0802_all/decks/697a82e582d5_teal_mask_ogerpon_majkel1337.csv \
+  --opp-dir logs/opp_decks_55207693/55207693 \
+  --opp-dir logs/opp_decks_55212562/55212562 \
+  --games 200 \
+  --progress-every 20 \
+  --out-csv logs/round_robin_ogerpon_top2_repro_vs_kaggle_failures.csv
+```
+
+复制输出的命令执行即可。
+
+注意：`random:deck` 对手只是 deck 合法随机策略，不能代表 Kaggle 真实提交策略。低分区突围必须结合 Kaggle replay loss pool。
+
+### 9.5 Failure Report
+
+用于定位具体 context/type 的弱点：
+
+```bash
+python3 tools/bc2_failure_report.py checkpoints/bc2_mega_lucario_top1_v9_gameplan_w2.npz \
+  --corpus data/bc_corpus_banded_v9 \
+  --archetype "Mega Lucario" \
+  --score-bands "1100-1199" "900-999" "800-899" \
+  --deck-sig 43d6d8b0fce9 \
+  --winner-only \
+  --max-samples 50000 \
+  --batch-size 4096 \
+  --progress-every 5000 \
+  --out-prefix logs/bc2_failure_mega_lucario_top1_v9_gameplan_w2
+```
+
+主要看：
+
+- Worst contexts by exact accuracy
+- Worst set-style contexts by F1
+- `early_end`
+- `miss_attack`
+- examples CSV
+
+## 10. Kaggle 提交和分数追踪
+
+### 10.1 打包
+
+显式 deck：
 
 ```bash
 python3 tools/package_submission.py \
-    --policy checkpoints/bc2_alakazam_cee_winweighted_v7sig_w2.npz \
-    --registry logs/policy_deck_registry_v7sig.csv \
-    --auto-deck \
-    --out submission.tar.gz
+  --policy checkpoints/bc2_ogerpon_top2_repro_v9_w2.npz \
+  --deck logs/ladder_pool_0802_all/decks/697a82e582d5_teal_mask_ogerpon_majkel1337.csv \
+  --out submission.tar.gz
 ```
 
-## Kaggle 提交
+用 registry：
 
 ```bash
-# 打包 tar.gz
 python3 tools/package_submission.py \
-    --policy checkpoints/bc2_marnie_1000_w2_v4_ep003.npz \
-    --deck deck.csv \
-    --out submission.tar.gz
+  --policy checkpoints/bc2_marnie_v9_winweighted_w2.npz \
+  --registry logs/policy_deck_registry_v9.csv \
+  --auto-deck \
+  --out submission.tar.gz
+```
 
-# 提交
+打包输出里必须核对：
+
+```text
+policy: ...
+deck:   ...
+cg:     ...
+```
+
+### 10.2 提交
+
+```bash
 kaggle competitions submit pokemon-tcg-ai-battle \
-    -f submission.tar.gz \
-    -m "BC2 Marnie v4 epoch3"
+  -f submission.tar.gz \
+  -m "bc: ogerpon_top2_repro_v9"
 ```
 
-### 记录 Kaggle 分数变化
+Kaggle 每日提交次数有限。提交前至少满足：
 
-simulation 分数会随匹配继续波动，早期冲高、回落速度、最终稳定区间都应记录。
-提交后的前几小时建议 60 秒采样，稳定后再改成 5-15 分钟：
+- random test 不低于 90%，强候选最好 97%+。
+- core round-robin 不存在明显全输。
+- ladder/failure pool 没有被低分区主流 deck 完全拦住。
+- package deck 与训练 deck sig 已核对。
+
+### 10.3 追踪分数
+
+分数会随匹配继续波动，必须记录时间序列：
 
 ```bash
 python3 -u tools/track_kaggle_scores.py \
-    --watch \
-    --interval 60 \
-    --out logs/kaggle_submission_scores.csv \
-    > logs/kaggle_score_watch.log 2>&1
+  --watch \
+  --interval 60 \
+  --out logs/kaggle_submission_scores.csv \
+  2>&1 | tee logs/kaggle_score_watch.log
 ```
 
-只查看不写 CSV：
+只看一次：
 
 ```bash
 python3 tools/track_kaggle_scores.py --no-append
 ```
 
-### 分析 Kaggle Replay
+分析时看：
 
-提交分数只给总分，不告诉输给谁。用 replay 分析脚本可以拉取某个
-submission 的公开 episodes，自动缓存回放，并按对手 deck/team 聚合胜率：
+- 初始能否冲出 600-800。
+- 峰值分数。
+- 回落速度。
+- 稳定区间。
+- 同一 checkpoint 在不同时间提交的差异。
+
+## 11. Kaggle Replay 分析
+
+提交分数只能说明结果，replay 才能告诉我们输给谁。
+
+### 11.1 拉取并汇总 replay
 
 ```bash
-python3 tools/analyze_kaggle_replays.py 55188444 \
-    --deck decks/pool_341_crustle_mysterious_rock_inn.csv \
-    --known-decks-dir decks \
-    --group-by opponent_deck_name \
-    --out logs/kaggle_replay_analysis_55188444.csv \
-    --write-opponent-decks \
-    --progress-every 5
+python3 tools/analyze_kaggle_replays.py 55206814 \
+  --deck logs/ladder_pool_0802_all/decks/697a82e582d5_teal_mask_ogerpon_majkel1337.csv \
+  --known-decks-dir logs/ladder_pool_0802_all/decks \
+  --known-decks-dir logs/ladder_pool_v2/decks \
+  --cache-dir logs/kaggle_replays/55206814 \
+  --out logs/kaggle_55206814_ogerpon_v7_rows.csv \
+  --summary-out logs/kaggle_55206814_ogerpon_v7_by_deck.csv \
+  --group-by opponent_deck_name \
+  --write-opponent-decks \
+  --opponent-decks-dir logs/opp_decks_55206814 \
+  --progress-every 5 \
+  --timeout 60
 ```
 
-如果没有本地 deck 可用于自动识别我方 agent，就显式传：
+如果 deck 识别 ambiguous，可显式指定：
 
 ```bash
-python3 tools/analyze_kaggle_replays.py 55188444 --team-name "Jie Orkarin"
+python3 tools/analyze_kaggle_replays.py 55206814 \
+  --agent-index 0 \
+  --cache-dir logs/kaggle_replays/55206814
 ```
 
-### 构建 Ladder Opponent Pool
-
-用官方 daily episode zip 和自己提交输过的 replay opponent decks 生成本地
-ladder 对手池。输出包括 `pool_manifest.csv`、`archetype_stats.csv` 和可直接
-用于 `eval_round_robin.py` 的 deck CSV：
+### 11.2 按时间看上分路径
 
 ```bash
-python3 tools/build_ladder_pool.py \
-    --episodes-dir ../episodes_raw \
-    --out logs/ladder_pool_v1 \
-    --personal-loss-dir logs/kaggle_opponent_decks/55188444 \
-    --personal-loss-dir logs/kaggle_opponent_decks/55188543 \
-    --personal-loss-dir logs/kaggle_opponent_decks/55189149 \
-    --top 80 \
-    --workers 9
+python3 - <<'PY'
+import csv
+path = "logs/kaggle_55206814_ogerpon_v7_rows.csv"
+rows = list(csv.DictReader(open(path)))
+rows.sort(key=lambda r: r["create_time"])
+for r in rows:
+    result = "W" if r["won"] == "1" else "L"
+    print(r["create_time"], result, r["opponent_deck_sig"], r["opponent_deck_name"], "steps", r["steps"])
+PY
 ```
 
-为候选 checkpoint 生成对手 `--entry` 参数：
+这个视角可以判断：
+
+- 是不是被低分区 counter 拦截。
+- 是不是靠遇到某个主流高分 deck 快速上分。
+- 哪些 opponent signature 需要加入本地 failure pool。
+
+### 11.3 决策行为诊断
 
 ```bash
-python3 tools/emit_ladder_pool_entries.py logs/ladder_pool_v1/pool_manifest.csv \
-    --top 20 \
-    --one-per-archetype
+python3 tools/analyze_replay_decisions.py \
+  --rows logs/kaggle_55206814_ogerpon_v7_rows.csv \
+  --group-by opponent_deck_sig \
+  --archetype "Teal Mask Ogerpon" \
+  --out logs/kaggle_55206814_ogerpon_v7_decisions_by_sig.csv
 ```
 
-典型用法：
+指标解释：
+
+- `miss_attack_rate`：有 ATTACK option 但没选 attack 的比例。它是行为信号，不是绝对错误。
+- `miss_attach_rate`：有 ATTACH option 但没挂能量的比例。
+- `early_end_rate`：有强动作时选择 END 的比例，这个高通常是 bug。
+- examples：优先人工看 loss 中 “attack available but not chosen” 的回合。
+
+## 12. 当前已知最佳实践
+
+### 12.1 卡组类型和训练方式
+
+| 类型 | 适合训练方式 | 说明 |
+| --- | --- | --- |
+| 构筑稳定、数据多 | winweighted mixed | Marnie、部分 Crustle |
+| 多个强 deck sig | top-k high-quality sig | Ogerpon 当前应走 top2，不走 all mixed |
+| 构筑差异大 | deck-specific | Alakazam、Lopunny、Lucario |
+| 数据少但上限高 | 放宽 score band + winner-only + reweight | Mega Lucario |
+| 规则/对局计划强依赖 | BC + rule overlay 或后续 RL | Crustle counter、anti-ex、复杂 Box |
+
+### 12.2 当前重点 checkpoint 复现
+
+Ogerpon 历史高分方向：
 
 ```bash
-OPPS=$(python3 tools/emit_ladder_pool_entries.py \
-    logs/ladder_pool_v1/pool_manifest.csv --top 20 --one-per-archetype)
-
-python3 tools/eval_round_robin.py \
-    --entry candidate=checkpoints/bc2_crustle_wall_v6wide_feat_1000_w2.npz:decks/pool_341_crustle_mysterious_rock_inn.csv \
-    $OPPS \
-    --games 100 \
-    --progress-every 10 \
-    --out-csv logs/round_robin_candidate_vs_ladder_pool.csv
+CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
+  --corpus data/bc_corpus_banded_v9 \
+  --archetype "Teal Mask Ogerpon" \
+  --score-bands "1200+" "1100-1199" "1000-1099" \
+  --deck-sig 697a82e582d5 \
+  --deck-sig 2a5072194fdf \
+  --epochs 8 \
+  --batch-size 4096 \
+  --width 2.0 \
+  --device cuda:0 \
+  --win-weight 1.5 \
+  --loss-weight 0.4 \
+  --draw-weight 0.8 \
+  --save checkpoints/bc2_ogerpon_top2_repro_v9_w2.npz
 ```
 
-加权汇总应优先使用 ladder pool manifest 的 `weight`，避免低频卡组和高频
-Marnie/Ogerpon/Alakazam 被简单平均：
+Mega Lucario 当前方向：
 
 ```bash
-python3 tools/summarize_round_robin.py \
-    logs/round_robin_candidate_vs_ladder_pool.csv \
-    --manifest logs/ladder_pool_v1/pool_manifest.csv \
-    --out logs/round_robin_candidate_vs_ladder_pool_summary.csv
+CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
+  --corpus data/bc_corpus_banded_v9 \
+  --archetype "Mega Lucario" \
+  --score-bands "1100-1199" "900-999" "800-899" \
+  --deck-sig 43d6d8b0fce9 \
+  --winner-only \
+  --epochs 30 \
+  --batch-size 1024 \
+  --width 2.0 \
+  --device cuda:0 \
+  --first-action-weight 2.0 \
+  --option-weight 0.35 \
+  --multi-select-weight 1.5 \
+  --context-weight MAIN=1.6 \
+  --context-weight TO_HAND=2.0 \
+  --context-weight ATTACH_FROM=3.0 \
+  --context-weight ATTACH_TO=2.5 \
+  --type-weight ATTACK=1.8 \
+  --type-weight ATTACH=2.5 \
+  --type-weight PLAY=1.4 \
+  --type-weight EVOLVE=1.6 \
+  --save checkpoints/bc2_mega_lucario_top1_v9_gameplan_w2.npz
 ```
 
-### 下一轮 BC v8 重点
-
-当前 random 胜率只能作为 smoke test；候选排序以 weighted ladder pool、
-BC population round-robin、Kaggle replay analysis 为主。
-
-训练侧优先尝试 outcome value auxiliary loss。默认关闭，保持旧模型兼容；
-建议从小权重开始：
+Mega Lopunny 当前方向：
 
 ```bash
-python3 -u tools/bc2_train.py \
-    --corpus data/bc_corpus_banded_v8 \
-    --archetype "Marnie Grimmsnarl" \
-    --score-bands "1200+" "1100-1199" "1000-1099" \
-    --epochs 8 \
-    --batch-size 4096 \
-    --width 2.0 \
-    --device cuda:0 \
-    --win-weight 1.5 \
-    --loss-weight 0.4 \
-    --draw-weight 0.8 \
-    --value-weight 0.05 \
-    --save checkpoints/bc2_marnie_v8_value_w2.npz
+CUDA_VISIBLE_DEVICES=1 python3 -u tools/bc2_train.py \
+  --corpus data/bc_corpus_banded_v9 \
+  --archetype "Mega Lopunny" \
+  --score-bands "1200+" "1100-1199" "1000-1099" "900-999" \
+  --deck-sig b0cb21e29406 \
+  --deck-sig 276707c0fdb4 \
+  --winner-only \
+  --epochs 12 \
+  --batch-size 4096 \
+  --width 2.0 \
+  --device cuda:0 \
+  --first-action-weight 2.0 \
+  --option-weight 0.35 \
+  --multi-select-weight 1.5 \
+  --save checkpoints/bc2_mega_lopunny_top2_v9_gameplan_w2.npz
 ```
 
-多选场景需要单独观察 set-style 指标。`bc2_accuracy.py` 会额外输出
-`set_exact / precision / recall / f1`，重点关注 `TO_HAND`、`DISCARD`、
-`TO_DECK`、`TO_BENCH`、`ATTACH_TO` 等 context：
+### 12.3 什么时候考虑 RL
+
+先不要过早上 RL。满足这些条件后再用当前 BC population 做 self-play/RL 更合理：
+
+- 至少有 4-6 个 checkpoint 能稳定 95%+ 打 random。
+- core round-robin 有清晰强弱关系，不是大量 broken agent。
+- Kaggle replay 能稳定识别低分区拦截者。
+- 目标卡组已有可用 BC，不会在 RL 初期只学随机探索。
+
+RL 的首要目标不是从零学会玩，而是用强 BC 初始化后，针对已知 failure pool 改 matchup。
+
+## 13. 常见问题
+
+### Loss 很低但 random 弱
+
+优先检查：
+
+- checkpoint 和 deck 是否错配。
+- 是否 all mixed 混入了不同 game plan。
+- 是否 winner-only 样本太少。
+- 是否训练 deck sig 和提交 deck sig 不一致。
+
+### Accuracy 高但 Kaggle 分数低
+
+说明 offline imitation 不是瓶颈。下一步：
+
+1. 拉 Kaggle replay。
+2. 看按时间的上分路径。
+3. 提取 loss opponent decks。
+4. 用 failure pool 评测。
+5. 决定换 deck sig、top-k、规则 overlay 或 RL。
+
+### Random 100% 但分数低
+
+random 只验证基本合法动作和简单压制。Kaggle 低分区有真实策略提交和 counter deck，必须看 ladder/failure pool。
+
+### 多选场景怎么处理
+
+训练时提高：
 
 ```bash
-python3 tools/bc2_accuracy.py checkpoints/bc2_marnie_v8_value_w2.npz \
-    --corpus data/bc_corpus_banded_v8 \
-    --archetype "Marnie Grimmsnarl" \
-    --score-bands "1200+" "1100-1199" "1000-1099" \
-    --max-samples 50000 \
-    --batch-size 4096 \
-    --progress-every 5000
+--first-action-weight 2.0
+--option-weight 0.35
+--multi-select-weight 1.5
+--context-weight TO_HAND=2.0
+--context-weight ATTACH_TO=2.5
 ```
 
-弱卡组需要进一步跑 failure report。它会输出 context/type/option-count
-错误表、多选 set-style 指标、过早 END/ATTACK、漏攻击，以及一批错例：
+诊断时看：
+
+- `Length match`
+- set-style context F1
+- `TO_HAND`、`DISCARD`、`ATTACH_TO`
+
+### 4 卡 A800 如何利用
+
+单个 `bc2_train.py` 是单进程单卡。用这些方式并行：
+
+- `train_bc_population.py --gpus 0,1,2,3`
+- `plan_deck_specific_bc.py` 生成多 GPU 脚本
+- 手动开 4 个 shell，每个 `CUDA_VISIBLE_DEVICES=N --device cuda:0`
+
+`CUDA_VISIBLE_DEVICES=3 --device cuda:0` 表示使用物理 GPU 3。
+
+### 有大型程序时测试变慢
+
+`eval_bc.py --workers 8` 是多进程 CPU 模拟，容易受 CPU 频率、NUMA、IO 和进程调度影响。大规模评测建议：
+
+- `--workers 8` 到 `--workers 16` 之间试。
+- 避免和大量 Python 多进程训练同时跑。
+- 对慢 matchup 加 `--max-turns 700` 防止拖死。
+
+## 14. 旧入口
+
+`tools/bc_trainer.py` 和 `tools/bc_accuracy.py` 是旧 BC 流程，当前不作为主线。
+
+旧训练示例：
 
 ```bash
-python3 tools/bc2_failure_report.py checkpoints/bc2_dragapult_v8_mixed_1000_w2.npz \
-    --corpus data/bc_corpus_banded_v8 \
-    --archetype "Dragapult" \
-    --score-bands "1200+" "1100-1199" "1000-1099" \
-    --max-samples 50000 \
-    --batch-size 4096 \
-    --progress-every 5000 \
-    --out-prefix logs/bc2_failure_dragapult_v8_mixed
+CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc_trainer.py \
+  --corpus data/bc_corpus_banded \
+  --archetype "Marnie Grimmsnarl" \
+  --score-bands "1200+" "1100-1199" \
+  --epochs 30 \
+  --batch-size 2048 \
+  --width 2.0 \
+  --device cuda:0 \
+  --save checkpoints/bc_marnie_legacy.npz
 ```
 
-重点先看：
+除非做回归对比，否则优先使用 `bc2_train.py`。
 
-- `context=MAIN`：是否过早 END、漏攻击、错误使用关键 Trainer/Ability。
-- `TO_HAND / DISCARD / TO_DECK / TO_BENCH`：搜索/弃牌/铺场是否破坏 game plan。
-- `DAMAGE_COUNTER*`：Dragapult/Dusknoir 这类卡组的伤害分配是否稳定。
+## 15. 推荐日常循环
 
-v9 起 encoder 增加 game-plan 特征，状态维度为 64，选项维度为 48。旧 checkpoint
-推理会自动截断兼容；新模型必须重新抽取 corpus 才能使用新增特征：
+每天先做：
 
 ```bash
+kaggle competitions leaderboard pokemon-tcg-ai-battle --download -p /tmp/lb
+unzip -o /tmp/lb/pokemon-tcg-ai-battle.zip -d /tmp/lb
+LB_CSV=$(ls /tmp/lb/*.csv | head -1)
+
 python3 -u tools/bc_extract_v2.py ../episodes_raw \
-    --out data/bc_corpus_banded_v9 \
-    --workers 8 \
-    --progress-every 1000
+  --out data/bc_corpus_banded_today \
+  --lb-csv "$LB_CSV" \
+  --workers 9 \
+  --progress-every 500 \
+  2>&1 | tee logs/bc_extract_today.log
+
+python3 tools/build_ladder_pool.py \
+  --episodes-dir ../episodes_raw \
+  --out logs/ladder_pool_today \
+  --lb-csv "$LB_CSV" \
+  --top 120 \
+  --workers 9
 ```
 
-Deck-specific top-k 训练可以由 stats CSV 自动规划。规则默认是：
-`top1 share >= 75%` 只训 top1；否则训 top1 和覆盖 80% 决策量的 topK。
-Mega Lucario 和 Mega Lopunny 这类特殊卡组不要直接套通用批量脚本，具体配方见
-`docs/07_specialist_bc_recipes.md`。
+然后：
 
-```bash
-python3 tools/plan_deck_specific_bc.py \
-    --stats-glob "logs/bc_corpus_stats_{ogerpon,dragapult,festival,lopunny,alakazam}_v7sig.csv" \
-    --corpus data/bc_corpus_banded_v7sig \
-    --tag v7sig_topdeck_w2 \
-    --force-top1 \
-    --out logs/deck_specific_bc_plan_v7sig.csv \
-    --script logs/train_deck_specific_v7sig.sh \
-    --eval-script logs/eval_deck_specific_v7sig.sh
-
-bash logs/train_deck_specific_v7sig.sh
-```
-
-规划结果先看一眼：
-
-```bash
-column -s, -t logs/deck_specific_bc_plan_v7sig.csv
-```
-
-训练完成后运行自动评测脚本。它会重建 registry，跑 random smoke，并用
-`eval_round_robin.py --candidate-only` 只测 candidate 对 ladder pool，避免
-重复计算 opponent-vs-opponent：
-
-```bash
-bash logs/eval_deck_specific_v7sig.sh
-```
-
-## 常用命令
-
-```bash
-# 查看 GPU
-nvidia-smi
-
-# 查看训练进度
-tail -f train.log
-
-# 查看提取进度  
-tail -f bc_extract_v2.log
-
-# 查看卡组分布
-python3 tools/ladder_decks.py stats data/bc_corpus_banded/
-```
+1. 看 `logs/ladder_pool_today/archetype_stats.csv`。
+2. 对目标 archetype 跑 `bc_corpus_stats.py`。
+3. 选择 top1/top-k/team trajectory。
+4. 训练 checkpoint。
+5. 跑 accuracy -> random -> core round-robin -> failure pool。
+6. 打包提交。
+7. 追踪分数。
+8. 拉 replay，更新 failure pool 和下一轮训练目标。

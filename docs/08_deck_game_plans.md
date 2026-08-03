@@ -53,3 +53,67 @@ Plan-aware features should answer questions that generic v9 features cannot:
 
 Use `tools/deck_plan_report.py` before training/eval to catch policy/deck
 mismatch and `tools/bc2_failure_report.py` to inspect plan-tagged mistakes.
+
+## Trajectory Specialists
+
+For unstable or data-mixed archetypes, prefer a teacher trajectory over a broad
+archetype pool:
+
+```bash
+python3 tools/build_team_deck_trajectories.py \
+  --corpus data/bc_corpus_banded_v9 \
+  --score-bands "1200+" "1100-1199" "1000-1099" "900-999" "800-899" \
+  --out logs/team_deck_trajectories_v9.csv
+```
+
+Then train against a selected `team_name + deck_sig` pair:
+
+```bash
+python3 -u tools/bc2_train.py \
+  --corpus data/bc_corpus_banded_v9 \
+  --archetype "Teal Mask Ogerpon" \
+  --score-bands "1200+" "1100-1199" "1000-1099" \
+  --deck-sig 697a82e582d5 \
+  --team-name "Majkel1337" \
+  --winner-only \
+  --epochs 12 \
+  --batch-size 4096 \
+  --width 2.0 \
+  --device cuda:0 \
+  --save checkpoints/bc2_ogerpon_majkel1337_traj_v9_w2.npz
+```
+
+Use trajectory specialists when:
+
+- the same team uses the same signature across multiple dates;
+- the trajectory has enough decisions and games;
+- mixed/top-k training looks strong vs random but weak in core matchups;
+- a card's plan depends on long-term setup choices that broad BC averages away.
+
+## Rule Overlay Experiments
+
+`ptcg_rl/rule_overlay.py` provides an experimental guard layer for local tests.
+It is disabled by default and should not be enabled for submissions until it
+beats the BC baseline in round-robin.
+
+Random test:
+
+```bash
+python3 tools/eval_bc.py checkpoints/bc2_ogerpon_top1_v9_gameplan_w2.npz \
+  --deck logs/ladder_pool_0802_all/decks/697a82e582d5_teal_mask_ogerpon_majkel1337.csv \
+  --games 500 --workers 8 --rules conservative
+```
+
+Candidate-only matchup test:
+
+```bash
+python3 tools/eval_round_robin.py \
+  --entry candidate=checkpoints/bc2_ogerpon_top1_v9_gameplan_w2.npz:logs/ladder_pool_0802_all/decks/697a82e582d5_teal_mask_ogerpon_majkel1337.csv \
+  --entry crustle=checkpoints/bc2_crustle_wall_top5_v8_topdeck_w2.npz:logs/ladder_pool_0802_all/decks/47756cdfd20f_crustle_wall_flg.csv \
+  --rules-entry candidate=conservative \
+  --games 500 --workers 8 --max-turns 700
+```
+
+The first target for rules is not to improve random win rate. The target is to
+reduce systematic errors such as early END, missed attack windows, discarding
+plan-critical cards, or failing known matchup plans.

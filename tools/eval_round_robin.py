@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from ptcg_rl.numpy_policy import NumpyPolicy
 from ptcg_rl.deck_registry import registry_deck_for_policy
+from ptcg_rl.rule_overlay import apply_rule_overlay
 
 _WORKER_A: "Entry | None" = None
 _WORKER_B: "Entry | None" = None
@@ -38,6 +39,7 @@ class Entry:
     deck_path: str
     policy: NumpyPolicy | None
     deck: list[int]
+    rules: str = ""
 
 
 def read_deck(path: str) -> list[int]:
@@ -95,6 +97,11 @@ def policy_action(entry: Entry, obs: dict, use_mcts: bool, sims: int, time_budge
             picks = entry.policy.select(obs, greedy=True)
     except Exception:
         return legal_random(sel)
+    if entry.rules:
+        try:
+            picks = apply_rule_overlay(obs, picks, entry.deck, mode=entry.rules).action
+        except Exception:
+            pass
 
     picks = [p for p in picks if 0 <= p < n]
     picks = list(dict.fromkeys(picks))
@@ -128,7 +135,8 @@ def parse_entry(spec: str, default_deck: str, registry: str = "") -> tuple[str, 
 
 
 def load_entries(specs: list[str], default_deck: str, include_random: bool,
-                 registry: str = "", skip_bad_entries: bool = False) -> list[Entry]:
+                 registry: str = "", skip_bad_entries: bool = False,
+                 rules_by_name: dict[str, str] | None = None) -> list[Entry]:
     entries: list[Entry] = []
     if include_random:
         specs = [f"random=random:{default_deck}"] + specs
@@ -147,21 +155,21 @@ def load_entries(specs: list[str], default_deck: str, include_random: bool,
                 print(f"Skipping bad entry {name}: {exc}", flush=True)
                 continue
             raise
-        entries.append(Entry(name, policy_path, deck_path, policy, deck))
+        entries.append(Entry(name, policy_path, deck_path, policy, deck, (rules_by_name or {}).get(name, "")))
     if len(entries) < 2:
         raise ValueError("need at least two entries; pass --include-random or multiple --entry values")
     return entries
 
 
 def entry_payload(e: Entry) -> tuple[str, str, str]:
-    return e.name, e.policy_path, e.deck_path
+    return e.name, e.policy_path, e.deck_path, e.rules
 
 
-def entry_from_payload(payload: tuple[str, str, str]) -> Entry:
-    name, policy_path, deck_path = payload
+def entry_from_payload(payload: tuple[str, str, str, str]) -> Entry:
+    name, policy_path, deck_path, rules = payload
     deck = read_deck(deck_path)
     policy = None if policy_path == "random" else NumpyPolicy.load(policy_path)
-    return Entry(name, policy_path, deck_path, policy, deck)
+    return Entry(name, policy_path, deck_path, policy, deck, rules)
 
 
 def play_game(a: Entry, b: Entry, swapped: bool, use_mcts: bool, sims: int,
@@ -339,6 +347,8 @@ def main() -> None:
     p.add_argument("--workers", type=int, default=1,
                    help="parallel game worker processes per pair; each worker loads both policies once")
     p.add_argument("--seed", type=int, default=1)
+    p.add_argument("--rules-entry", action="append", default=[],
+                   help="experimental rule overlay for one entry, e.g. candidate=conservative")
     p.add_argument("--out-csv", default="", help="optional pairwise matrix CSV output")
     args = p.parse_args()
 
@@ -352,16 +362,27 @@ def main() -> None:
     specs = list(args.entry)
     for policy in args.policy:
         specs.append(f"{Path(policy).stem}={policy}")
+    rules_by_name = {}
+    for spec in args.rules_entry:
+        if "=" not in spec:
+            p.error("--rules-entry must be NAME=conservative or NAME=aggressive")
+        name, mode = spec.split("=", 1)
+        mode = mode.strip()
+        if mode not in ("conservative", "aggressive"):
+            p.error("--rules-entry mode must be conservative or aggressive")
+        rules_by_name[clean_entry_name(name)] = mode
     entries = load_entries(
         specs, args.deck, args.include_random, args.registry,
         skip_bad_entries=args.skip_bad_entries,
+        rules_by_name=rules_by_name,
     )
 
     mode = f"MCTS sims={args.mcts_sims} budget={args.time_budget}s" if args.mcts else "greedy"
     print(f"Round-robin: {len(entries)} entries, {args.games} games/pair, {mode}", flush=True)
     for e in entries:
         kind = "random" if e.policy is None else e.policy_path
-        print(f"  {e.name}: {kind} | deck={e.deck_path}", flush=True)
+        suffix = f" | rules={e.rules}" if e.rules else ""
+        print(f"  {e.name}: {kind} | deck={e.deck_path}{suffix}", flush=True)
 
     results: dict[tuple[int, int], dict] = {}
     if args.candidate_only:

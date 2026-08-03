@@ -166,6 +166,8 @@ def main() -> None:
     parser.add_argument("--score-bands", nargs="+", default=["1200+", "1100-1199", "1000-1099"])
     parser.add_argument("--deck-sig", action="append", default=[],
                         help="filter to one or more deck signatures; repeatable. Requires freshly extracted corpus metadata.")
+    parser.add_argument("--team-name", action="append", default=[],
+                        help="filter to one or more exact team names; repeatable")
     parser.add_argument("--width", type=float, default=2.0)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--max-samples", type=int, default=20000)
@@ -223,6 +225,7 @@ def main() -> None:
         state_feat_dim=state_feat_dim,
         opt_feat_dim=opt_feat_dim,
         deck_sigs=args.deck_sig,
+        team_names=args.team_name,
         winner_only=args.winner_only,
         load_progress_every=args.load_progress_every,
     )

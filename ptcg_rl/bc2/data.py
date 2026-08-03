@@ -72,6 +72,7 @@ class BCCorpus:
         state_feat_dim: int = STATE_FEAT_DIM,
         opt_feat_dim: int = OPT_FEAT_DIM,
         deck_sigs: Iterable[str] | None = None,
+        team_names: Iterable[str] | None = None,
         winner_only: bool = False,
         win_weight: float = 1.0,
         loss_weight: float = 1.0,
@@ -88,6 +89,7 @@ class BCCorpus:
         self.state_feat_dim = int(state_feat_dim)
         self.opt_feat_dim = int(opt_feat_dim)
         self.deck_sigs = {str(x) for x in (deck_sigs or []) if str(x)}
+        self.team_names = {str(x).lower() for x in (team_names or []) if str(x)}
         self.winner_only = bool(winner_only)
         self.win_weight = float(win_weight)
         self.loss_weight = float(loss_weight)
@@ -97,7 +99,15 @@ class BCCorpus:
         self.multi_select_weight = float(multi_select_weight)
         self.npz_data: list[dict[str, np.ndarray]] = []
         self.groups: list[list[tuple[int, int]]] = []
-        self.stats = {"raw": 0, "kept": 0, "empty": 0, "bad": 0, "deck_filtered": 0, "outcome_filtered": 0}
+        self.stats = {
+            "raw": 0,
+            "kept": 0,
+            "empty": 0,
+            "bad": 0,
+            "deck_filtered": 0,
+            "team_filtered": 0,
+            "outcome_filtered": 0,
+        }
 
         t0 = time.time()
         for path_i, path in enumerate(paths, 1):
@@ -108,6 +118,11 @@ class BCCorpus:
                 raise ValueError(
                     "Corpus does not contain deck_sig metadata. Re-extract with the updated "
                     "tools/bc_extract_v2.py before using --deck-sig."
+                )
+            if self.team_names and "team_name" not in data:
+                raise ValueError(
+                    "Corpus does not contain team_name metadata. Re-extract with the updated "
+                    "tools/bc_extract_v2.py before using --team-name."
                 )
             if self.winner_only and "won" not in data:
                 raise ValueError(
@@ -123,6 +138,9 @@ class BCCorpus:
                 self.stats["raw"] += 1
                 if self.deck_sigs and str(data["deck_sig"][i]) not in self.deck_sigs:
                     self.stats["deck_filtered"] += 1
+                    continue
+                if self.team_names and str(data["team_name"][i]).lower() not in self.team_names:
+                    self.stats["team_filtered"] += 1
                     continue
                 if self.winner_only and int(data["won"][i]) != 1:
                     self.stats["outcome_filtered"] += 1

@@ -143,6 +143,8 @@ def main() -> None:
     parser.add_argument("--score-bands", nargs="+", default=["1200+", "1100-1199", "1000-1099"])
     parser.add_argument("--deck-sig", action="append", default=[],
                         help="filter to one or more deck signatures; repeatable. Requires freshly extracted corpus metadata.")
+    parser.add_argument("--team-name", action="append", default=[],
+                        help="filter to one or more exact team names; repeatable. Use with --deck-sig for trajectory specialists.")
     parser.add_argument("--epochs", type=int, default=12)
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -188,6 +190,7 @@ def main() -> None:
         include_empty=args.include_empty,
         option_weight=args.option_weight,
         deck_sigs=args.deck_sig,
+        team_names=args.team_name,
         winner_only=args.winner_only,
         win_weight=args.win_weight,
         loss_weight=args.loss_weight,
@@ -219,7 +222,8 @@ def main() -> None:
     print(
         f"BC2: {args.archetype} {args.score_bands} device={device} "
         f"width={args.width} slot_state={not args.legacy_state_pool} "
-        f"deck_sigs={args.deck_sig or 'all'} winner_only={args.winner_only} "
+        f"deck_sigs={args.deck_sig or 'all'} team_names={args.team_name or 'all'} "
+        f"winner_only={args.winner_only} "
         f"win/loss/draw_weight={args.win_weight}/{args.loss_weight}/{args.draw_weight} "
         f"context_weights={context_weights or '{}'} type_weights={type_weights or '{}'} "
         f"multi_select_weight={args.multi_select_weight} "

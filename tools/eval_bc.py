@@ -11,9 +11,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from ptcg_rl.numpy_policy import NumpyPolicy
 from ptcg_rl.deck_registry import registry_deck_for_policy
+from ptcg_rl.rule_overlay import apply_rule_overlay
 
 _WORKER_POLICY = None
 _WORKER_DECK = None
+_WORKER_RULES = ""
 _WORKER_USE_MCTS = False
 _WORKER_SIMS = 48
 _WORKER_TIME_BUDGET = 4.0
@@ -34,7 +36,7 @@ def _legal_random(sel: dict) -> list[int]:
     k = random.randint(lo, hi)
     return random.sample(range(len(opts)), k) if k > 0 else []
 
-def _policy_action(policy, obs, deck, use_mcts=False, sims=48, time_budget=4.0):
+def _policy_action(policy, obs, deck, use_mcts=False, sims=48, time_budget=4.0, rules=""):
     sel = obs.get('select') or {}
     n = len(sel.get('option', []))
     mn = int(sel.get('minCount', 0))
@@ -48,6 +50,11 @@ def _policy_action(policy, obs, deck, use_mcts=False, sims=48, time_budget=4.0):
             act = policy.select(obs, greedy=True)
     except Exception:
         act = []
+    if rules:
+        try:
+            act = apply_rule_overlay(obs, act, deck, mode=rules).action
+        except Exception:
+            pass
     act = [a for a in act if 0 <= a < n]
     act = list(dict.fromkeys(act))
     if mn <= len(act) <= mc:
@@ -55,7 +62,7 @@ def _policy_action(policy, obs, deck, use_mcts=False, sims=48, time_budget=4.0):
     return _legal_random(sel)
 
 def _play_one_game(policy, deck, game_index, use_mcts=False, sims=48,
-                   time_budget=4.0, seed=0, max_turns=700):
+                   time_budget=4.0, seed=0, max_turns=700, rules=""):
     from cg.game import battle_start, battle_select, battle_finish
 
     random.seed(seed)
@@ -73,7 +80,7 @@ def _play_one_game(policy, deck, game_index, use_mcts=False, sims=48,
                 return 0, 1
             you = cur.get('yourIndex',0)
             if you == our_side:
-                act = _policy_action(policy, obs, deck, use_mcts, sims, time_budget)
+                act = _policy_action(policy, obs, deck, use_mcts, sims, time_budget, rules)
             else:
                 act = _legal_random(sel)
             obs = battle_select(act)
@@ -84,21 +91,22 @@ def _play_one_game(policy, deck, game_index, use_mcts=False, sims=48,
         battle_finish()
 
 
-def _init_worker(policy_path, deck, use_mcts, sims, time_budget, max_turns):
-    global _WORKER_POLICY, _WORKER_DECK, _WORKER_USE_MCTS, _WORKER_SIMS, _WORKER_TIME_BUDGET, _WORKER_MAX_TURNS
+def _init_worker(policy_path, deck, use_mcts, sims, time_budget, max_turns, rules):
+    global _WORKER_POLICY, _WORKER_DECK, _WORKER_USE_MCTS, _WORKER_SIMS, _WORKER_TIME_BUDGET, _WORKER_MAX_TURNS, _WORKER_RULES
     _WORKER_POLICY = NumpyPolicy.load(policy_path)
     _WORKER_DECK = deck
     _WORKER_USE_MCTS = use_mcts
     _WORKER_SIMS = sims
     _WORKER_TIME_BUDGET = time_budget
     _WORKER_MAX_TURNS = max_turns
+    _WORKER_RULES = rules
 
 
 def _worker_play_one(args):
     game_index, seed = args
     return _play_one_game(
         _WORKER_POLICY, _WORKER_DECK, game_index,
-        _WORKER_USE_MCTS, _WORKER_SIMS, _WORKER_TIME_BUDGET, seed, _WORKER_MAX_TURNS,
+        _WORKER_USE_MCTS, _WORKER_SIMS, _WORKER_TIME_BUDGET, seed, _WORKER_MAX_TURNS, _WORKER_RULES,
     )
 
 
@@ -114,7 +122,7 @@ def _print_progress(done, games, wins, t0):
 
 
 def eval_vs_random(policy, deck, policy_path, games=20, use_mcts=False, sims=48,
-                   time_budget=4.0, progress_every=10, workers=1, seed=1, max_turns=700):
+                   time_budget=4.0, progress_every=10, workers=1, seed=1, max_turns=700, rules=""):
     """Win rate against random agent."""
     global _LAST_TIMEOUTS
     wins = 0
@@ -123,7 +131,7 @@ def eval_vs_random(policy, deck, policy_path, games=20, use_mcts=False, sims=48,
     workers = max(1, min(int(workers), games))
     if workers == 1:
         for g in range(games):
-            win, timeout = _play_one_game(policy, deck, g, use_mcts, sims, time_budget, seed + g, max_turns)
+            win, timeout = _play_one_game(policy, deck, g, use_mcts, sims, time_budget, seed + g, max_turns, rules)
             wins += win
             timeouts += timeout
             done = g + 1
@@ -136,7 +144,7 @@ def eval_vs_random(policy, deck, policy_path, games=20, use_mcts=False, sims=48,
     with ProcessPoolExecutor(
         max_workers=workers,
         initializer=_init_worker,
-        initargs=(policy_path, deck, use_mcts, sims, time_budget, max_turns),
+        initargs=(policy_path, deck, use_mcts, sims, time_budget, max_turns, rules),
     ) as ex:
         futs = [ex.submit(_worker_play_one, t) for t in tasks]
         for done, fut in enumerate(as_completed(futs), 1):
@@ -168,6 +176,8 @@ def main():
     p.add_argument("--workers", type=int, default=1,
                    help="parallel game worker processes; each worker loads the policy once")
     p.add_argument("--seed", type=int, default=1)
+    p.add_argument("--rules", choices=["", "conservative", "aggressive"], default="",
+                   help="experimental BC+rule overlay for local evaluation only")
     args = p.parse_args()
 
     if not args.deck and args.registry:
@@ -183,12 +193,14 @@ def main():
     print(f"Policy: {args.policy}")
     print(f"Deck: {args.deck} ({len(deck)} cards)")
     mode = f"MCTS sims={args.mcts_sims} budget={args.time_budget}s" if args.mcts else "greedy"
+    if args.rules:
+        mode += f"+rules:{args.rules}"
     print(f"Testing {args.games} games vs legal random ({mode})...")
     
     t0 = time.time()
     wr = eval_vs_random(
         policy, deck, args.policy, args.games, args.mcts, args.mcts_sims,
-        args.time_budget, args.progress_every, args.workers, args.seed, args.max_turns,
+        args.time_budget, args.progress_every, args.workers, args.seed, args.max_turns, args.rules,
     )
     elapsed = time.time() - t0
     

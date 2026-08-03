@@ -3,6 +3,42 @@
 This document records deck-specific BC recipes that should not be replaced by
 the generic population trainer without checking data distribution first.
 
+## Deck-Sig vs Mixed Policy
+
+Default rule: use high-quality deck signatures for any policy that may become a
+Kaggle submission candidate. Mixed policies are acceptable for broad population
+opponents only when the archetype has large, homogeneous data and local/Kaggle
+evidence shows the mixed plan is not diluted.
+
+Current classification:
+
+| Archetype | Default | Rationale |
+| --- | --- | --- |
+| Teal Mask Ogerpon | High-quality deck-sig/top-k required | `ogerpon_top2_v7sig` reached about 963 Kaggle, while `ogerpon_v8_mixed` stayed around 662 with the same registry deck. This is direct evidence that mixed training diluted the plan. |
+| Alakazam | High-quality deck-sig required | Earlier low random win rate was mostly policy/deck mismatch. Correct signature plus registry deck reached about 90% vs random; wrong deck stayed near 25-32%. Always evaluate with registry `--auto-deck`. |
+| Mega Lopunny | High-quality deck-sig/top-k required | Top2 v9 reaches about 97% vs random on both known decks. It is still weak in core round-robin, so mixed training should only be used for opponent population, not submission. |
+| Mega Lucario | Single high-quality deck-sig required | Data is tiny and the usable signature can move between score bands. Mixed training or wrong bands can produce `kept=0` or a weak policy. |
+| Dragapult | High-quality deck-sig required, not ready | Current models are weak vs random/core. Treat as a specialist target with failure-report-driven reweighting, not mixed training. |
+| Festival Lead | Prefer high-quality deck-sig/top1 | Top1 specialist reached about 98% vs random. Mixed is acceptable as a population opponent, but not preferred for a submission candidate. |
+| Crustle Wall | Prefer high-quality deck-sig/top-k | Useful as an Ogerpon counter and stable in round-robin, but Kaggle score has been moderate. Keep both top-k and population variants for matchup testing. |
+| Marnie Grimmsnarl | Mixed acceptable | It has the largest data volume and mixed/winweighted variants have been stable local baselines and around 850 Kaggle. Keep a deck-sig/top-k ablation, but mixed is not disallowed. |
+| Cynthia Garchomp | Mixed or top1 acceptable | Data is narrower and the plan is relatively linear. Use top1 if submitting; mixed is fine for core population. |
+| Team Rocket Mewtwo | Mixed acceptable for population only | It beats random strongly but has not translated to strong Kaggle score. Do not prioritize as a submission until round-robin improves. |
+| Mega Starmie / Mega Abomasnow / Archaludon / Hop Trevenant / N's Zoroark | Do not train BC yet | Current replay data is too small or missing. Keep these as random ladder-pool opponents until enough high-quality signatures appear. |
+
+Operational implications:
+
+- Build registries from policy filenames and ladder manifests before every eval.
+- Use `--registry ... --auto-deck` for random tests and round-robin whenever a
+  checkpoint was trained with `--deck-sig`.
+- If a deck-sig specialist has high offline accuracy but poor random win rate,
+  first suspect policy/deck mismatch, then inspect failure reports.
+- Mixed policies should be labeled as population baselines, not as primary
+  daily candidates, unless they survive full round-robin and Kaggle trend checks.
+- For new daily replay data, run corpus stats first and select top signatures by
+  `(score band, episode count, win_dec, known team strength)`, not by raw count
+  alone.
+
 ## Mega Lucario
 
 Mega Lucario has too little high-band data for normal 1000+ population training.

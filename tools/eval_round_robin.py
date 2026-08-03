@@ -7,6 +7,7 @@ import csv
 import importlib.util
 import os
 import random
+import re
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -40,11 +41,28 @@ class Entry:
 
 
 def read_deck(path: str) -> list[int]:
+    path = clean_shell_token(path)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"deck file not found: {path}")
     with open(path) as f:
         deck = [int(line.strip()) for line in f if line.strip()]
     if len(deck) != 60:
         raise ValueError(f"deck must contain 60 cards: {path} has {len(deck)}")
     return deck
+
+
+def clean_shell_token(value: str) -> str:
+    """Undo common quote litter from unquoted shell variable expansion."""
+    value = value.strip()
+    while len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1].strip()
+    return value.strip("'\"")
+
+
+def clean_entry_name(value: str) -> str:
+    value = clean_shell_token(value).lower()
+    value = re.sub(r"[^a-z0-9]+", "_", value).strip("_")
+    return value
 
 
 def legal_random(sel: dict) -> list[int]:
@@ -87,26 +105,30 @@ def policy_action(entry: Entry, obs: dict, use_mcts: bool, sims: int, time_budge
 
 def parse_entry(spec: str, default_deck: str, registry: str = "") -> tuple[str, str, str]:
     """Parse NAME=POLICY[:DECK]. POLICY can be 'random'."""
+    spec = clean_shell_token(spec)
     if "=" in spec:
         name, rest = spec.split("=", 1)
     else:
         rest = spec
         name = "random" if rest == "random" else Path(rest).stem
+    name = clean_entry_name(name)
+    rest = clean_shell_token(rest)
     parts = rest.split(":", 1)
-    policy_path = parts[0]
+    policy_path = clean_shell_token(parts[0])
     if len(parts) == 2:
-        deck_path = parts[1]
+        deck_path = clean_shell_token(parts[1])
     elif registry and policy_path != "random":
         deck_path = registry_deck_for_policy(registry, policy_path) or default_deck
     else:
         deck_path = default_deck
+    deck_path = clean_shell_token(deck_path)
     if not name:
         raise ValueError(f"empty entry name: {spec}")
     return name, policy_path, deck_path
 
 
 def load_entries(specs: list[str], default_deck: str, include_random: bool,
-                 registry: str = "") -> list[Entry]:
+                 registry: str = "", skip_bad_entries: bool = False) -> list[Entry]:
     entries: list[Entry] = []
     if include_random:
         specs = [f"random=random:{default_deck}"] + specs
@@ -117,8 +139,14 @@ def load_entries(specs: list[str], default_deck: str, include_random: bool,
         if name in seen:
             raise ValueError(f"duplicate entry name: {name}")
         seen.add(name)
-        deck = read_deck(deck_path)
-        policy = None if policy_path == "random" else NumpyPolicy.load(policy_path)
+        try:
+            deck = read_deck(deck_path)
+            policy = None if policy_path == "random" else NumpyPolicy.load(policy_path)
+        except Exception as exc:
+            if skip_bad_entries:
+                print(f"Skipping bad entry {name}: {exc}", flush=True)
+                continue
+            raise
         entries.append(Entry(name, policy_path, deck_path, policy, deck))
     if len(entries) < 2:
         raise ValueError("need at least two entries; pass --include-random or multiple --entry values")
@@ -253,6 +281,9 @@ def print_matrix(entries: list[Entry], results: dict[tuple[int, int], dict], gam
                 cells.append("-".rjust(widths[j]))
             else:
                 key = (min(i, j), max(i, j))
+                if key not in results:
+                    cells.append("?".rjust(widths[j]))
+                    continue
                 r = results[key]
                 wins = r["wins_a"] if i < j else r["wins_b"]
                 cells.append(f"{wins / games:.3f}".rjust(widths[j]))
@@ -268,6 +299,8 @@ def write_csv(path: str, entries: list[Entry], results: dict[tuple[int, int], di
         for i, a in enumerate(entries):
             for j, b in enumerate(entries):
                 if i == j:
+                    continue
+                if (min(i, j), max(i, j)) not in results:
                     continue
                 r = results[(min(i, j), max(i, j))]
                 row_wins = r["wins_a"] if i < j else r["wins_b"]
@@ -293,6 +326,10 @@ def main() -> None:
     p.add_argument("--registry", default="",
                    help="CSV mapping policy_path to deck_path for entries without explicit :DECK")
     p.add_argument("--include-random", action="store_true", help="prepend random=random:DECK")
+    p.add_argument("--skip-bad-entries", action="store_true",
+                   help="skip entries with missing/invalid decks or unloadable policies")
+    p.add_argument("--candidate-only", action="store_true",
+                   help="only evaluate entry 0 against every other entry; useful for ladder pools")
     p.add_argument("--games", type=int, default=50, help="games per pair")
     p.add_argument("--mcts", action="store_true", help="use NumpyPolicy.select_mcts for policy entries")
     p.add_argument("--mcts-sims", type=int, default=48)
@@ -315,7 +352,10 @@ def main() -> None:
     specs = list(args.entry)
     for policy in args.policy:
         specs.append(f"{Path(policy).stem}={policy}")
-    entries = load_entries(specs, args.deck, args.include_random, args.registry)
+    entries = load_entries(
+        specs, args.deck, args.include_random, args.registry,
+        skip_bad_entries=args.skip_bad_entries,
+    )
 
     mode = f"MCTS sims={args.mcts_sims} budget={args.time_budget}s" if args.mcts else "greedy"
     print(f"Round-robin: {len(entries)} entries, {args.games} games/pair, {mode}", flush=True)
@@ -324,20 +364,23 @@ def main() -> None:
         print(f"  {e.name}: {kind} | deck={e.deck_path}", flush=True)
 
     results: dict[tuple[int, int], dict] = {}
-    total_pairs = len(entries) * (len(entries) - 1) // 2
+    if args.candidate_only:
+        pair_indices = [(0, j) for j in range(1, len(entries))]
+    else:
+        pair_indices = [(i, j) for i in range(len(entries)) for j in range(i + 1, len(entries))]
+    total_pairs = len(pair_indices)
     t0 = time.time()
     done_pairs = 0
-    for i in range(len(entries)):
-        for j in range(i + 1, len(entries)):
-            done_pairs += 1
-            print(f"\nPair {done_pairs}/{total_pairs}: {entries[i].name} vs {entries[j].name}", flush=True)
-            results[(i, j)] = play_matchup(
-                entries[i], entries[j], args.games, args.mcts, args.mcts_sims,
-                args.time_budget, args.max_turns, args.progress_every,
-                workers=args.workers, seed=args.seed + done_pairs * 100000,
-            )
-            elapsed = time.time() - t0
-            print(f"Finished pair {done_pairs}/{total_pairs} in {elapsed:.0f}s total", flush=True)
+    for i, j in pair_indices:
+        done_pairs += 1
+        print(f"\nPair {done_pairs}/{total_pairs}: {entries[i].name} vs {entries[j].name}", flush=True)
+        results[(i, j)] = play_matchup(
+            entries[i], entries[j], args.games, args.mcts, args.mcts_sims,
+            args.time_budget, args.max_turns, args.progress_every,
+            workers=args.workers, seed=args.seed + done_pairs * 100000,
+        )
+        elapsed = time.time() - t0
+        print(f"Finished pair {done_pairs}/{total_pairs} in {elapsed:.0f}s total", flush=True)
 
     print_matrix(entries, results, args.games)
     if args.out_csv:

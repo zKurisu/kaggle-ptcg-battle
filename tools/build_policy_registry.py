@@ -16,27 +16,27 @@ from ptcg_rl.deck_registry import signature_for_deck
 
 
 ARCH_PATTERNS = [
-    ("Marnie Grimmsnarl", "marnie_grimmsnarl"),
-    ("Alakazam", "alakazam"),
-    ("Crustle Wall", "crustle_wall"),
-    ("Team Rocket Mewtwo", "team_rocket_mewtwo"),
-    ("Teal Mask Ogerpon", "teal_mask_ogerpon"),
-    ("Mega Lopunny", "mega_lopunny"),
-    ("Dragapult", "dragapult"),
-    ("Festival Lead", "festival_lead"),
-    ("Cynthia Garchomp", "cynthia_garchomp"),
-    ("Mega Lucario", "mega_lucario"),
-    ("Mega Abomasnow", "mega_abomasnow"),
-    ("Mega Starmie", "mega_starmie"),
-    ("Archaludon", "archaludon"),
-    ("Hop Trevenant", "hop_trevenant"),
+    ("Marnie Grimmsnarl", ("marnie_grimmsnarl", "marnie")),
+    ("Alakazam", ("alakazam",)),
+    ("Crustle Wall", ("crustle_wall", "crustle")),
+    ("Team Rocket Mewtwo", ("team_rocket_mewtwo", "rocket_mewtwo", "mewtwo")),
+    ("Teal Mask Ogerpon", ("teal_mask_ogerpon", "ogerpon")),
+    ("Mega Lopunny", ("mega_lopunny", "lopunny")),
+    ("Dragapult", ("dragapult",)),
+    ("Festival Lead", ("festival_lead", "festival")),
+    ("Cynthia Garchomp", ("cynthia_garchomp", "cynthia")),
+    ("Mega Lucario", ("mega_lucario", "lucario")),
+    ("Mega Abomasnow", ("mega_abomasnow", "abomasnow")),
+    ("Mega Starmie", ("mega_starmie", "starmie")),
+    ("Archaludon", ("archaludon",)),
+    ("Hop Trevenant", ("hop_trevenant", "trevenant")),
 ]
 
 
 def infer_archetype(policy: Path) -> str:
     name = policy.stem.lower()
-    for arch, slug in ARCH_PATTERNS:
-        if slug in name:
+    for arch, slugs in ARCH_PATTERNS:
+        if any(slug in name for slug in slugs):
             return arch
     return ""
 
@@ -108,7 +108,7 @@ def main() -> None:
     seen = set()
     rows = []
     for policy in policies:
-        if policy in seen or "_ep" in policy.stem:
+        if policy in seen or re.search(r"_ep\d{3}$", policy.stem):
             continue
         seen.add(policy)
         arch = infer_archetype(policy)

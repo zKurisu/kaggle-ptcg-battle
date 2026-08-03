@@ -38,6 +38,19 @@ OPT_NAMES = {
     6: "ENERGY", 7: "PLAY", 8: "ATTACH", 9: "EVOLVE", 10: "ABILITY", 11: "DISCARD",
     12: "RETREAT", 13: "ATTACK", 14: "END", 15: "SKILL", 16: "SPECIAL_CONDITION",
 }
+SET_CONTEXTS = {
+    5,   # TO_BENCH
+    7,   # TO_HAND
+    8,   # DISCARD
+    9,   # TO_DECK
+    10,  # TO_DECK_BOTTOM
+    11,  # TO_PRIZE
+    13,  # DAMAGE_COUNTER
+    14,  # DAMAGE_COUNTER_ANY
+    16,  # REMOVE_DAMAGE_COUNTER
+    22,  # ATTACH_TO
+    34,  # SKILL_ORDER
+}
 
 
 def _bucket(n: int) -> str:
@@ -80,20 +93,69 @@ def _add(table, key, first_ok: int, exact_ok: int, top2_ok: int, top3_ok: int) -
     row[4] += top3_ok
 
 
+def _add_set(table, key, pred: list[int], true: list[int]) -> None:
+    ps = set(pred)
+    ts = set(true)
+    inter = len(ps & ts)
+    prec = inter / max(len(ps), 1)
+    rec = inter / max(len(ts), 1)
+    f1 = 2 * prec * rec / max(prec + rec, 1e-9)
+    row = table[key]
+    row[0] += 1
+    row[1] += int(ps == ts)
+    row[2] += prec
+    row[3] += rec
+    row[4] += f1
+
+
+ACC_FIELDS = [
+    "table", "key", "label", "n",
+    "first", "exact", "top2", "top3",
+    "set_exact", "precision", "recall", "f1",
+]
+
+
+def _ensure_header(path: str) -> tuple[Path, bool]:
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    exists = out.exists() and out.stat().st_size > 0
+    return out, exists
+
+
 def _write_table(path: str, name: str, table: dict, labels: dict | None = None) -> None:
     if not path:
         return
-    out = Path(path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    exists = out.exists()
+    out, exists = _ensure_header(path)
     with out.open("a", newline="") as f:
-        w = csv.writer(f)
+        w = csv.DictWriter(f, fieldnames=ACC_FIELDS)
         if not exists:
-            w.writerow(["table", "key", "label", "n", "first", "exact", "top2", "top3"])
+            w.writeheader()
         for key, vals in sorted(table.items(), key=lambda kv: kv[1][0], reverse=True):
             cnt, fst, ex, t2, t3 = vals
             label = labels.get(key, "") if labels else ""
-            w.writerow([name, key, label, cnt, fst / cnt, ex / cnt, t2 / cnt, t3 / cnt])
+            w.writerow({
+                "table": name, "key": key, "label": label, "n": cnt,
+                "first": fst / cnt, "exact": ex / cnt, "top2": t2 / cnt, "top3": t3 / cnt,
+                "set_exact": "", "precision": "", "recall": "", "f1": "",
+            })
+
+
+def _write_set_table(path: str, name: str, table: dict, labels: dict | None = None) -> None:
+    if not path:
+        return
+    out, exists = _ensure_header(path)
+    with out.open("a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=ACC_FIELDS)
+        if not exists:
+            w.writeheader()
+        for key, vals in sorted(table.items(), key=lambda kv: kv[1][0], reverse=True):
+            cnt, ex, prec, rec, f1 = vals
+            label = labels.get(key, "") if labels else ""
+            w.writerow({
+                "table": name, "key": key, "label": label, "n": cnt,
+                "first": "", "exact": "", "top2": "", "top3": "",
+                "set_exact": ex / cnt, "precision": prec / cnt, "recall": rec / cnt, "f1": f1 / cnt,
+            })
 
 
 def main() -> None:
@@ -111,6 +173,8 @@ def main() -> None:
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--progress-every", type=int, default=5000)
     parser.add_argument("--include-empty", action="store_true")
+    parser.add_argument("--load-progress-every", type=int, default=200000,
+                        help="print corpus indexing progress every N raw decisions; 0 disables")
     parser.add_argument("--winner-only", action="store_true",
                         help="evaluate only labels from games this player won; requires outcome metadata")
     parser.add_argument("--out-csv", default="", help="append grouped accuracy tables to CSV")
@@ -160,6 +224,7 @@ def main() -> None:
         opt_feat_dim=opt_feat_dim,
         deck_sigs=args.deck_sig,
         winner_only=args.winner_only,
+        load_progress_every=args.load_progress_every,
     )
     indices = corpus.all_indices()
     if args.stride > 1:
@@ -170,6 +235,8 @@ def main() -> None:
     by_ctx = defaultdict(lambda: [0, 0, 0, 0, 0])
     by_opt = defaultdict(lambda: [0, 0, 0, 0, 0])
     by_nopt = defaultdict(lambda: [0, 0, 0, 0, 0])
+    set_ctx = defaultdict(lambda: [0, 0, 0.0, 0.0, 0.0])
+    set_all = [0, 0, 0.0, 0.0, 0.0]
     start = time.time()
     next_progress = args.progress_every if args.progress_every else None
 
@@ -196,6 +263,9 @@ def main() -> None:
             true_empty += int(not true)
             for table, key in ((by_ctx, ctx), (by_opt, opt), (by_nopt, _bucket(nopt))):
                 _add(table, key, first_ok, exact_ok, top2_ok, top3_ok)
+            if len(true) > 1 or ctx in SET_CONTEXTS:
+                _add_set(set_ctx, ctx, pred, true)
+                _add_set({"all": set_all}, "all", pred, true)
         if next_progress is not None and (n >= next_progress or n == len(indices)):
             rate = n / max(time.time() - start, 1e-9)
             eta = max(len(indices) - n, 0) / max(rate, 1e-9)
@@ -228,10 +298,22 @@ def main() -> None:
     print("\nBy option count:")
     for key, (cnt, fst, ex, t2, t3) in sorted(by_nopt.items(), key=lambda kv: str(kv[0])):
         print(f"  {key:<4} n={cnt:5d} first={fst/cnt:.3f} exact={ex/cnt:.3f} top3={t3/cnt:.3f}")
+    if set_all[0]:
+        cnt, ex, prec, rec, f1 = set_all
+        print("\nSet-style multi/select contexts:")
+        print(f"  ALL                  n={cnt:5d} set_exact={ex/cnt:.3f} precision={prec/cnt:.3f} recall={rec/cnt:.3f} f1={f1/cnt:.3f}")
+        for key, (cnt, ex, prec, rec, f1) in sorted(set_ctx.items(), key=lambda kv: kv[1][0], reverse=True)[:20]:
+            print(
+                f"  {key:2d} {CONTEXT_NAMES.get(key, '?'):<18} "
+                f"n={cnt:5d} set_exact={ex/cnt:.3f} precision={prec/cnt:.3f} recall={rec/cnt:.3f} f1={f1/cnt:.3f}"
+            )
     if args.out_csv:
         _write_table(args.out_csv, "context", by_ctx, CONTEXT_NAMES)
         _write_table(args.out_csv, "option_type", by_opt, OPT_NAMES)
         _write_table(args.out_csv, "option_count", by_nopt)
+        if set_all[0]:
+            _write_set_table(args.out_csv, "set_context", set_ctx, CONTEXT_NAMES)
+            _write_set_table(args.out_csv, "set_all", {"all": set_all})
         print(f"\nWrote grouped tables to {args.out_csv}")
 
 

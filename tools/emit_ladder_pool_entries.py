@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 import shlex
 
 
 def safe_entry_name(row: dict, idx: int) -> str:
-    arch = row.get("archetype", "opp").lower().replace(" ", "_").replace("+", "")
+    arch = row.get("archetype", "opp").lower().replace("+", "")
+    arch = re.sub(r"[^a-z0-9]+", "_", arch).strip("_") or "opp"
     sig = row.get("deck_sig", "")[:8]
     return f"opp{idx:02d}_{arch[:18]}_{sig}"
 

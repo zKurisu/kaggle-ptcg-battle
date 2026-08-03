@@ -533,6 +533,84 @@ python3 tools/eval_round_robin.py \
     --out-csv logs/round_robin_candidate_vs_ladder_pool.csv
 ```
 
+加权汇总应优先使用 ladder pool manifest 的 `weight`，避免低频卡组和高频
+Marnie/Ogerpon/Alakazam 被简单平均：
+
+```bash
+python3 tools/summarize_round_robin.py \
+    logs/round_robin_candidate_vs_ladder_pool.csv \
+    --manifest logs/ladder_pool_v1/pool_manifest.csv \
+    --out logs/round_robin_candidate_vs_ladder_pool_summary.csv
+```
+
+### 下一轮 BC v8 重点
+
+当前 random 胜率只能作为 smoke test；候选排序以 weighted ladder pool、
+BC population round-robin、Kaggle replay analysis 为主。
+
+训练侧优先尝试 outcome value auxiliary loss。默认关闭，保持旧模型兼容；
+建议从小权重开始：
+
+```bash
+python3 -u tools/bc2_train.py \
+    --corpus data/bc_corpus_banded_v8 \
+    --archetype "Marnie Grimmsnarl" \
+    --score-bands "1200+" "1100-1199" "1000-1099" \
+    --epochs 8 \
+    --batch-size 4096 \
+    --width 2.0 \
+    --device cuda:0 \
+    --win-weight 1.5 \
+    --loss-weight 0.4 \
+    --draw-weight 0.8 \
+    --value-weight 0.05 \
+    --save checkpoints/bc2_marnie_v8_value_w2.npz
+```
+
+多选场景需要单独观察 set-style 指标。`bc2_accuracy.py` 会额外输出
+`set_exact / precision / recall / f1`，重点关注 `TO_HAND`、`DISCARD`、
+`TO_DECK`、`TO_BENCH`、`ATTACH_TO` 等 context：
+
+```bash
+python3 tools/bc2_accuracy.py checkpoints/bc2_marnie_v8_value_w2.npz \
+    --corpus data/bc_corpus_banded_v8 \
+    --archetype "Marnie Grimmsnarl" \
+    --score-bands "1200+" "1100-1199" "1000-1099" \
+    --max-samples 50000 \
+    --batch-size 4096 \
+    --progress-every 5000
+```
+
+Deck-specific top-k 训练可以由 stats CSV 自动规划。规则默认是：
+`top1 share >= 75%` 只训 top1；否则训 top1 和覆盖 80% 决策量的 topK。
+
+```bash
+python3 tools/plan_deck_specific_bc.py \
+    --stats-glob "logs/bc_corpus_stats_{ogerpon,dragapult,festival,lopunny,alakazam}_v7sig.csv" \
+    --corpus data/bc_corpus_banded_v7sig \
+    --tag v7sig_topdeck_w2 \
+    --force-top1 \
+    --out logs/deck_specific_bc_plan_v7sig.csv \
+    --script logs/train_deck_specific_v7sig.sh \
+    --eval-script logs/eval_deck_specific_v7sig.sh
+
+bash logs/train_deck_specific_v7sig.sh
+```
+
+规划结果先看一眼：
+
+```bash
+column -s, -t logs/deck_specific_bc_plan_v7sig.csv
+```
+
+训练完成后运行自动评测脚本。它会重建 registry，跑 random smoke，并用
+`eval_round_robin.py --candidate-only` 只测 candidate 对 ladder pool，避免
+重复计算 opponent-vs-opponent：
+
+```bash
+bash logs/eval_deck_specific_v7sig.sh
+```
+
 ## 常用命令
 
 ```bash

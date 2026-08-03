@@ -23,7 +23,8 @@ def _save_npz(model: torch.nn.Module, path: str) -> None:
     np.savez_compressed(path, **{k: v.detach().cpu().numpy() for k, v in model.state_dict().items()})
 
 
-def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None, first_action_weight=1.0):
+def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
+               first_action_weight=1.0, value_weight=0.0):
     training = optimizer is not None
     model.train(training)
     total = 0.0
@@ -33,7 +34,12 @@ def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None, first
         if len(batch_idx) < 2:
             continue
         batch = corpus.collate(batch_idx, device)
-        loss = sequence_nll(model, batch, first_action_weight=first_action_weight)
+        loss = sequence_nll(
+            model,
+            batch,
+            first_action_weight=first_action_weight,
+            value_weight=value_weight,
+        )
         if training:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -59,6 +65,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--val-fraction", type=float, default=0.1)
     parser.add_argument("--include-empty", action="store_true")
+    parser.add_argument("--load-progress-every", type=int, default=200000,
+                        help="print corpus indexing progress every N raw decisions; 0 disables")
     parser.add_argument("--winner-only", action="store_true",
                         help="train only on decisions from games this player won; requires outcome metadata")
     parser.add_argument("--win-weight", type=float, default=1.0,
@@ -70,6 +78,8 @@ def main() -> None:
     parser.add_argument("--legacy-state-pool", action="store_true",
                         help="use old pooled board encoder instead of slot-aware active/bench encoder")
     parser.add_argument("--first-action-weight", type=float, default=1.5)
+    parser.add_argument("--value-weight", type=float, default=0.0,
+                        help="optional auxiliary outcome-value MSE weight; requires outcome metadata")
     parser.add_argument("--option-weight", type=float, default=0.15)
     parser.add_argument("--checkpoint-every", type=int, default=1)
     parser.add_argument("--save", default="checkpoints/bc2_marnie_w2.npz")
@@ -88,6 +98,7 @@ def main() -> None:
         win_weight=args.win_weight,
         loss_weight=args.loss_weight,
         draw_weight=args.draw_weight,
+        load_progress_every=args.load_progress_every,
     )
     train_idx, val_idx = corpus.split_indices(args.val_fraction, args.seed)
 
@@ -124,6 +135,7 @@ def main() -> None:
                 model,
                 corpus.collate(batch_idx, device),
                 first_action_weight=args.first_action_weight,
+                value_weight=args.value_weight,
             )
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -148,6 +160,7 @@ def main() -> None:
                 device,
                 optimizer=None,
                 first_action_weight=args.first_action_weight,
+                value_weight=args.value_weight,
             )
         elapsed = time.time() - start
         print(f"  done epoch {epoch}/{args.epochs} train={train_loss:.4f} val={val_loss:.4f} {elapsed:.0f}s", flush=True)

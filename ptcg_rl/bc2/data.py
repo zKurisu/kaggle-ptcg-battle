@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import glob
 import os
+import time
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -26,6 +27,8 @@ class BCBatch:
     max_count: torch.Tensor
     opt_len: torch.Tensor
     sample_weight: torch.Tensor
+    outcome_value: torch.Tensor
+    outcome_mask: torch.Tensor
     actions: list[list[int]]
     n_options: list[int]
     contexts: list[int]
@@ -73,6 +76,7 @@ class BCCorpus:
         win_weight: float = 1.0,
         loss_weight: float = 1.0,
         draw_weight: float = 1.0,
+        load_progress_every: int = 0,
     ):
         if not paths:
             raise FileNotFoundError("No BC corpus .npz files found")
@@ -89,7 +93,9 @@ class BCCorpus:
         self.groups: list[list[tuple[int, int]]] = []
         self.stats = {"raw": 0, "kept": 0, "empty": 0, "bad": 0, "deck_filtered": 0, "outcome_filtered": 0}
 
-        for path in paths:
+        t0 = time.time()
+        for path_i, path in enumerate(paths, 1):
+            file_t0 = time.time()
             with np.load(path, allow_pickle=True) as z:
                 data = {k: z[k] for k in z.files}
             if self.deck_sigs and "deck_sig" not in data:
@@ -104,7 +110,10 @@ class BCCorpus:
                 )
             di = len(self.npz_data)
             group: list[tuple[int, int]] = []
-            for i in range(len(data["board"])):
+            n_rows = len(data["board"])
+            file_raw0 = self.stats["raw"]
+            file_kept0 = self.stats["kept"]
+            for i in range(n_rows):
                 self.stats["raw"] += 1
                 if self.deck_sigs and str(data["deck_sig"][i]) not in self.deck_sigs:
                     self.stats["deck_filtered"] += 1
@@ -118,9 +127,28 @@ class BCCorpus:
                     self.stats["kept"] += 1
                 else:
                     self.stats[status] += 1
+                if load_progress_every and (
+                    i + 1 == 1 or (i + 1) % load_progress_every == 0 or i + 1 == n_rows
+                ):
+                    done = self.stats["raw"]
+                    rate = done / max(time.time() - t0, 1e-9)
+                    file_rate = (i + 1) / max(time.time() - file_t0, 1e-9)
+                    print(
+                        f"  load {path_i}/{len(paths)} {os.path.basename(path)} "
+                        f"{i+1}/{n_rows} rows kept={self.stats['kept']} "
+                        f"file={file_rate:.0f}/s total={rate:.0f}/s",
+                        flush=True,
+                    )
             self.npz_data.append(data)
             if group:
                 self.groups.append(group)
+            if load_progress_every:
+                print(
+                    f"  loaded {path_i}/{len(paths)} {os.path.basename(path)} "
+                    f"raw={self.stats['raw']-file_raw0} kept={self.stats['kept']-file_kept0} "
+                    f"{time.time()-file_t0:.1f}s",
+                    flush=True,
+                )
 
     def split_indices(self, val_fraction: float = 0.1, seed: int = 7) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
         rng = np.random.default_rng(seed)
@@ -154,6 +182,8 @@ class BCCorpus:
         min_count = np.empty(bsz, dtype=np.int64)
         max_count = np.empty(bsz, dtype=np.int64)
         weights = np.ones(bsz, dtype=np.float32)
+        outcome_value = np.zeros(bsz, dtype=np.float32)
+        outcome_mask = np.zeros(bsz, dtype=np.float32)
         actions: list[list[int]] = []
         contexts: list[int] = []
         true_first_types: list[int] = []
@@ -181,12 +211,16 @@ class BCCorpus:
             true_first_types.append(int(opt_type[bi, first]) if first >= 0 else -1)
             weights[bi] += self.option_weight * np.log1p(float(n))
             if "won" in data:
+                outcome_mask[bi] = 1.0
                 if int(data["won"][si]) == 1:
                     weights[bi] *= self.win_weight
+                    outcome_value[bi] = 1.0
                 elif "draw" in data and int(data["draw"][si]) == 1:
                     weights[bi] *= self.draw_weight
+                    outcome_value[bi] = 0.0
                 else:
                     weights[bi] *= self.loss_weight
+                    outcome_value[bi] = -1.0
 
         max_steps = max(len(a) for a in actions) + 1
         targets = np.full((bsz, max_steps), -1, dtype=np.int64)
@@ -210,6 +244,8 @@ class BCCorpus:
             max_count=torch.as_tensor(max_count, device=device),
             opt_len=torch.as_tensor(n_options, dtype=torch.long, device=device),
             sample_weight=torch.as_tensor(weights, device=device),
+            outcome_value=torch.as_tensor(outcome_value, device=device),
+            outcome_mask=torch.as_tensor(outcome_mask, device=device),
             actions=actions,
             n_options=n_options,
             contexts=contexts,

@@ -6,7 +6,8 @@ import torch.nn.functional as F
 from .data import BCBatch
 
 
-def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0) -> torch.Tensor:
+def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
+                 value_weight: float = 0.0) -> torch.Tensor:
     """Autoregressive sequence NLL with padded options masked out."""
     h = model.encode_state(batch.board, batch.hand, batch.feats)
     opts = model.encode_options(batch.opt_type, batch.opt_card, batch.opt_card2, batch.opt_attack, batch.opt_feats)
@@ -41,4 +42,13 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0) -> 
                     cols = target[picked]
                     picked_sum[rows] += opts[rows, cols]
                     avail[rows, cols] = False
-    return total / weight_total.clamp(min=1.0)
+    policy_loss = total / weight_total.clamp(min=1.0)
+    if value_weight <= 0:
+        return policy_loss
+    value_mask = batch.outcome_mask > 0
+    if not bool(value_mask.any()):
+        return policy_loss
+    pred = model.value(h)
+    value_loss = ((pred - batch.outcome_value).pow(2) * batch.sample_weight * batch.outcome_mask).sum()
+    value_loss = value_loss / (batch.sample_weight * batch.outcome_mask).sum().clamp(min=1.0)
+    return policy_loss + float(value_weight) * value_loss

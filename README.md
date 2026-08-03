@@ -601,6 +601,16 @@ python3 tools/bc2_failure_report.py checkpoints/bc2_dragapult_v8_mixed_1000_w2.n
 - `TO_HAND / DISCARD / TO_DECK / TO_BENCH`：搜索/弃牌/铺场是否破坏 game plan。
 - `DAMAGE_COUNTER*`：Dragapult/Dusknoir 这类卡组的伤害分配是否稳定。
 
+v9 起 encoder 增加 game-plan 特征，状态维度为 64，选项维度为 48。旧 checkpoint
+推理会自动截断兼容；新模型必须重新抽取 corpus 才能使用新增特征：
+
+```bash
+python3 -u tools/bc_extract_v2.py ../episodes_raw \
+    --out data/bc_corpus_banded_v9 \
+    --workers 8 \
+    --progress-every 1000
+```
+
 Deck-specific top-k 训练可以由 stats CSV 自动规划。规则默认是：
 `top1 share >= 75%` 只训 top1；否则训 top1 和覆盖 80% 决策量的 topK。
 

@@ -29,8 +29,8 @@ MAX_HP = 400            # practical max HP
 
 # ── Feature dimensions ────────────────────────────────────────────────────
 CARD_DIM = 64           # card embedding
-STATE_FEAT_DIM = 48     # scalar state features
-OPT_FEAT_DIM = 32       # per-option scalar features
+STATE_FEAT_DIM = 64     # scalar state features
+OPT_FEAT_DIM = 48       # per-option scalar features
 
 
 @dataclass
@@ -114,6 +114,18 @@ class FastEncoder:
         for i, c in enumerate(my_hand[:MAX_HAND]):
             hand[i] = c["id"]
 
+        options = sel.get("option", [])
+        n_opt = len(options)
+        opt_type_counts: dict[int, int] = {}
+        for o in options:
+            ot = int(o.get("type", 0) or 0)
+            opt_type_counts[ot] = opt_type_counts.get(ot, 0) + 1
+
+        my_inplay = self._in_play(me)
+        opp_inplay = self._in_play(opp)
+        my_active = me.get("active", [None])[0] if me.get("active") else None
+        opp_active = opp.get("active", [None])[0] if opp.get("active") else None
+
         # ── State features ────────────────────────────────────────────────
         s = np.zeros(STATE_FEAT_DIM, dtype=np.float32)
         s[0] = cur.get("turn", 0) / 30.0
@@ -148,8 +160,6 @@ class FastEncoder:
         s[29] = sum(self._damage_ratio(p) for p in me.get("bench", []) if p) / BENCH_MAX
         s[30] = sum(self._damage_ratio(p) for p in opp.get("bench", []) if p) / BENCH_MAX
         s[31] = len(my_hand) / MAX_HAND
-        my_active = me.get("active", [None])[0] if me.get("active") else None
-        opp_active = opp.get("active", [None])[0] if opp.get("active") else None
         s[32] = self._hp_ratio(my_active)
         s[33] = self._hp_ratio(opp_active)
         s[34] = self._retreat_cost(my_active) / 5.0
@@ -166,10 +176,27 @@ class FastEncoder:
         s[45] = self._special_status(opp)
         s[46] = len(me.get("discard") or []) / DECK_SIZE
         s[47] = len(opp.get("discard") or []) / DECK_SIZE
+        # Game-plan / phase features. These expose action availability and
+        # board development explicitly instead of forcing the model to infer
+        # them only from unordered options and pooled card embeddings.
+        s[48] = opt_type_counts.get(13, 0) / 4.0   # ATTACK options
+        s[49] = opt_type_counts.get(8, 0) / 8.0    # ATTACH options
+        s[50] = opt_type_counts.get(9, 0) / 8.0    # EVOLVE options
+        s[51] = opt_type_counts.get(10, 0) / 8.0   # ABILITY options
+        s[52] = opt_type_counts.get(7, 0) / 16.0   # PLAY options
+        s[53] = opt_type_counts.get(12, 0) / 4.0   # RETREAT options
+        s[54] = opt_type_counts.get(14, 0) / 2.0   # END options
+        s[55] = n_opt / 32.0
+        s[56] = max((self._energy_count(p) for p in my_inplay), default=0) / 10.0
+        s[57] = max((self._energy_count(p) for p in opp_inplay), default=0) / 10.0
+        s[58] = sum(1 for p in my_inplay if self._is_ex(p)) / 6.0
+        s[59] = sum(1 for p in my_inplay if self._is_mega(p)) / 6.0
+        s[60] = sum(1 for p in my_inplay if self._stage(p) >= 1) / 6.0
+        s[61] = sum(1 for p in my_inplay if self._damage_ratio(p) > 0) / 6.0
+        s[62] = sum(1 for p in opp_inplay if self._damage_ratio(p) > 0) / 6.0
+        s[63] = max((self._damage_ratio(p) for p in opp_inplay), default=0.0)
 
         # ── Options ───────────────────────────────────────────────────────
-        options = sel.get("option", [])
-        n_opt = len(options)
         opt_type = np.zeros(n_opt, dtype=np.int64)
         opt_card = np.zeros(n_opt, dtype=np.int64)
         opt_card2 = np.zeros(n_opt, dtype=np.int64)
@@ -177,7 +204,7 @@ class FastEncoder:
         opt_feats = np.zeros((n_opt, OPT_FEAT_DIM), dtype=np.float32)
 
         for i, o in enumerate(options):
-            ot = o.get("type", 0)
+            ot = int(o.get("type", 0) or 0)
             opt_type[i] = ot
             opt_feats[i, 0] = float(ot) / N_OPT_TYPES
             opt_feats[i, 2] = i / max(n_opt - 1, 1)
@@ -197,6 +224,14 @@ class FastEncoder:
             opt_feats[i, 11] = float(o.get("toolIndex") or 0) / 10.0
             opt_feats[i, 12] = float(o.get("energyIndex") or 0) / 10.0
             opt_feats[i, 13] = 1.0 if pid == you else 0.0
+            opt_feats[i, 31] = n_opt / 32.0
+            same_type_count = opt_type_counts.get(int(ot or 0), 0)
+            opt_feats[i, 32] = same_type_count / max(n_opt, 1)
+            opt_feats[i, 33] = same_type_count / 16.0
+            opt_feats[i, 41] = 1.0 if ot in (7, 8, 9, 10) else 0.0
+            opt_feats[i, 42] = 1.0 if ot == 13 else 0.0
+            opt_feats[i, 43] = 1.0 if ot == 14 else 0.0
+            opt_feats[i, 44] = 1.0 if ot == 12 else 0.0
 
             if area is not None and idx is not None:
                 c = self._get_card(cur, pid, area, idx, sel)
@@ -205,6 +240,7 @@ class FastEncoder:
                 opt_feats[i, 14] = self._damage_ratio(target)
                 opt_feats[i, 15] = self._energy_count(target) / 10.0
                 self._fill_option_extras(opt_feats[i], c, target, pid, you, area)
+                self._fill_plan_target_extras(opt_feats[i], target, pid, you, area)
                 if ot == 4:  # ToolCard: choose an attached tool, not only its Pokemon.
                     attached = self._get_attached_card(cur, pid, area, idx, "tools", o.get("toolIndex"))
                     if attached:
@@ -223,6 +259,7 @@ class FastEncoder:
                     opt_feats[i, 14] = self._damage_ratio(target2)
                     opt_feats[i, 15] = self._energy_count(target2) / 10.0
                     self._fill_target_extras(opt_feats[i], target2, pid, you, o.get("inPlayArea"))
+                    self._fill_plan_target_extras(opt_feats[i], target2, pid, you, o.get("inPlayArea"))
             if ot == 7 and o.get("index") is not None:  # Play: hand index only
                 idx2 = int(o.get("index") or 0)
                 opt_feats[i, 7] = 2.0 / 16.0
@@ -301,6 +338,15 @@ class FastEncoder:
             return len(energies)
         return len(p.get("energyCards") or [])
 
+    @staticmethod
+    def _in_play(player: dict) -> list[dict]:
+        out = []
+        active = player.get("active") or []
+        if active and active[0]:
+            out.append(active[0])
+        out.extend([p for p in (player.get("bench") or []) if p])
+        return out
+
     def _fill_card_metadata(self, feats: np.ndarray, card_id: int) -> None:
         cid = int(card_id or 0)
         if not (0 <= cid < len(self.card_hp)):
@@ -330,6 +376,23 @@ class FastEncoder:
                             you: int, area: int | None) -> None:
         self._fill_card_metadata(feats, card_id)
         self._fill_target_extras(feats, target, player_idx, you, area)
+
+    def _fill_plan_target_extras(self, feats: np.ndarray, target: dict | None,
+                                 player_idx: int, you: int, area: int | None) -> None:
+        if not target:
+            return
+        target_energy = self._energy_count(target)
+        feats[34] = 1.0 if player_idx == you and area == 4 else 0.0
+        feats[35] = 1.0 if player_idx == you and area == 5 else 0.0
+        feats[36] = 1.0 if player_idx != you and area == 4 else 0.0
+        feats[37] = 1.0 if player_idx != you and area == 5 else 0.0
+        feats[38] = target_energy / 10.0
+        feats[39] = 1.0 if target_energy > 0 else 0.0
+        feats[40] = 1.0 if self._damage_ratio(target) > 0 else 0.0
+        cid = int(target.get("id") or 0)
+        feats[45] = float(self.card_retreat[cid]) / 5.0 if 0 <= cid < len(self.card_retreat) else 0.0
+        feats[46] = len(target.get("tools") or []) / 4.0
+        feats[47] = len(target.get("energyCards") or target.get("energies") or []) / 10.0
 
     @staticmethod
     def _get_pokemon(cur: dict, player_idx: int, area: int, index: int) -> dict | None:

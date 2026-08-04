@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-04 23:37 Asia/Shanghai.
+Last updated: 2026-08-05 00:05 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -19,15 +19,14 @@ For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload
 
 Recent relevant commits:
 
-- Latest local change: fix duplicate shadow manifest handling in eval/train/build scripts.
+- Latest local change: add `tools/eval_manifest_random.py` for batch random evaluation of manifest/shadow policies.
+- `00f3a0b` Handle duplicate shadow manifest entries
+- `c0e0366` Add agent handoff notes
 - `1d421ad` Document current BC pipeline notes
 - `edc0113` Add matchup-aware BC data pipeline features
 - `950f7fa` Add matchup decision trace diagnostic
-- `dc79b90` Show failed jobs in BC runners
-- `8b5354c` Add CUDA memory caps to BC training
-- `0ed5d12` Improve BC shadow training pipeline
 
-The worktree was clean before this file was added.
+The worktree was clean before adding the current random-eval helper and this handoff update.
 
 ## Kaggle Accounts And Monitoring
 
@@ -50,12 +49,12 @@ Remote score monitoring currently running:
 - `by`: `KAGGLE_CONFIG_DIR=/root/.kaggle/by python3 -u tools/track_kaggle_scores.py --watch --interval 60 --out logs/kaggle_submission_scores_by.csv`
 - `by` log: `logs/track_kaggle_scores_by.log`
 
-Latest observed `by` scores at `2026-08-04T15:15:43+00:00`:
+Latest observed `by` score-monitor rows at `2026-08-04T22:57:08+00:00`:
 
 | Submission | Description | Score |
 | --- | --- | ---: |
-| `55241705` | `bc: team_rocket_mewtwo_v10pop` | 635.1 |
-| `55241683` | `bc: crustle_wall_v10pop` | 920.5 |
+| `55241705` | `bc: team_rocket_mewtwo_v10pop` | 715.1 |
+| `55241683` | `bc: crustle_wall_v10pop` | 880.1 |
 | `55234504` | `bc: ogerpon_v10_fixed_top2` | 956.3 |
 | `55234481` | `bc: ogerpon_v10_fixed_top3` | 718.5 |
 
@@ -165,8 +164,8 @@ Ogerpon:
 
 Probe submissions on `by` account:
 
-- `55241683`: Crustle Wall v10pop, currently around 920.5.
-- `55241705`: Team Rocket Mewtwo v10pop, currently around 635.1.
+- `55241683`: Crustle Wall v10pop, current monitored score around 880.1; earlier observed around 920.
+- `55241705`: Team Rocket Mewtwo v10pop, current monitored score around 715.1; earlier observed around 635.
 
 Local random 500:
 
@@ -184,6 +183,29 @@ Local category round-robin g200 vs core categories:
 
 Important conclusion: random is not enough. Use random only as a sanity check, then run category round-robin, ladder/failure pool evaluation, and matchup trace.
 
+Shadow top120 baseline-delta eval:
+
+```text
+logs/eval_shadow_v10/probes_vs_ogerpon_shadow_top120_g80.csv
+```
+
+Summary vs Ogerpon fixed top2 baseline over 120 shadow opponents, 80 games each:
+
+| Candidate | Candidate Avg | Baseline Avg | Avg Delta | Weighted Delta | Lost Delta | Candidate WR < 0.5 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Crustle Wall | 0.595 | 0.719 | -0.125 | -0.141 | 78 / 120 | 50 / 120 |
+| Marnie Grimmsnarl | 0.636 | 0.719 | -0.084 | -0.093 | 82 / 120 | 16 / 120 |
+| Team Rocket Mewtwo | 0.455 | 0.719 | -0.264 | -0.272 | 97 / 120 | 84 / 120 |
+
+Interpretation:
+
+- This shadow pool is not trivial: Ogerpon baseline averages only 0.719 and is nearly blanked by Crustle shadows, weak into Alakazam/Mega Lopunny, but strong into Marnie/TR.
+- None of the three probes beats Ogerpon overall on this Marnie-heavy top120 pool.
+- Marnie is the best of the three by average, but loses delta on 82/120 and is weak into Ogerpon shadows and Marnie mirrors.
+- Crustle strongly beats Crustle/Alakazam/Ogerpon shadows but is crushed by Marnie shadows; this explains why it can show useful Kaggle score yet fail broad local ladder pressure.
+- Team Rocket Mewtwo is clearly not ready as a broad candidate; high random does not translate here.
+- Top120 contains 67 Marnie shadows, so treat it as a stress pool. Later build balanced-per-archetype and hard-pool views rather than relying on one aggregate.
+
 ## Diagnostic Artifacts
 
 Local/remote logs worth checking:
@@ -196,6 +218,7 @@ Local/remote logs worth checking:
 - `logs/eval_v10/category_rr_v10pop_20260804/failure_trace_setup_choices.csv`
 - `logs/eval_v10/category_rr_v10pop_20260804/bc_failure/`
 - `logs/eval_v10/category_rr_v10pop_20260804/bc_failure_digest.csv`
+- `logs/eval_shadow_v10/probes_vs_ogerpon_shadow_top120_g80.csv`
 
 Key diagnostic conclusions:
 
@@ -217,14 +240,32 @@ python3 tools/trace_matchup_decisions.py \
   --out-prefix logs/eval_v10/marnie_vs_ogerpon_trace_g100
 ```
 
+Batch random evaluation for manifest/shadow policies:
+
+```bash
+python3 tools/eval_manifest_random.py \
+  --manifest logs/shadow_pool_manifest_v10_all0803_popinit_set.csv \
+  --limit 120 \
+  --games 200 \
+  --workers 8 \
+  --max-turns 700 \
+  --progress-every 50 \
+  --skip-bad-entries \
+  --resume \
+  --out-csv logs/eval_shadow_v10/shadow_top120_random_g200.csv \
+  2>&1 | tee logs/eval_shadow_v10/shadow_top120_random_g200.log
+```
+
+Use `--games 500` and a different output name for the 500-game version. The script appends each policy result immediately, so `--resume` is safe after interruption.
+
 ## Next Work
 
 Immediate:
 
-1. Use the completed shadow pool as local ladder pressure. Do not filter out weak shadows yet; every archetype is useful for population quality.
-2. Run baseline-delta eval for submitted probes and core candidates against shadow top80/top120/top160.
-3. Build hard-pool CSVs from worst shadow matchups.
-4. Deep-dive bad matchups with `trace_matchup_decisions.py` and `bc2_failure_report.py`.
+1. Run shadow random quality audit for top120/top160/all using `tools/eval_manifest_random.py`.
+2. Build balanced-per-archetype and hard-pool views from the completed shadow pool; top120 is useful but Marnie-heavy.
+3. Deep-dive the worst shadow matchups from `probes_vs_ogerpon_shadow_top120_g80.csv`.
+4. Run baseline-delta eval for new core candidates against shadow top80/top120/top160 after random quality audit.
 5. Decide whether each failure calls for feature changes, matchup-conditioned data selection, or deck-sig specialist/shadow training.
 
 Pipeline direction:

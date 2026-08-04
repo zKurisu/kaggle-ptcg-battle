@@ -30,6 +30,7 @@ class Job:
 def _read_jobs(args: argparse.Namespace) -> list[Job]:
     wanted_arch = {x.lower() for x in args.archetype}
     jobs: list[Job] = []
+    queued_checkpoints: set[Path] = set()
     with open(args.manifest, newline="") as f:
         for raw in csv.DictReader(f):
             if args.limit and len(jobs) >= args.limit:
@@ -42,9 +43,13 @@ def _read_jobs(args: argparse.Namespace) -> list[Job]:
             if not cmd_text or not checkpoint_text:
                 continue
             checkpoint = Path(checkpoint_text)
+            if checkpoint in queued_checkpoints:
+                print(f"Skip duplicate checkpoint {raw.get('shadow_name')}: {checkpoint}", flush=True)
+                continue
             if args.skip_existing and checkpoint.exists():
                 print(f"Skip existing {raw.get('shadow_name')}: {checkpoint}", flush=True)
                 continue
+            queued_checkpoints.add(checkpoint)
             name = str(raw.get("shadow_name") or checkpoint.stem)
             rank = int(raw.get("rank") or len(jobs) + 1)
             log = Path(args.log_dir) / f"{rank:03d}_{name}.log"

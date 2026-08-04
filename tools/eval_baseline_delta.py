@@ -43,6 +43,8 @@ FIELDS = [
 
 def read_manifest_entries(path: str, *, limit: int, random_from_deck: bool) -> list[tuple[str, str, float]]:
     entries: list[tuple[str, str, float]] = []
+    seen_entries: set[str] = set()
+    seen_names: dict[str, int] = {}
     with open(path, newline="") as f:
         for row in csv.DictReader(f):
             if limit and len(entries) >= limit:
@@ -64,7 +66,20 @@ def read_manifest_entries(path: str, *, limit: int, random_from_deck: bool) -> l
                     elif policy:
                         entry = f"{name}={policy}"
             if entry:
-                entries.append((clean_entry_name(entry.split("=", 1)[0] if "=" in entry else entry), entry, weight))
+                if entry in seen_entries:
+                    continue
+                seen_entries.add(entry)
+                raw_name = entry.split("=", 1)[0] if "=" in entry else entry
+                base_name = clean_entry_name(raw_name)
+                n = seen_names.get(base_name, 0) + 1
+                seen_names[base_name] = n
+                unique_name = base_name if n == 1 else f"{base_name}_{n}"
+                if unique_name != base_name:
+                    if "=" in entry:
+                        entry = f"{unique_name}={entry.split('=', 1)[1]}"
+                    else:
+                        entry = f"{unique_name}={entry}"
+                entries.append((unique_name, entry, weight))
     return entries
 
 

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-04 23:15 Asia/Shanghai.
+Last updated: 2026-08-04 23:37 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -19,6 +19,7 @@ For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload
 
 Recent relevant commits:
 
+- Latest local change: fix duplicate shadow manifest handling in eval/train/build scripts.
 - `1d421ad` Document current BC pipeline notes
 - `edc0113` Add matchup-aware BC data pipeline features
 - `950f7fa` Add matchup decision trace diagnostic
@@ -68,7 +69,7 @@ Shadow manifest:
 logs/shadow_pool_manifest_v10_all0803_popinit_set.csv
 ```
 
-Command currently running on `ks`:
+Completed command on `ks`:
 
 ```bash
 python3 -u tools/train_shadow_manifest.py \
@@ -81,40 +82,44 @@ python3 -u tools/train_shadow_manifest.py \
   --log-dir logs/v10_pipeline/shadow_v10pop_set_mem8g
 ```
 
-Status snapshot at 2026-08-04 23:15 Asia/Shanghai:
+Status snapshot at 2026-08-04 23:37 Asia/Shanghai:
 
 ```text
 manifest_rows=361
-done=289
-running=3
+done=361
+running=0
 failed=0
-pending=69
+pending=0
 started_no_final=0
-npz_all=1953
-npz_final=279
+npz_all=2457
+npz_final=351
 ```
 
 Per-archetype snapshot:
 
 | Archetype | Done / Total | Pending | Running |
 | --- | ---: | ---: | ---: |
-| Marnie Grimmsnarl | 127 / 151 | 22 | 2 |
-| Alakazam | 39 / 56 | 16 | 1 |
-| Crustle Wall | 33 / 38 | 5 | 0 |
-| Team Rocket Mewtwo | 18 / 24 | 6 | 0 |
-| Dragapult | 17 / 22 | 5 | 0 |
-| Festival Lead | 12 / 18 | 6 | 0 |
-| Mega Lopunny | 14 / 17 | 3 | 0 |
-| Teal Mask Ogerpon | 13 / 15 | 2 | 0 |
-| Cynthia Garchomp | 12 / 14 | 2 | 0 |
-| Mega Lucario | 3 / 4 | 1 | 0 |
-| Mega Starmie | 1 / 2 | 1 | 0 |
+| Marnie Grimmsnarl | 151 / 151 | 0 | 0 |
+| Alakazam | 56 / 56 | 0 | 0 |
+| Crustle Wall | 38 / 38 | 0 | 0 |
+| Team Rocket Mewtwo | 24 / 24 | 0 | 0 |
+| Dragapult | 22 / 22 | 0 | 0 |
+| Festival Lead | 18 / 18 | 0 | 0 |
+| Mega Lopunny | 17 / 17 | 0 | 0 |
+| Teal Mask Ogerpon | 15 / 15 | 0 | 0 |
+| Cynthia Garchomp | 14 / 14 | 0 | 0 |
+| Mega Lucario | 4 / 4 | 0 | 0 |
+| Mega Starmie | 2 / 2 | 0 | 0 |
 
-Running shadow jobs at the snapshot:
+Running shadow jobs at the snapshot: none.
 
-- rank 284: `shadow_marnie_grimmsnarl_2c22fa76_mega_regigigas_ex_vmax`
-- rank 287: `shadow_alakazam_7f9a5389_yumizu`
-- rank 288: `shadow_marnie_grimmsnarl_2c22fa76_k_yoshida`
+There were duplicate `shadow_*_unknown` names in the original manifest. Fixes synced to `ks` at 2026-08-04 23:37:
+
+- `tools/eval_baseline_delta.py` skips exact duplicate manifest entries and suffixes same-name/different-entry opponents.
+- `tools/train_shadow_manifest.py` skips duplicate checkpoint paths when reading a manifest for future runs.
+- `tools/build_shadow_pool.py` suffixes shadow names on safe-name collisions for future manifests.
+
+The completed v10 run used the older running process, so some duplicate checkpoint work was already done. For evaluation this is now handled by `eval_baseline_delta.py`; top120 manifest read check passed with `entries=120 unique_names=120 duplicate_names=0 duplicate_specs=0`.
 
 Use the uploaded helper to re-check:
 
@@ -216,11 +221,11 @@ python3 tools/trace_matchup_decisions.py \
 
 Immediate:
 
-1. Let the current shadow manifest finish unless the user asks to stop it.
-2. Re-run the shadow status helper and update this file when it completes.
-3. Build/evaluate a larger local ladder pool using the completed shadow checkpoints. Do not filter out weak shadows yet; every archetype is useful for population quality.
-4. Run round-robin/failure-pool eval for submitted probes and top shadow candidates.
-5. Deep-dive bad matchups with `trace_matchup_decisions.py` and `bc2_failure_report.py`.
+1. Use the completed shadow pool as local ladder pressure. Do not filter out weak shadows yet; every archetype is useful for population quality.
+2. Run baseline-delta eval for submitted probes and core candidates against shadow top80/top120/top160.
+3. Build hard-pool CSVs from worst shadow matchups.
+4. Deep-dive bad matchups with `trace_matchup_decisions.py` and `bc2_failure_report.py`.
+5. Decide whether each failure calls for feature changes, matchup-conditioned data selection, or deck-sig specialist/shadow training.
 
 Pipeline direction:
 
@@ -253,4 +258,3 @@ Whenever changing active state, update:
 - New corpus/checkpoint feature dimensions.
 - New conclusions from round-robin, Kaggle replay, or failure traces.
 - Any commands that the next agent should continue or avoid.
-

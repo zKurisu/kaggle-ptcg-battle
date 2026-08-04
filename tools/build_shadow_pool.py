@@ -333,6 +333,7 @@ def write_manifest(rows: list[dict], args: argparse.Namespace) -> None:
     deck_paths = index_decks(args.known_decks_dir)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    seen_shadow_names: set[str] = set()
     with out.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDS)
         writer.writeheader()
@@ -341,6 +342,9 @@ def write_manifest(rows: list[dict], args: argparse.Namespace) -> None:
                 f"shadow_{safe_name(row['archetype'], 22)}_"
                 f"{str(row['deck_sig'])[:8]}_{safe_name(row['team_name'], 24)}"
             )
+            if shadow in seen_shadow_names:
+                shadow = f"{shadow}_{rank:03d}"
+            seen_shadow_names.add(shadow)
             checkpoint = str(Path(args.checkpoint_dir) / f"{shadow}_w{args.width:g}.npz")
             init_path = render_init_path(row, args)
             deck_path = deck_paths.get(str(row["deck_sig"]), "")

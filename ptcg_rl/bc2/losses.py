@@ -6,8 +6,50 @@ import torch.nn.functional as F
 from .data import BCBatch
 
 
+def _set_aux_loss(
+    model,
+    h: torch.Tensor,
+    opts: torch.Tensor,
+    batch: BCBatch,
+    *,
+    min_count: int,
+    negative_weight: float,
+) -> torch.Tensor:
+    """Order-free auxiliary loss for decisions that select multiple options."""
+    bsz = batch.board.shape[0]
+    max_options = batch.max_options
+    device = batch.board.device
+    opt_mask = torch.arange(max_options, device=device).unsqueeze(0) < batch.opt_len.unsqueeze(1)
+
+    target = torch.zeros(bsz, max_options, dtype=opts.dtype, device=device)
+    row_keep = torch.zeros(bsz, dtype=torch.bool, device=device)
+    for row, action in enumerate(batch.actions):
+        cols = [int(a) for a in action if 0 <= int(a) < batch.n_options[row]]
+        if len(cols) >= min_count:
+            target[row, cols] = 1.0
+            row_keep[row] = True
+    if not bool(row_keep.any()):
+        return torch.tensor(0.0, device=device)
+
+    picked_sum = torch.zeros(bsz, model._oe, device=device)
+    mask = torch.cat([opt_mask, torch.zeros(bsz, 1, dtype=torch.bool, device=device)], dim=1)
+    option_logits = model.option_logits(h, opts, picked_sum, mask)[:, :max_options]
+    elem = F.binary_cross_entropy_with_logits(option_logits, target, reduction="none")
+
+    pos_mask = target * opt_mask.float()
+    neg_mask = (1.0 - target) * opt_mask.float()
+    pos_loss = (elem * pos_mask).sum(dim=1) / pos_mask.sum(dim=1).clamp(min=1.0)
+    neg_loss = (elem * neg_mask).sum(dim=1) / neg_mask.sum(dim=1).clamp(min=1.0)
+    row_loss = pos_loss + float(negative_weight) * neg_loss
+    row_weight = batch.sample_weight * row_keep.float()
+    return (row_loss * row_weight).sum() / row_weight.sum().clamp(min=1.0)
+
+
 def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
-                 value_weight: float = 0.0) -> torch.Tensor:
+                 value_weight: float = 0.0,
+                 set_loss_weight: float = 0.0,
+                 set_loss_min_count: int = 2,
+                 set_loss_negative_weight: float = 0.25) -> torch.Tensor:
     """Autoregressive sequence NLL with padded options masked out."""
     h = model.encode_state(batch.board, batch.hand, batch.feats)
     opts = model.encode_options(batch.opt_type, batch.opt_card, batch.opt_card2, batch.opt_attack, batch.opt_feats)
@@ -43,12 +85,22 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
                     picked_sum[rows] += opts[rows, cols]
                     avail[rows, cols] = False
     policy_loss = total / weight_total.clamp(min=1.0)
+    loss = policy_loss
+    if set_loss_weight > 0:
+        loss = loss + float(set_loss_weight) * _set_aux_loss(
+            model,
+            h,
+            opts,
+            batch,
+            min_count=int(set_loss_min_count),
+            negative_weight=float(set_loss_negative_weight),
+        )
     if value_weight <= 0:
-        return policy_loss
+        return loss
     value_mask = batch.outcome_mask > 0
     if not bool(value_mask.any()):
-        return policy_loss
+        return loss
     pred = model.value(h)
     value_loss = ((pred - batch.outcome_value).pow(2) * batch.sample_weight * batch.outcome_mask).sum()
     value_loss = value_loss / (batch.sample_weight * batch.outcome_mask).sum().clamp(min=1.0)
-    return policy_loss + float(value_weight) * value_loss
+    return loss + float(value_weight) * value_loss

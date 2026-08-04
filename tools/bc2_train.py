@@ -109,8 +109,38 @@ def _save_npz(model: torch.nn.Module, path: str) -> None:
     np.savez_compressed(path, **{k: v.detach().cpu().numpy() for k, v in model.state_dict().items()})
 
 
+def _load_npz_init(model: torch.nn.Module, path: str, device: torch.device, *, partial: bool = False) -> tuple[int, list[str]]:
+    with np.load(path) as z:
+        checkpoint = {
+            k: torch.as_tensor(z[k], device=device)
+            for k in z.files
+        }
+    if not partial:
+        model.load_state_dict(checkpoint, strict=True)
+        return len(checkpoint), []
+
+    current = model.state_dict()
+    loaded = {}
+    skipped: list[str] = []
+    for key, tensor in checkpoint.items():
+        if key not in current:
+            skipped.append(f"{key}: unexpected")
+            continue
+        if tuple(tensor.shape) != tuple(current[key].shape):
+            skipped.append(f"{key}: {tuple(tensor.shape)} != {tuple(current[key].shape)}")
+            continue
+        loaded[key] = tensor.to(dtype=current[key].dtype)
+    if not loaded:
+        raise RuntimeError(f"No compatible tensors found in --init checkpoint: {path}")
+    current.update(loaded)
+    model.load_state_dict(current, strict=True)
+    return len(loaded), skipped
+
+
 def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
-               first_action_weight=1.0, value_weight=0.0):
+               first_action_weight=1.0, value_weight=0.0,
+               set_loss_weight=0.0, set_loss_min_count=2,
+               set_loss_negative_weight=0.25):
     training = optimizer is not None
     model.train(training)
     total = 0.0
@@ -125,6 +155,9 @@ def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
             batch,
             first_action_weight=first_action_weight,
             value_weight=value_weight,
+            set_loss_weight=set_loss_weight,
+            set_loss_min_count=set_loss_min_count,
+            set_loss_negative_weight=set_loss_negative_weight,
         )
         if training:
             optimizer.zero_grad(set_to_none=True)
@@ -151,6 +184,10 @@ def main() -> None:
     parser.add_argument("--width", type=float, default=2.0)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--init", default="",
+                        help="optional .npz checkpoint used to initialize the model before training")
+    parser.add_argument("--init-partial", action="store_true",
+                        help="load only matching tensors from --init; default requires an exact architecture match")
     parser.add_argument("--val-fraction", type=float, default=0.1)
     parser.add_argument("--include-empty", action="store_true")
     parser.add_argument("--load-progress-every", type=int, default=200000,
@@ -165,9 +202,19 @@ def main() -> None:
                         help="sample weight multiplier for drawn-game decisions when outcome metadata exists")
     parser.add_argument("--legacy-state-pool", action="store_true",
                         help="use old pooled board encoder instead of slot-aware active/bench encoder")
+    parser.add_argument("--state-feat-dim", type=int, default=0,
+                        help="override state feature width; 0 uses current encoder default")
+    parser.add_argument("--opt-feat-dim", type=int, default=0,
+                        help="override per-option feature width; 0 uses current encoder default")
     parser.add_argument("--first-action-weight", type=float, default=1.5)
     parser.add_argument("--value-weight", type=float, default=0.0,
                         help="optional auxiliary outcome-value MSE weight; requires outcome metadata")
+    parser.add_argument("--set-loss-weight", type=float, default=0.0,
+                        help="optional order-free multi-select auxiliary loss weight; 0 disables")
+    parser.add_argument("--set-loss-min-count", type=int, default=2,
+                        help="minimum labeled action length for set auxiliary loss")
+    parser.add_argument("--set-loss-negative-weight", type=float, default=0.25,
+                        help="relative weight for unselected options inside the set auxiliary loss")
     parser.add_argument("--option-weight", type=float, default=0.15)
     parser.add_argument("--context-weight", action="append", default=[],
                         help="repeatable context multiplier, e.g. MAIN=2.0 or 21=2.5")
@@ -185,10 +232,14 @@ def main() -> None:
     paths = discover_npz_paths(args.corpus, args.archetype, args.score_bands)
     context_weights = _parse_weight_specs(args.context_weight, CONTEXT_IDS, "context")
     type_weights = _parse_weight_specs(args.type_weight, TYPE_IDS, "type")
+    state_feat_dim = int(args.state_feat_dim) if args.state_feat_dim else None
+    opt_feat_dim = int(args.opt_feat_dim) if args.opt_feat_dim else None
     corpus = BCCorpus(
         paths,
         include_empty=args.include_empty,
         option_weight=args.option_weight,
+        **({"state_feat_dim": state_feat_dim} if state_feat_dim is not None else {}),
+        **({"opt_feat_dim": opt_feat_dim} if opt_feat_dim is not None else {}),
         deck_sigs=args.deck_sig,
         team_names=args.team_name,
         winner_only=args.winner_only,
@@ -212,7 +263,20 @@ def main() -> None:
             "Relax filters or lower --val-fraction."
         )
 
-    model = PolicyValueNet(width=args.width, slot_state=not args.legacy_state_pool).to(device)
+    model_kwargs = {}
+    if state_feat_dim is not None:
+        model_kwargs["state_feat_dim"] = state_feat_dim
+    if opt_feat_dim is not None:
+        model_kwargs["opt_feat_dim"] = opt_feat_dim
+    model = PolicyValueNet(width=args.width, slot_state=not args.legacy_state_pool, **model_kwargs).to(device)
+    if args.init:
+        loaded, skipped = _load_npz_init(model, args.init, device, partial=args.init_partial)
+        msg = f"Init: loaded={loaded} path={args.init}"
+        if skipped:
+            msg += f" skipped={len(skipped)}"
+        print(msg, flush=True)
+        if skipped:
+            print(f"Init skipped examples: {skipped[:8]}", flush=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     train_batches = (len(train_idx) + args.batch_size - 1) // args.batch_size
     total_steps = max(args.epochs * train_batches, 1)
@@ -222,11 +286,13 @@ def main() -> None:
     print(
         f"BC2: {args.archetype} {args.score_bands} device={device} "
         f"width={args.width} slot_state={not args.legacy_state_pool} "
+        f"state_feat_dim={state_feat_dim or 'default'} opt_feat_dim={opt_feat_dim or 'default'} "
         f"deck_sigs={args.deck_sig or 'all'} team_names={args.team_name or 'all'} "
         f"winner_only={args.winner_only} "
         f"win/loss/draw_weight={args.win_weight}/{args.loss_weight}/{args.draw_weight} "
         f"context_weights={context_weights or '{}'} type_weights={type_weights or '{}'} "
         f"multi_select_weight={args.multi_select_weight} "
+        f"set_loss={args.set_loss_weight}/{args.set_loss_min_count}/{args.set_loss_negative_weight} "
         f"params={params/1e6:.1f}M",
         flush=True,
     )
@@ -249,6 +315,9 @@ def main() -> None:
                 corpus.collate(batch_idx, device),
                 first_action_weight=args.first_action_weight,
                 value_weight=args.value_weight,
+                set_loss_weight=args.set_loss_weight,
+                set_loss_min_count=args.set_loss_min_count,
+                set_loss_negative_weight=args.set_loss_negative_weight,
             )
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -274,6 +343,9 @@ def main() -> None:
                 optimizer=None,
                 first_action_weight=args.first_action_weight,
                 value_weight=args.value_weight,
+                set_loss_weight=args.set_loss_weight,
+                set_loss_min_count=args.set_loss_min_count,
+                set_loss_negative_weight=args.set_loss_negative_weight,
             )
         elapsed = time.time() - start
         print(f"  done epoch {epoch}/{args.epochs} train={train_loss:.4f} val={val_loss:.4f} {elapsed:.0f}s", flush=True)

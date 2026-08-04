@@ -83,10 +83,18 @@ def build_train_cmd(args: argparse.Namespace, job: Job) -> list[str]:
         "--width", str(args.width),
         "--device", "cuda:0" if job.gpu is not None else args.device,
         "--first-action-weight", str(args.first_action_weight),
+        "--value-weight", str(args.value_weight),
+        "--set-loss-weight", str(args.set_loss_weight),
+        "--set-loss-min-count", str(args.set_loss_min_count),
+        "--set-loss-negative-weight", str(args.set_loss_negative_weight),
         "--option-weight", str(args.option_weight),
         "--checkpoint-every", str(args.checkpoint_every),
         "--save", str(job.save),
     ]
+    if args.state_feat_dim:
+        cmd.extend(["--state-feat-dim", str(args.state_feat_dim)])
+    if args.opt_feat_dim:
+        cmd.extend(["--opt-feat-dim", str(args.opt_feat_dim)])
     if args.include_empty:
         cmd.append("--include-empty")
     if args.winner_only:
@@ -98,6 +106,12 @@ def build_train_cmd(args: argparse.Namespace, job: Job) -> list[str]:
     ])
     if args.legacy_state_pool:
         cmd.append("--legacy-state-pool")
+    if args.multi_select_weight != 1.0:
+        cmd.extend(["--multi-select-weight", str(args.multi_select_weight)])
+    for spec in args.context_weight:
+        cmd.extend(["--context-weight", spec])
+    for spec in args.type_weight:
+        cmd.extend(["--type-weight", spec])
     return cmd
 
 
@@ -238,7 +252,14 @@ def main() -> None:
     p.add_argument("--gpus", default="0,1,2,3", help="comma-separated physical GPU ids; empty for one local device")
     p.add_argument("--jobs-per-gpu", type=int, default=1)
     p.add_argument("--first-action-weight", type=float, default=1.5)
+    p.add_argument("--value-weight", type=float, default=0.0)
+    p.add_argument("--set-loss-weight", type=float, default=0.0)
+    p.add_argument("--set-loss-min-count", type=int, default=2)
+    p.add_argument("--set-loss-negative-weight", type=float, default=0.25)
     p.add_argument("--option-weight", type=float, default=0.15)
+    p.add_argument("--multi-select-weight", type=float, default=1.0)
+    p.add_argument("--context-weight", action="append", default=[])
+    p.add_argument("--type-weight", action="append", default=[])
     p.add_argument("--include-empty", action="store_true")
     p.add_argument("--winner-only", action="store_true",
                    help="train only on winning-game decisions; requires outcome metadata")
@@ -249,6 +270,10 @@ def main() -> None:
     p.add_argument("--draw-weight", type=float, default=1.0)
     p.add_argument("--legacy-state-pool", action="store_true",
                    help="use old pooled board encoder instead of slot-aware active/bench encoder")
+    p.add_argument("--state-feat-dim", type=int, default=0,
+                   help="override state feature width; 0 uses current encoder default")
+    p.add_argument("--opt-feat-dim", type=int, default=0,
+                   help="override per-option feature width; 0 uses current encoder default")
     p.add_argument("--checkpoint-every", type=int, default=1)
     p.add_argument("--checkpoint-dir", default="checkpoints")
     p.add_argument("--log-dir", default="logs")

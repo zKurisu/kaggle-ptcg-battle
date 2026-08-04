@@ -137,6 +137,33 @@ def _load_npz_init(model: torch.nn.Module, path: str, device: torch.device, *, p
     return len(loaded), skipped
 
 
+def _checkpoint_feature_dims(path: str) -> tuple[int, int]:
+    with np.load(path) as z:
+        ec = z["card_emb.weight"].shape[1]
+        state_in = z["state_fc1.weight"].shape[1]
+        slot_feat_dim = state_in - 5 * ec
+        legacy_feat_dim = state_in - 3 * ec
+        state_feat_dim = slot_feat_dim if 8 <= slot_feat_dim <= 256 else legacy_feat_dim
+        option_context = "context_emb.weight" in z.files
+        opt_extra = 0
+        if option_context:
+            opt_extra = (
+                z["context_emb.weight"].shape[1]
+                + z["select_type_emb.weight"].shape[1]
+                + z["area_emb.weight"].shape[1]
+                + z["index_emb.weight"].shape[1]
+                + z["inplay_area_emb.weight"].shape[1]
+                + z["inplay_index_emb.weight"].shape[1]
+            )
+        opt_feat_dim = z["opt_fc.weight"].shape[1] - (
+            2 * ec
+            + z["attack_emb.weight"].shape[1]
+            + z["opt_type_emb.weight"].shape[1]
+            + opt_extra
+        )
+    return int(state_feat_dim), int(opt_feat_dim)
+
+
 def _configure_cuda_memory_limit(device: torch.device, *, gb: float = 0.0, fraction: float = 0.0) -> str:
     if device.type != "cuda":
         return ""
@@ -193,6 +220,12 @@ def main() -> None:
                         help="filter to one or more deck signatures; repeatable. Requires freshly extracted corpus metadata.")
     parser.add_argument("--team-name", action="append", default=[],
                         help="filter to one or more exact team names; repeatable. Use with --deck-sig for trajectory specialists.")
+    parser.add_argument("--opponent-deck-sig", action="append", default=[],
+                        help="filter to decisions from games against one or more opponent deck signatures")
+    parser.add_argument("--opponent-archetype", action="append", default=[],
+                        help="filter to decisions from games against one or more opponent archetypes")
+    parser.add_argument("--opponent-team-name", action="append", default=[],
+                        help="filter to decisions from games against one or more exact opponent team names")
     parser.add_argument("--epochs", type=int, default=12)
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -256,8 +289,17 @@ def main() -> None:
     paths = discover_npz_paths(args.corpus, args.archetype, args.score_bands)
     context_weights = _parse_weight_specs(args.context_weight, CONTEXT_IDS, "context")
     type_weights = _parse_weight_specs(args.type_weight, TYPE_IDS, "type")
+    inferred_from_init = False
     state_feat_dim = int(args.state_feat_dim) if args.state_feat_dim else None
     opt_feat_dim = int(args.opt_feat_dim) if args.opt_feat_dim else None
+    if args.init and not args.init_partial and (state_feat_dim is None or opt_feat_dim is None):
+        init_state_dim, init_opt_dim = _checkpoint_feature_dims(args.init)
+        if state_feat_dim is None:
+            state_feat_dim = init_state_dim
+            inferred_from_init = True
+        if opt_feat_dim is None:
+            opt_feat_dim = init_opt_dim
+            inferred_from_init = True
     corpus = BCCorpus(
         paths,
         include_empty=args.include_empty,
@@ -266,6 +308,9 @@ def main() -> None:
         **({"opt_feat_dim": opt_feat_dim} if opt_feat_dim is not None else {}),
         deck_sigs=args.deck_sig,
         team_names=args.team_name,
+        opponent_deck_sigs=args.opponent_deck_sig,
+        opponent_archetypes=args.opponent_archetype,
+        opponent_team_names=args.opponent_team_name,
         winner_only=args.winner_only,
         win_weight=args.win_weight,
         loss_weight=args.loss_weight,
@@ -278,7 +323,7 @@ def main() -> None:
     if corpus.stats["kept"] <= 0:
         raise RuntimeError(
             "No training samples kept after filters. Check --score-bands, --deck-sig, "
-            "--winner-only, and corpus path before training."
+            "--opponent-*, --winner-only, and corpus path before training."
         )
     train_idx, val_idx = corpus.split_indices(args.val_fraction, args.seed)
     if len(train_idx) < 2 or len(val_idx) < 1:
@@ -312,7 +357,11 @@ def main() -> None:
         f"{memory_limit_msg + ' ' if memory_limit_msg else ''}"
         f"width={args.width} slot_state={not args.legacy_state_pool} "
         f"state_feat_dim={state_feat_dim or 'default'} opt_feat_dim={opt_feat_dim or 'default'} "
+        f"{'feature_dims_from_init ' if inferred_from_init else ''}"
         f"deck_sigs={args.deck_sig or 'all'} team_names={args.team_name or 'all'} "
+        f"opponent_deck_sigs={args.opponent_deck_sig or 'all'} "
+        f"opponent_archetypes={args.opponent_archetype or 'all'} "
+        f"opponent_team_names={args.opponent_team_name or 'all'} "
         f"winner_only={args.winner_only} "
         f"win/loss/draw_weight={args.win_weight}/{args.loss_weight}/{args.draw_weight} "
         f"context_weights={context_weights or '{}'} type_weights={type_weights or '{}'} "

@@ -234,6 +234,16 @@ def train_cmd(args: argparse.Namespace, row: dict) -> str:
         cmd.extend(["--type-weight", spec])
     if args.multi_select_weight != 1.0:
         cmd.extend(["--multi-select-weight", str(args.multi_select_weight)])
+    if args.state_feat_dim:
+        cmd.extend(["--state-feat-dim", str(args.state_feat_dim)])
+    if args.opt_feat_dim:
+        cmd.extend(["--opt-feat-dim", str(args.opt_feat_dim)])
+    for value in args.opponent_deck_sig:
+        cmd.extend(["--opponent-deck-sig", value])
+    for value in args.opponent_archetype:
+        cmd.extend(["--opponent-archetype", value])
+    for value in args.opponent_team_name:
+        cmd.extend(["--opponent-team-name", value])
     if args.winner_only:
         cmd.append("--winner-only")
     if args.legacy_state_pool:
@@ -421,6 +431,16 @@ def main() -> None:
     p.add_argument("--type-weight", action="append", default=[],
                    help="repeatable option type multiplier passed to bc2_train.py")
     p.add_argument("--multi-select-weight", type=float, default=1.0)
+    p.add_argument("--state-feat-dim", type=int, default=0,
+                   help="override state feature width in emitted train commands")
+    p.add_argument("--opt-feat-dim", type=int, default=0,
+                   help="override option feature width in emitted train commands")
+    p.add_argument("--opponent-deck-sig", action="append", default=[],
+                   help="append opponent deck-signature filters to emitted train commands")
+    p.add_argument("--opponent-archetype", action="append", default=[],
+                   help="append opponent archetype filters to emitted train commands")
+    p.add_argument("--opponent-team-name", action="append", default=[],
+                   help="append opponent team-name filters to emitted train commands")
     p.add_argument("--win-weight", type=float, default=1.5)
     p.add_argument("--loss-weight", type=float, default=0.4)
     p.add_argument("--draw-weight", type=float, default=0.8)

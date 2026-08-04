@@ -65,6 +65,7 @@ FIELDS = [
     "max_score",
     "first_date",
     "last_date",
+    "opponent_filters",
     "init_path",
     "checkpoint_path",
     "eval_entry",
@@ -99,6 +100,9 @@ def index_decks(dirs: list[str]) -> dict[str, str]:
 
 def scan_corpus(args: argparse.Namespace) -> list[dict]:
     archetypes = args.archetype or DEFAULT_ARCHETYPES
+    opponent_deck_sigs = {str(x) for x in args.opponent_deck_sig}
+    opponent_archetypes = {str(x).lower() for x in args.opponent_archetype}
+    opponent_team_names = {str(x).lower() for x in args.opponent_team_name}
     paths: list[tuple[str, str]] = []
     for arch in archetypes:
         paths.extend((arch, p) for p in discover_npz_paths(args.corpus, arch, args.score_bands))
@@ -128,9 +132,27 @@ def scan_corpus(args: argparse.Namespace) -> list[dict]:
         for key in ("team_name", "deck_sig", "board"):
             if key not in data:
                 raise ValueError(f"{path} lacks {key}; re-extract with current bc_extract_v2.py")
+        if args.opponent_deck_sig and "opponent_deck_sig" not in data:
+            raise ValueError(f"{path} lacks opponent_deck_sig; re-extract with current bc_extract_v2.py")
+        if args.opponent_archetype and "opponent_archetype" not in data:
+            raise ValueError(f"{path} lacks opponent_archetype; re-extract with current bc_extract_v2.py")
+        if args.opponent_team_name and "opponent_team_name" not in data:
+            raise ValueError(f"{path} lacks opponent_team_name; re-extract with current bc_extract_v2.py")
         n = len(data["board"])
         total_rows += n
         for i in range(n):
+            if opponent_deck_sigs and str(data["opponent_deck_sig"][i]) not in opponent_deck_sigs:
+                continue
+            if (
+                opponent_archetypes
+                and str(data["opponent_archetype"][i]).lower() not in opponent_archetypes
+            ):
+                continue
+            if (
+                opponent_team_names
+                and str(data["opponent_team_name"][i]).lower() not in opponent_team_names
+            ):
+                continue
             team = str(data["team_name"][i])
             sig = str(data["deck_sig"][i])
             if not team or not sig:
@@ -268,6 +290,12 @@ def train_cmd(row: dict, args: argparse.Namespace, checkpoint_path: str) -> str:
         cmd.extend(["--state-feat-dim", str(args.state_feat_dim)])
     if args.opt_feat_dim:
         cmd.extend(["--opt-feat-dim", str(args.opt_feat_dim)])
+    for value in args.opponent_deck_sig:
+        cmd.extend(["--opponent-deck-sig", value])
+    for value in args.opponent_archetype:
+        cmd.extend(["--opponent-archetype", value])
+    for value in args.opponent_team_name:
+        cmd.extend(["--opponent-team-name", value])
     for spec in args.context_weight:
         cmd.extend(["--context-weight", spec])
     for spec in args.type_weight:
@@ -277,6 +305,14 @@ def train_cmd(row: dict, args: argparse.Namespace, checkpoint_path: str) -> str:
     if args.include_empty:
         cmd.append("--include-empty")
     return " ".join(shlex.quote(x) for x in cmd)
+
+
+def render_opponent_filters(args: argparse.Namespace) -> str:
+    parts = []
+    parts.extend(f"deck_sig={x}" for x in args.opponent_deck_sig)
+    parts.extend(f"archetype={x}" for x in args.opponent_archetype)
+    parts.extend(f"team={x}" for x in args.opponent_team_name)
+    return " ".join(parts)
 
 
 def render_init_path(row: dict, args: argparse.Namespace) -> str:
@@ -330,6 +366,7 @@ def write_manifest(rows: list[dict], args: argparse.Namespace) -> None:
                 "max_score": f"{float(row['max_score']):.1f}",
                 "first_date": row["first_date"],
                 "last_date": row["last_date"],
+                "opponent_filters": render_opponent_filters(args),
                 "init_path": init_path,
                 "checkpoint_path": checkpoint,
                 "eval_entry": eval_entry,
@@ -396,6 +433,12 @@ def main() -> None:
                    help="override state feature width in emitted train commands")
     p.add_argument("--opt-feat-dim", type=int, default=0,
                    help="override per-option feature width in emitted train commands")
+    p.add_argument("--opponent-deck-sig", action="append", default=[],
+                   help="append opponent deck-signature filters to emitted train commands")
+    p.add_argument("--opponent-archetype", action="append", default=[],
+                   help="append opponent archetype filters to emitted train commands")
+    p.add_argument("--opponent-team-name", action="append", default=[],
+                   help="append opponent team-name filters to emitted train commands")
     p.add_argument("--checkpoint-every", type=int, default=1)
     p.add_argument("--progress-every-files", type=int, default=10)
     p.add_argument("--print-top", type=int, default=20)

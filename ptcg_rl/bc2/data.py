@@ -73,6 +73,9 @@ class BCCorpus:
         opt_feat_dim: int = OPT_FEAT_DIM,
         deck_sigs: Iterable[str] | None = None,
         team_names: Iterable[str] | None = None,
+        opponent_deck_sigs: Iterable[str] | None = None,
+        opponent_archetypes: Iterable[str] | None = None,
+        opponent_team_names: Iterable[str] | None = None,
         winner_only: bool = False,
         win_weight: float = 1.0,
         loss_weight: float = 1.0,
@@ -90,6 +93,9 @@ class BCCorpus:
         self.opt_feat_dim = int(opt_feat_dim)
         self.deck_sigs = {str(x) for x in (deck_sigs or []) if str(x)}
         self.team_names = {str(x).lower() for x in (team_names or []) if str(x)}
+        self.opponent_deck_sigs = {str(x) for x in (opponent_deck_sigs or []) if str(x)}
+        self.opponent_archetypes = {str(x).lower() for x in (opponent_archetypes or []) if str(x)}
+        self.opponent_team_names = {str(x).lower() for x in (opponent_team_names or []) if str(x)}
         self.winner_only = bool(winner_only)
         self.win_weight = float(win_weight)
         self.loss_weight = float(loss_weight)
@@ -106,6 +112,9 @@ class BCCorpus:
             "bad": 0,
             "deck_filtered": 0,
             "team_filtered": 0,
+            "opponent_deck_filtered": 0,
+            "opponent_archetype_filtered": 0,
+            "opponent_team_filtered": 0,
             "outcome_filtered": 0,
         }
 
@@ -124,6 +133,21 @@ class BCCorpus:
                     "Corpus does not contain team_name metadata. Re-extract with the updated "
                     "tools/bc_extract_v2.py before using --team-name."
                 )
+            if self.opponent_deck_sigs and "opponent_deck_sig" not in data:
+                raise ValueError(
+                    "Corpus does not contain opponent_deck_sig metadata. Re-extract with the updated "
+                    "tools/bc_extract_v2.py before using --opponent-deck-sig."
+                )
+            if self.opponent_archetypes and "opponent_archetype" not in data:
+                raise ValueError(
+                    "Corpus does not contain opponent_archetype metadata. Re-extract with the updated "
+                    "tools/bc_extract_v2.py before using --opponent-archetype."
+                )
+            if self.opponent_team_names and "opponent_team_name" not in data:
+                raise ValueError(
+                    "Corpus does not contain opponent_team_name metadata. Re-extract with the updated "
+                    "tools/bc_extract_v2.py before using --opponent-team-name."
+                )
             if self.winner_only and "won" not in data:
                 raise ValueError(
                     "Corpus does not contain outcome metadata. Re-extract with the updated "
@@ -141,6 +165,21 @@ class BCCorpus:
                     continue
                 if self.team_names and str(data["team_name"][i]).lower() not in self.team_names:
                     self.stats["team_filtered"] += 1
+                    continue
+                if self.opponent_deck_sigs and str(data["opponent_deck_sig"][i]) not in self.opponent_deck_sigs:
+                    self.stats["opponent_deck_filtered"] += 1
+                    continue
+                if (
+                    self.opponent_archetypes
+                    and str(data["opponent_archetype"][i]).lower() not in self.opponent_archetypes
+                ):
+                    self.stats["opponent_archetype_filtered"] += 1
+                    continue
+                if (
+                    self.opponent_team_names
+                    and str(data["opponent_team_name"][i]).lower() not in self.opponent_team_names
+                ):
+                    self.stats["opponent_team_filtered"] += 1
                     continue
                 if self.winner_only and int(data["won"][i]) != 1:
                     self.stats["outcome_filtered"] += 1

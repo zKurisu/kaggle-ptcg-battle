@@ -19,6 +19,9 @@ _REPO = _HERE.parent; _WS = _REPO.parent
 sys.path.insert(0, str(_REPO)); sys.path.insert(0, str(_WS))
 
 from ptcg_rl.deck_registry import deck_signature
+from ptcg_rl.encoder import OPT_FEAT_DIM, STATE_FEAT_DIM
+
+FEATURE_VERSION = "v11_matchup_mechanic"
 
 ARCHETYPES = {
     "Marnie Grimmsnarl": [648], "Alakazam": [743, 245, 741, 742],
@@ -116,6 +119,11 @@ def _valid_action(action: list, sel: dict) -> bool:
 def _append_decision(all_data, encoder, obs: dict, action: list,
                      deck: list[int], band: str, *, deck_sig: str = "",
                      team_name: str = "", score: float = 0.0,
+                     opponent_deck: list[int] | None = None,
+                     opponent_deck_sig: str = "",
+                     opponent_team_name: str = "",
+                     opponent_score: float = 0.0,
+                     opponent_score_band: str = "",
                      episode_id: str = "", player_index: int = -1,
                      reward: float = 0.0, won: int = 0, draw: int = 0,
                      final_status: str = "", game_steps: int = 0) -> bool:
@@ -125,6 +133,7 @@ def _append_decision(all_data, encoder, obs: dict, action: list,
     if not _valid_action(action, sel):
         return False
     arch = classify(deck)
+    opponent_archetype = classify(opponent_deck or []) if opponent_deck else "Other"
     key = f"{arch}|{band}"
     ed = encoder.encode(obs)
     all_data[key].append({
@@ -141,6 +150,11 @@ def _append_decision(all_data, encoder, obs: dict, action: list,
         'deck_sig': deck_sig,
         'team_name': team_name,
         'score': float(score),
+        'opponent_deck_sig': opponent_deck_sig,
+        'opponent_archetype': opponent_archetype,
+        'opponent_team_name': opponent_team_name,
+        'opponent_score': float(opponent_score),
+        'opponent_score_band': opponent_score_band,
         'episode_id': episode_id,
         'player_index': int(player_index),
         'reward': float(reward),
@@ -206,6 +220,11 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
                                     deck_sig=deck_sigs[pi],
                                     team_name=teams[pi] if pi < len(teams) else "",
                                     score=scores[pi] if pi < len(scores) else 0.0,
+                                    opponent_deck=decks[1 - pi],
+                                    opponent_deck_sig=deck_sigs[1 - pi],
+                                    opponent_team_name=teams[1 - pi] if 1 - pi < len(teams) else "",
+                                    opponent_score=scores[1 - pi] if 1 - pi < len(scores) else 0.0,
+                                    opponent_score_band=bands[1 - pi] if 1 - pi < len(bands) else "unknown",
                                     episode_id=episode_id,
                                     player_index=pi,
                                     reward=rewards[pi],
@@ -265,6 +284,11 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
             deck_sig=np.array([d['deck_sig'] for d in decs], dtype=object),
             team_name=np.array([d['team_name'] for d in decs], dtype=object),
             score=np.array([d['score'] for d in decs], dtype=np.float32),
+            opponent_deck_sig=np.array([d['opponent_deck_sig'] for d in decs], dtype=object),
+            opponent_archetype=np.array([d['opponent_archetype'] for d in decs], dtype=object),
+            opponent_team_name=np.array([d['opponent_team_name'] for d in decs], dtype=object),
+            opponent_score=np.array([d['opponent_score'] for d in decs], dtype=np.float32),
+            opponent_score_band=np.array([d['opponent_score_band'] for d in decs], dtype=object),
             episode_id=np.array([d['episode_id'] for d in decs], dtype=object),
             player_index=np.array([d['player_index'] for d in decs], dtype=np.int8),
             reward=np.array([d['reward'] for d in decs], dtype=np.float32),
@@ -272,6 +296,9 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
             draw=np.array([d['draw'] for d in decs], dtype=np.int8),
             final_status=np.array([d['final_status'] for d in decs], dtype=object),
             game_steps=np.array([d['game_steps'] for d in decs], dtype=np.int16),
+            feature_version=np.array(FEATURE_VERSION, dtype=object),
+            state_feat_dim=np.array(STATE_FEAT_DIM, dtype=np.int16),
+            opt_feat_dim=np.array(OPT_FEAT_DIM, dtype=np.int16),
         )
         mb = os.path.getsize(os.path.join(arch_dir, f'{fbase}.npz')) / 1024**2
         print(f"  {key}: {n} decs, {mb:.0f}MB")

@@ -97,6 +97,12 @@ def build_train_cmd(args: argparse.Namespace, job: Job) -> list[str]:
         cmd.extend(["--state-feat-dim", str(args.state_feat_dim)])
     if args.opt_feat_dim:
         cmd.extend(["--opt-feat-dim", str(args.opt_feat_dim)])
+    for value in args.opponent_deck_sig:
+        cmd.extend(["--opponent-deck-sig", value])
+    for value in args.opponent_archetype:
+        cmd.extend(["--opponent-archetype", value])
+    for value in args.opponent_team_name:
+        cmd.extend(["--opponent-team-name", value])
     if args.include_empty:
         cmd.append("--include-empty")
     if args.winner_only:
@@ -143,6 +149,12 @@ def build_accuracy_cmd(args: argparse.Namespace, job: Job) -> list[str]:
         "--progress-every", str(args.accuracy_progress_every),
         "--device", "cuda:0" if job.gpu is not None else args.device,
     ]
+    for value in args.opponent_deck_sig:
+        cmd.extend(["--opponent-deck-sig", value])
+    for value in args.opponent_archetype:
+        cmd.extend(["--opponent-archetype", value])
+    for value in args.opponent_team_name:
+        cmd.extend(["--opponent-team-name", value])
     if args.winner_only_accuracy:
         cmd.append("--winner-only")
     return cmd
@@ -286,6 +298,12 @@ def main() -> None:
                    help="override state feature width; 0 uses current encoder default")
     p.add_argument("--opt-feat-dim", type=int, default=0,
                    help="override per-option feature width; 0 uses current encoder default")
+    p.add_argument("--opponent-deck-sig", action="append", default=[],
+                   help="pass opponent deck-signature filters through to train/accuracy commands")
+    p.add_argument("--opponent-archetype", action="append", default=[],
+                   help="pass opponent archetype filters through to train/accuracy commands")
+    p.add_argument("--opponent-team-name", action="append", default=[],
+                   help="pass opponent team-name filters through to train/accuracy commands")
     p.add_argument("--checkpoint-every", type=int, default=1)
     p.add_argument("--checkpoint-dir", default="checkpoints")
     p.add_argument("--log-dir", default="logs")

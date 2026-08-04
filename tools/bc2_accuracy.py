@@ -168,6 +168,12 @@ def main() -> None:
                         help="filter to one or more deck signatures; repeatable. Requires freshly extracted corpus metadata.")
     parser.add_argument("--team-name", action="append", default=[],
                         help="filter to one or more exact team names; repeatable")
+    parser.add_argument("--opponent-deck-sig", action="append", default=[],
+                        help="filter to decisions from games against one or more opponent deck signatures")
+    parser.add_argument("--opponent-archetype", action="append", default=[],
+                        help="filter to decisions from games against one or more opponent archetypes")
+    parser.add_argument("--opponent-team-name", action="append", default=[],
+                        help="filter to decisions from games against one or more exact opponent team names")
     parser.add_argument("--width", type=float, default=2.0)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--max-samples", type=int, default=20000)
@@ -226,6 +232,9 @@ def main() -> None:
         opt_feat_dim=opt_feat_dim,
         deck_sigs=args.deck_sig,
         team_names=args.team_name,
+        opponent_deck_sigs=args.opponent_deck_sig,
+        opponent_archetypes=args.opponent_archetype,
+        opponent_team_names=args.opponent_team_name,
         winner_only=args.winner_only,
         load_progress_every=args.load_progress_every,
     )

@@ -66,6 +66,12 @@ def main() -> None:
     p.add_argument("--archetype", required=True)
     p.add_argument("--score-bands", nargs="+", default=["1200+", "1100-1199", "1000-1099"])
     p.add_argument("--include-empty", action="store_true")
+    p.add_argument("--opponent-deck-sig", action="append", default=[],
+                   help="filter decisions to games against one or more opponent deck signatures")
+    p.add_argument("--opponent-archetype", action="append", default=[],
+                   help="filter decisions to games against one or more opponent archetypes")
+    p.add_argument("--opponent-team-name", action="append", default=[],
+                   help="filter decisions to games against one or more exact opponent team names")
     p.add_argument("--top", type=int, default=20)
     p.add_argument("--out-csv", default="")
     args = p.parse_args()
@@ -77,23 +83,42 @@ def main() -> None:
     by_deck = defaultdict(lambda: {
         "raw": 0, "kept": 0, "empty": 0, "bad": 0, "scores": [], "teams": Counter(),
         "contexts": Counter(), "option_counts": Counter(), "files": Counter(), "episodes": set(),
+        "opponent_archetypes": Counter(), "opponent_deck_sigs": Counter(),
         "won": 0, "draw": 0,
     })
     global_counts = Counter()
     has_sig = True
+    opponent_deck_sigs = {str(x) for x in args.opponent_deck_sig}
+    opponent_archetypes = {str(x).lower() for x in args.opponent_archetype}
+    opponent_team_names = {str(x).lower() for x in args.opponent_team_name}
 
     for path in paths:
         with np.load(path, allow_pickle=True) as z:
             data = {k: z[k] for k in z.files}
         if "deck_sig" not in data:
             has_sig = False
+        if opponent_deck_sigs and "opponent_deck_sig" not in data:
+            raise ValueError(f"{path} lacks opponent_deck_sig metadata; re-extract corpus")
+        if opponent_archetypes and "opponent_archetype" not in data:
+            raise ValueError(f"{path} lacks opponent_archetype metadata; re-extract corpus")
+        if opponent_team_names and "opponent_team_name" not in data:
+            raise ValueError(f"{path} lacks opponent_team_name metadata; re-extract corpus")
         n = len(data["board"])
         for i in range(n):
+            global_counts["raw"] += 1
+            if opponent_deck_sigs and str(data["opponent_deck_sig"][i]) not in opponent_deck_sigs:
+                global_counts["opponent_deck_filtered"] += 1
+                continue
+            if opponent_archetypes and str(data["opponent_archetype"][i]).lower() not in opponent_archetypes:
+                global_counts["opponent_archetype_filtered"] += 1
+                continue
+            if opponent_team_names and str(data["opponent_team_name"][i]).lower() not in opponent_team_names:
+                global_counts["opponent_team_filtered"] += 1
+                continue
             sig = str(data["deck_sig"][i]) if has_sig else "(missing-deck-sig)"
             row = by_deck[sig]
             status = label_status(data, i, args.include_empty)
             field = "kept" if status == "keep" else status
-            global_counts["raw"] += 1
             global_counts[field] += 1
             row["raw"] += 1
             row[field] += 1
@@ -106,6 +131,14 @@ def main() -> None:
                     row["teams"][team] += 1
             if "episode_id" in data:
                 row["episodes"].add(str(data["episode_id"][i]))
+            if "opponent_archetype" in data:
+                opp_arch = str(data["opponent_archetype"][i])
+                if opp_arch:
+                    row["opponent_archetypes"][opp_arch] += 1
+            if "opponent_deck_sig" in data:
+                opp_sig = str(data["opponent_deck_sig"][i])
+                if opp_sig:
+                    row["opponent_deck_sigs"][opp_sig] += 1
             if "won" in data:
                 row["won"] += int(data["won"][i])
             if "draw" in data:
@@ -116,6 +149,10 @@ def main() -> None:
 
     print(f"Corpus: {args.corpus}")
     print(f"Archetype: {args.archetype} bands={args.score_bands}")
+    print(
+        f"Opponent filters: deck_sig={args.opponent_deck_sig or 'all'} "
+        f"archetype={args.opponent_archetype or 'all'} team={args.opponent_team_name or 'all'}"
+    )
     print(f"Files: {len(paths)}")
     print(f"Global: {dict(global_counts)}")
     if not has_sig:
@@ -130,6 +167,8 @@ def main() -> None:
         top_team = row["teams"].most_common(1)[0][0] if row["teams"] else ""
         top_ctx = row["contexts"].most_common(1)[0] if row["contexts"] else (-1, 0)
         top_opt = row["option_counts"].most_common(1)[0] if row["option_counts"] else ("", 0)
+        top_opp_arch = row["opponent_archetypes"].most_common(1)[0] if row["opponent_archetypes"] else ("", 0)
+        top_opp_sig = row["opponent_deck_sigs"].most_common(1)[0] if row["opponent_deck_sigs"] else ("", 0)
         rows.append({
             "deck_sig": sig,
             "raw": raw,
@@ -146,6 +185,10 @@ def main() -> None:
             "top_context_n": top_ctx[1],
             "top_option_count": top_opt[0],
             "top_option_count_n": top_opt[1],
+            "top_opponent_archetype": top_opp_arch[0],
+            "top_opponent_archetype_n": top_opp_arch[1],
+            "top_opponent_deck_sig": top_opp_sig[0],
+            "top_opponent_deck_sig_n": top_opp_sig[1],
         })
     rows.sort(key=lambda r: (r["kept"], r["raw"], r["avg_score"]), reverse=True)
 
@@ -155,7 +198,8 @@ def main() -> None:
             f"  {r['deck_sig']:12s} kept={r['kept']:8d} raw={r['raw']:8d} "
             f"episodes={str(r['episodes']):>5s} avg_score={r['avg_score']:.1f} "
             f"win_dec={r['decision_win_rate']:.2f} teams={r['teams']:4d} "
-            f"ctx={r['top_context']} team={r['top_team'][:30]}"
+            f"ctx={r['top_context']} opp={r['top_opponent_archetype'][:18]} "
+            f"team={r['top_team'][:30]}"
         )
 
     if args.out_csv:

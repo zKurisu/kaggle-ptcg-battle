@@ -29,8 +29,19 @@ MAX_HP = 400            # practical max HP
 
 # ── Feature dimensions ────────────────────────────────────────────────────
 CARD_DIM = 64           # card embedding
-STATE_FEAT_DIM = 64     # scalar state features
-OPT_FEAT_DIM = 48       # per-option scalar features
+STATE_FEAT_DIM = 80     # scalar state features
+OPT_FEAT_DIM = 64       # per-option scalar features
+
+ALAKAZAM_IDS = {109, 245, 741, 742, 743}
+CRUSTLE_IDS = {344, 345, 756}
+MARNIE_IDS = {103, 104, 112, 646, 647, 648, 860}
+TEAM_ROCKET_IDS = {400, 401, 414, 431, 434}
+OGERPON_IDS = {96, 272, 756, 1071}
+LOPUNNY_IDS = {65, 66, 306, 849, 858}
+PRIMARY_ATTACKER_IDS = {96, 121, 245, 345, 381, 431, 648, 678, 849}
+SETUP_IDS = {42, 65, 89, 103, 109, 119, 333, 344, 379, 400, 646, 673, 675, 676, 741, 858}
+EVOLUTION_IDS = {66, 90, 93, 104, 120, 121, 245, 306, 345, 380, 381, 401, 647, 648, 674, 678, 742, 743, 849}
+ENGINE_IDS = {66, 90, 93, 96, 104, 112, 120, 306, 380, 400, 401, 434, 647, 648, 742, 743, 756, 1071}
 
 
 @dataclass
@@ -74,6 +85,19 @@ class FastEncoder:
         self.card_resistance = np.zeros(N_CARDS + 2, dtype=np.int32)
         self.card_energy = np.zeros(N_CARDS + 2, dtype=np.int32)
         self.card_retreat = np.zeros(N_CARDS + 2, dtype=np.int32)
+        self.card_has_skill = np.zeros(N_CARDS + 2, dtype=np.int32)
+        self.card_team_rocket = np.zeros(N_CARDS + 2, dtype=np.int32)
+        self.card_min_attack_cost = np.zeros(N_CARDS + 2, dtype=np.int32)
+        self.card_max_attack_damage = np.zeros(N_CARDS + 2, dtype=np.int32)
+        attack_cost: dict[int, int] = {}
+        attack_damage: dict[int, int] = {}
+        try:
+            from cg.api import all_attack
+            for a in all_attack():
+                attack_cost[int(a.attackId)] = len(getattr(a, "energies", []) or [])
+                attack_damage[int(a.attackId)] = int(getattr(a, "damage", 0) or 0)
+        except Exception:
+            pass
         for c in cards:
             cid = c.cardId
             self.card_hp[cid] = c.hp
@@ -81,6 +105,16 @@ class FastEncoder:
             self.card_ex[cid] = 1 if c.ex else 0
             self.card_mega[cid] = 1 if c.megaEx else 0
             self.card_retreat[cid] = c.retreatCost
+            self.card_has_skill[cid] = 1 if getattr(c, "skills", None) else 0
+            name = str(getattr(c, "name", "") or "")
+            self.card_team_rocket[cid] = 1 if name.startswith("Team Rocket's") else 0
+            attacks = [int(a) for a in (getattr(c, "attacks", []) or [])]
+            costs = [attack_cost.get(a, 0) for a in attacks if a in attack_cost]
+            damages = [attack_damage.get(a, 0) for a in attacks if a in attack_damage]
+            self.card_min_attack_cost[cid] = min(costs) if costs else 0
+            self.card_max_attack_damage[cid] = max(damages) if damages else 0
+        self.attack_cost = attack_cost
+        self.attack_damage = attack_damage
 
     def encode(self, obs_dict: dict) -> EncodedDecision:
         """Fast path: dict → EncodedDecision in one pass."""
@@ -195,6 +229,22 @@ class FastEncoder:
         s[61] = sum(1 for p in my_inplay if self._damage_ratio(p) > 0) / 6.0
         s[62] = sum(1 for p in opp_inplay if self._damage_ratio(p) > 0) / 6.0
         s[63] = max((self._damage_ratio(p) for p in opp_inplay), default=0.0)
+        s[64] = self._count_cards(my_inplay, TEAM_ROCKET_IDS) / 6.0
+        s[65] = self._count_cards(opp_inplay, TEAM_ROCKET_IDS) / 6.0
+        s[66] = self._count_cards(my_inplay, MARNIE_IDS) / 6.0
+        s[67] = self._count_cards(opp_inplay, MARNIE_IDS) / 6.0
+        s[68] = self._count_cards(my_inplay, ALAKAZAM_IDS) / 6.0
+        s[69] = self._count_cards(opp_inplay, ALAKAZAM_IDS) / 6.0
+        s[70] = self._count_cards(my_inplay, CRUSTLE_IDS) / 6.0
+        s[71] = self._count_cards(opp_inplay, CRUSTLE_IDS) / 6.0
+        s[72] = self._count_cards(my_inplay, OGERPON_IDS) / 6.0
+        s[73] = self._count_cards(opp_inplay, OGERPON_IDS) / 6.0
+        s[74] = self._count_cards(my_inplay, LOPUNNY_IDS) / 6.0
+        s[75] = self._count_cards(opp_inplay, LOPUNNY_IDS) / 6.0
+        s[76] = self._attack_energy_ready(my_active)
+        s[77] = self._attack_energy_ready(opp_active)
+        s[78] = self._tr_mewtwo_power_ready(my_active, my_inplay)
+        s[79] = self._tr_mewtwo_power_ready(opp_active, opp_inplay)
 
         # ── Options ───────────────────────────────────────────────────────
         opt_type = np.zeros(n_opt, dtype=np.int64)
@@ -232,11 +282,13 @@ class FastEncoder:
             opt_feats[i, 42] = 1.0 if ot == 13 else 0.0
             opt_feats[i, 43] = 1.0 if ot == 14 else 0.0
             opt_feats[i, 44] = 1.0 if ot == 12 else 0.0
+            target_for_option = None
 
             if area is not None and idx is not None:
                 c = self._get_card(cur, pid, area, idx, sel)
                 opt_card[i] = c
                 target = self._get_pokemon(cur, pid, area, idx)
+                target_for_option = target
                 opt_feats[i, 14] = self._damage_ratio(target)
                 opt_feats[i, 15] = self._energy_count(target) / 10.0
                 self._fill_option_extras(opt_feats[i], c, target, pid, you, area)
@@ -255,6 +307,7 @@ class FastEncoder:
                 c2 = self._get_card(cur, pid, o.get("inPlayArea"), o.get("inPlayIndex"), sel)
                 opt_card2[i] = c2
                 target2 = self._get_pokemon(cur, pid, o.get("inPlayArea"), o.get("inPlayIndex"))
+                target_for_option = target2 or target_for_option
                 if target2:
                     opt_feats[i, 14] = self._damage_ratio(target2)
                     opt_feats[i, 15] = self._energy_count(target2) / 10.0
@@ -277,6 +330,14 @@ class FastEncoder:
                 opt_attack[i] = o["attackId"]
                 opt_feats[i, 30] = 1.0
             opt_feats[i, 1] = 1.0 if o.get("playerIndex") == you else 0.0
+            self._fill_action_plan_extras(
+                opt_feats[i],
+                int(opt_card[i]),
+                int(opt_card2[i]),
+                int(opt_attack[i]),
+                target_for_option,
+                opp_active,
+            )
 
         return EncodedDecision(
             board_cards=board, hand_cards=hand, state_feats=s,
@@ -347,6 +408,37 @@ class FastEncoder:
         out.extend([p for p in (player.get("bench") or []) if p])
         return out
 
+    @staticmethod
+    def _count_cards(pokemon: list[dict], ids: set[int]) -> int:
+        return sum(1 for p in pokemon if int((p or {}).get("id") or 0) in ids)
+
+    def _attack_energy_ready(self, p: dict | None) -> float:
+        if not p:
+            return 0.0
+        cid = int(p.get("id") or 0)
+        if not (0 <= cid < len(self.card_min_attack_cost)):
+            return 0.0
+        cost = int(self.card_min_attack_cost[cid])
+        if cost <= 0:
+            return 1.0 if self.card_max_attack_damage[cid] > 0 else 0.0
+        return 1.0 if self._energy_count(p) >= cost else 0.0
+
+    def _attack_energy_ready_after_attach(self, p: dict | None) -> float:
+        if not p:
+            return 0.0
+        cid = int(p.get("id") or 0)
+        if not (0 <= cid < len(self.card_min_attack_cost)):
+            return 0.0
+        cost = int(self.card_min_attack_cost[cid])
+        if cost <= 0:
+            return 1.0 if self.card_max_attack_damage[cid] > 0 else 0.0
+        return 1.0 if self._energy_count(p) + 1 >= cost else 0.0
+
+    def _tr_mewtwo_power_ready(self, active: dict | None, inplay: list[dict]) -> float:
+        if not active or int(active.get("id") or 0) != 431:
+            return 0.0
+        return 1.0 if self._count_cards(inplay, TEAM_ROCKET_IDS) >= 4 else 0.0
+
     def _fill_card_metadata(self, feats: np.ndarray, card_id: int) -> None:
         cid = int(card_id or 0)
         if not (0 <= cid < len(self.card_hp)):
@@ -393,6 +485,32 @@ class FastEncoder:
         feats[45] = float(self.card_retreat[cid]) / 5.0 if 0 <= cid < len(self.card_retreat) else 0.0
         feats[46] = len(target.get("tools") or []) / 4.0
         feats[47] = len(target.get("energyCards") or target.get("energies") or []) / 10.0
+
+    def _fill_action_plan_extras(self, feats: np.ndarray, card_id: int, card_id2: int,
+                                 attack_id: int, target: dict | None,
+                                 opp_active: dict | None) -> None:
+        cid = int(card_id or 0)
+        cid2 = int(card_id2 or 0)
+        target_id = int((target or {}).get("id") or 0)
+        feats[48] = 1.0 if cid in PRIMARY_ATTACKER_IDS else 0.0
+        feats[49] = 1.0 if cid in SETUP_IDS else 0.0
+        feats[50] = 1.0 if cid in EVOLUTION_IDS else 0.0
+        feats[51] = 1.0 if cid in ENGINE_IDS else 0.0
+        feats[52] = float(self.card_team_rocket[cid]) if 0 <= cid < len(self.card_team_rocket) else 0.0
+        feats[53] = float(self.card_team_rocket[cid2]) if 0 <= cid2 < len(self.card_team_rocket) else 0.0
+        feats[54] = float(self.card_has_skill[cid]) if 0 <= cid < len(self.card_has_skill) else 0.0
+        damage = float(self.attack_damage.get(int(attack_id), 0))
+        cost = float(self.attack_cost.get(int(attack_id), 0))
+        feats[55] = damage / MAX_HP
+        feats[56] = cost / 5.0
+        opp_hp = float((opp_active or {}).get("hp", 0) or 0)
+        feats[57] = 1.0 if damage > 0 and opp_hp > 0 and damage >= opp_hp else 0.0
+        feats[58] = self._attack_energy_ready_after_attach(target)
+        feats[59] = 1.0 if target_id in PRIMARY_ATTACKER_IDS else 0.0
+        feats[60] = 1.0 if target_id in SETUP_IDS or target_id in EVOLUTION_IDS else 0.0
+        feats[61] = 1.0 if target_id in ENGINE_IDS else 0.0
+        feats[62] = 1.0 if self._damage_ratio(target) > 0 else 0.0
+        feats[63] = 1.0 if 0 < self._hp_ratio(target) <= 0.25 else 0.0
 
     @staticmethod
     def _get_pokemon(cur: dict, player_idx: int, area: int, index: int) -> dict | None:

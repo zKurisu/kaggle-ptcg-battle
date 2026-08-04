@@ -146,6 +146,9 @@ def _row_id(corpus: BCCorpus, idx: tuple[int, int]) -> dict[str, str]:
     return {
         "episode_id": get("episode_id"),
         "deck_sig": get("deck_sig"),
+        "opponent_deck_sig": get("opponent_deck_sig"),
+        "opponent_archetype": get("opponent_archetype"),
+        "opponent_team_name": get("opponent_team_name"),
         "player_index": get("player_index"),
         "won": get("won"),
         "draw": get("draw"),
@@ -211,6 +214,12 @@ def main() -> None:
     p.add_argument("--score-bands", nargs="+", default=["1200+", "1100-1199", "1000-1099"])
     p.add_argument("--deck-sig", action="append", default=[])
     p.add_argument("--team-name", action="append", default=[])
+    p.add_argument("--opponent-deck-sig", action="append", default=[],
+                   help="filter to decisions from games against one or more opponent deck signatures")
+    p.add_argument("--opponent-archetype", action="append", default=[],
+                   help="filter to decisions from games against one or more opponent archetypes")
+    p.add_argument("--opponent-team-name", action="append", default=[],
+                   help="filter to decisions from games against one or more exact opponent team names")
     p.add_argument("--winner-only", action="store_true")
     p.add_argument("--width", type=float, default=2.0)
     p.add_argument("--device", default="cuda:0")
@@ -233,6 +242,9 @@ def main() -> None:
         opt_feat_dim=opt_feat_dim,
         deck_sigs=args.deck_sig,
         team_names=args.team_name,
+        opponent_deck_sigs=args.opponent_deck_sig,
+        opponent_archetypes=args.opponent_archetype,
+        opponent_team_names=args.opponent_team_name,
         winner_only=args.winner_only,
         load_progress_every=args.load_progress_every,
     )

@@ -37,6 +37,7 @@ FIELDS = [
     "max_score",
     "first_date",
     "last_date",
+    "opponent_filters",
 ]
 
 
@@ -71,6 +72,12 @@ def main() -> None:
                    default=["1200+", "1100-1199", "1000-1099", "900-999", "800-899"])
     p.add_argument("--min-decisions", type=int, default=1000)
     p.add_argument("--min-episodes", type=int, default=10)
+    p.add_argument("--opponent-deck-sig", action="append", default=[],
+                   help="filter decisions to games against one or more opponent deck signatures")
+    p.add_argument("--opponent-archetype", action="append", default=[],
+                   help="filter decisions to games against one or more opponent archetypes")
+    p.add_argument("--opponent-team-name", action="append", default=[],
+                   help="filter decisions to games against one or more exact opponent team names")
     p.add_argument("--top", type=int, default=50)
     p.add_argument("--progress-every-files", type=int, default=10)
     p.add_argument("--out", default="logs/team_deck_trajectories.csv")
@@ -102,6 +109,9 @@ def main() -> None:
         "score_n": 0,
         "max_score": 0.0,
     })
+    opponent_deck_sigs = {str(x) for x in args.opponent_deck_sig}
+    opponent_archetypes = {str(x).lower() for x in args.opponent_archetype}
+    opponent_team_names = {str(x).lower() for x in args.opponent_team_name}
     total_files = total_rows = 0
     all_paths: list[tuple[str, str]] = []
     for arch in archetypes:
@@ -116,9 +126,21 @@ def main() -> None:
             data = {k: z[k] for k in z.files}
         if "team_name" not in data or "deck_sig" not in data:
             raise ValueError(f"{path} lacks team_name/deck_sig metadata; re-extract corpus")
+        if opponent_deck_sigs and "opponent_deck_sig" not in data:
+            raise ValueError(f"{path} lacks opponent_deck_sig metadata; re-extract corpus")
+        if opponent_archetypes and "opponent_archetype" not in data:
+            raise ValueError(f"{path} lacks opponent_archetype metadata; re-extract corpus")
+        if opponent_team_names and "opponent_team_name" not in data:
+            raise ValueError(f"{path} lacks opponent_team_name metadata; re-extract corpus")
         n = len(data["board"])
         total_rows += n
         for i in range(n):
+            if opponent_deck_sigs and str(data["opponent_deck_sig"][i]) not in opponent_deck_sigs:
+                continue
+            if opponent_archetypes and str(data["opponent_archetype"][i]).lower() not in opponent_archetypes:
+                continue
+            if opponent_team_names and str(data["opponent_team_name"][i]).lower() not in opponent_team_names:
+                continue
             team = str(data["team_name"][i])
             sig = str(data["deck_sig"][i])
             if not team or not sig:
@@ -178,6 +200,11 @@ def main() -> None:
             "max_score": float(r["max_score"]),
             "first_date": dates[0] if dates else "",
             "last_date": dates[-1] if dates else "",
+            "opponent_filters": " ".join(
+                [*(f"deck_sig={x}" for x in args.opponent_deck_sig),
+                 *(f"archetype={x}" for x in args.opponent_archetype),
+                 *(f"team={x}" for x in args.opponent_team_name)]
+            ),
         }
         row["trajectory_score"] = _score_row(row)
         out_rows.append(row)

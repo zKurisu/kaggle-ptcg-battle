@@ -111,6 +111,12 @@ def _print_status(pending: list[Job], running: list[Job], done: list[Job], faile
     for job in running:
         elapsed = (now - job.start_time) / 60.0
         print(f"  gpu={job.gpu} rank={job.rank} {job.name} {elapsed:.1f}m log={job.log}", flush=True)
+    for job in failed[-8:]:
+        print(
+            f"  failed rank={job.rank} {job.name} rc={job.returncode} "
+            f"log={job.log}",
+            flush=True,
+        )
 
 
 def main() -> None:

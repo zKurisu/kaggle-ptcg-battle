@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 00:05 Asia/Shanghai.
+Last updated: 2026-08-05 07:45 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -206,6 +206,45 @@ Interpretation:
 - Team Rocket Mewtwo is clearly not ready as a broad candidate; high random does not translate here.
 - Top120 contains 67 Marnie shadows, so treat it as a stress pool. Later build balanced-per-archetype and hard-pool views rather than relying on one aggregate.
 
+Shadow all random 500 quality audit:
+
+```text
+logs/eval_shadow_v10/shadow_all_random_g500.csv
+```
+
+This CSV has 298 unique evaluated shadow entries, not 361 manifest rows, because duplicate `eval_entry` rows are skipped by the fixed manifest reader.
+
+Overall:
+
+```text
+n=298 mean=0.977 median=0.994 p25=0.984 p10=0.941 min=0.350
+100%=42  >=99%=199  >=97%=252  <95%=35  <90%=20
+timeouts=294
+```
+
+By archetype:
+
+| Archetype | n | mean | median | min | >=99 | <95 | timeouts |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Marnie Grimmsnarl | 136 | 0.996 | 0.996 | 0.984 | 132 | 0 | 0 |
+| Alakazam | 49 | 0.988 | 0.990 | 0.966 | 26 | 0 | 0 |
+| Crustle Wall | 34 | 0.929 | 0.943 | 0.564 | 1 | 21 | 0 |
+| Mega Lopunny | 15 | 0.987 | 0.988 | 0.972 | 7 | 0 | 0 |
+| Cynthia Garchomp | 14 | 0.982 | 0.984 | 0.962 | 3 | 0 | 0 |
+| Festival Lead | 14 | 0.988 | 0.998 | 0.894 | 12 | 1 | 0 |
+| Teal Mask Ogerpon | 14 | 0.917 | 0.991 | 0.350 | 9 | 3 | 294 |
+| Dragapult | 10 | 0.873 | 0.873 | 0.780 | 0 | 8 | 0 |
+| Team Rocket Mewtwo | 10 | 0.995 | 0.997 | 0.982 | 9 | 0 | 0 |
+| Mega Lucario | 2 | 0.851 | 0.851 | 0.846 | 0 | 2 | 0 |
+
+Interpretation:
+
+- Random is a quality gate, not a ladder predictor. High random does not make TR Mewtwo good; shadow top120 already showed TR Mewtwo fails broader pressure.
+- Random below 100% can be acceptable, but below 99% is a yellow flag for submission candidates unless a matchup trace shows real strategic tradeoff rather than missed attacks/setup.
+- Marnie shadows look extremely clean by random. If selecting a shadow submission probe, start with high-weight Marnie variants, then prove them in shadow/balanced RR.
+- Crustle/Dragapult/Mega Lucario shadow quality is much less reliable by random; use them as opponent diversity, but do not submit without additional RR/trace evidence.
+- Ogerpon random rows with timeouts need separate timeout/trace inspection before treating their WR as real.
+
 ## Diagnostic Artifacts
 
 Local/remote logs worth checking:
@@ -219,6 +258,7 @@ Local/remote logs worth checking:
 - `logs/eval_v10/category_rr_v10pop_20260804/bc_failure/`
 - `logs/eval_v10/category_rr_v10pop_20260804/bc_failure_digest.csv`
 - `logs/eval_shadow_v10/probes_vs_ogerpon_shadow_top120_g80.csv`
+- `logs/eval_shadow_v10/shadow_all_random_g500.csv`
 
 Key diagnostic conclusions:
 
@@ -262,10 +302,10 @@ Use `--games 500` and a different output name for the 500-game version. The scri
 
 Immediate:
 
-1. Run shadow random quality audit for top120/top160/all using `tools/eval_manifest_random.py`.
+1. Build a submission-candidate shortlist from shadow random >=99%, zero timeouts, high trajectory weight, and archetype diversity.
 2. Build balanced-per-archetype and hard-pool views from the completed shadow pool; top120 is useful but Marnie-heavy.
-3. Deep-dive the worst shadow matchups from `probes_vs_ogerpon_shadow_top120_g80.csv`.
-4. Run baseline-delta eval for new core candidates against shadow top80/top120/top160 after random quality audit.
+3. Deep-dive random losses/timeouts for Ogerpon/Crustle/Dragapult/Mega Lucario before using them as submission candidates.
+4. Run baseline-delta eval for shortlisted shadow submission candidates against shadow top80/top120/top160 and balanced pools.
 5. Decide whether each failure calls for feature changes, matchup-conditioned data selection, or deck-sig specialist/shadow training.
 
 Pipeline direction:

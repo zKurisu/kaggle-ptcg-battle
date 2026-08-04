@@ -46,6 +46,32 @@ checkpoints/*.npz                BC checkpoint
 submission.tar.gz                Kaggle 提交包
 ```
 
+### 0.1 当前主线状态（2026-08-04）
+
+本分支当前是 `v7-baseline-20260804`，目标不是单次冲榜，而是继续完善 BC pipeline、本地 ladder pool、shadow pool 和 matchup 诊断。
+
+已确认的 v10 结论：
+
+- Ogerpon `v10_fixed_top2`（`697a82e582d5` + `2a5072194fdf`，非 winner-only，win/loss/draw=`1.5/0.4/0.8`）已经基本回到 v7 水平；Kaggle final 951.8，用户观察峰值约 1040。
+- Ogerpon `v10_fixed_top3` 加入 `5899c772bace` 后明显变差，final 720.5；暂时不要用 top3 替代 top2。
+- Random 胜率只能检查 agent 是否可执行，不能代表 Kaggle 强度。后续每个候选都至少要走 random + category round-robin + failure trace。
+- 0803 v10 population 的本地探针结果：Alakazam random 99.4% 但 RR avg 0.613；Crustle random 93.4%、RR avg 0.697；Marnie random 100%、RR avg 0.689；Team Rocket Mewtwo random 100%、RR avg 0.505。重点深挖低胜率 matchup，而不是只筛掉弱 shadow。
+
+当前失败画像：
+
+- Marnie Grimmsnarl 的全局 imitation 不差，但 `ATTACH_TO` 和开局 setup 对 Ogerpon 很敏感。
+- Team Rocket Mewtwo 需要更强的 Team Rocket in-play / Mewtwo Power Saver / setup 识别。
+- Alakazam 和 Crustle 的 random 表现不能解释真实强度，MAIN 阶段 PLAY/ATTACH/ABILITY/ATTACK 混淆仍然明显。
+- 旧 shadow pool 能模拟部分合法策略，但还不是 Kaggle 高分策略；所有卡组都应保留并改进训练，不要过早过滤成少数“强 shadow”。
+
+特征维度注意：
+
+- 0803 已抽取的 v10 corpus 是 `state=64`、`option=48`。
+- 当前 encoder 已扩展到 `state=80`、`option=64`，用于下一轮 matchup-aware/v11 抽取。
+- 旧 v10 checkpoint 可继续评测和打包；`NumpyPolicy` 会按 checkpoint 输入维度截断新特征。
+- 用旧 v10 corpus 训练且没有 `--init` 时，显式传 `--state-feat-dim 64 --opt-feat-dim 48`。
+- `bc2_train.py` 在非 `--init-partial` 的精确 init 模式下会从 init checkpoint 自动推断旧维度；如果想用 v10 checkpoint 初始化 v11 80/64 模型，必须加 `--init-partial --state-feat-dim 80 --opt-feat-dim 64`。
+
 ## 1. 下载 Kaggle Episode 数据
 
 在 repo 外层放原始 zip，避免误提交大文件：
@@ -100,6 +126,9 @@ echo "$LB_CSV"
 - `player_index`
 - `reward` / `won` / `draw`
 - `final_status` / `game_steps`
+- `opponent_deck_sig` / `opponent_archetype` / `opponent_team_name`
+- `opponent_score` / `opponent_score_band`
+- `feature_version` / `state_feat_dim` / `opt_feat_dim`
 
 这些字段是 deck-specific、winner-aware、trajectory-aware 训练的基础。
 
@@ -125,6 +154,74 @@ python3 tools/audit_episode_options.py ../episodes_raw \
 ```
 
 如果改了 encoder、option 特征、deck metadata、game-plan 特征，就需要重新抽取 corpus；只改训练 loss 或权重不需要重新抽取。
+
+### 3.1 v11 Matchup-aware 抽取
+
+当前 encoder 已经新增 matchup/shadow 需要的 80/64 维特征。不要把 v11 输出覆盖到 v10 corpus；新抽取放新目录。
+
+```bash
+python3 -u tools/bc_extract_v2.py ../episodes_raw \
+  --out data/bc_corpus_banded_v11_matchup_0803 \
+  --lb-csv "$LB_CSV" \
+  --workers 9 \
+  --progress-every 500 \
+  2>&1 | tee logs/bc_extract_v11_matchup_0803.log
+```
+
+抽完先检查维度和 opponent metadata：
+
+```bash
+python3 - <<'PY'
+import glob, numpy as np
+p = glob.glob("data/bc_corpus_banded_v11_matchup_0803/*/*/*.npz")[0]
+z = np.load(p, allow_pickle=True)
+print("file:", p)
+print("state feat:", np.asarray(z["feats"][0]).shape)
+print("option feat:", np.asarray(z["of_arr"][0]).shape)
+print("feature meta:", z.get("feature_version"), z.get("state_feat_dim"), z.get("opt_feat_dim"))
+print("opponent keys:", [k for k in z.files if k.startswith("opponent_")])
+PY
+```
+
+matchup-conditioned 统计示例：
+
+```bash
+python3 tools/bc_corpus_stats.py \
+  --corpus data/bc_corpus_banded_v11_matchup_0803 \
+  --archetype "Marnie Grimmsnarl" \
+  --score-bands "1200+" "1100-1199" "1000-1099" "900-999" \
+  --opponent-archetype "Teal Mask Ogerpon" \
+  --top 20 \
+  --out-csv logs/bc_corpus_stats_marnie_vs_ogerpon_v11.csv
+```
+
+matchup-conditioned failure report 示例：
+
+```bash
+python3 tools/bc2_failure_report.py checkpoints/pop/bc2_marnie_grimmsnarl_v10pop_all0803_set_w2.npz \
+  --corpus data/bc_corpus_banded_v11_matchup_0803 \
+  --archetype "Marnie Grimmsnarl" \
+  --score-bands "1200+" "1100-1199" "1000-1099" "900-999" \
+  --opponent-archetype "Teal Mask Ogerpon" \
+  --device cpu \
+  --max-samples 50000 \
+  --out-prefix logs/bc_failure_marnie_vs_ogerpon_v11
+```
+
+如果用 v10 checkpoint 作为 v11 初始化，必须使用 partial init：
+
+```bash
+python3 tools/build_shadow_pool.py \
+  --corpus data/bc_corpus_banded_v11_matchup_0803 \
+  --archetype "Marnie Grimmsnarl" \
+  --score-bands "1200+" "1100-1199" "1000-1099" "900-999" \
+  --opponent-archetype "Teal Mask Ogerpon" \
+  --init-template "checkpoints/pop/bc2_{archetype_slug}_v10pop_all0803_set_w2.npz" \
+  --init-partial \
+  --state-feat-dim 80 \
+  --opt-feat-dim 64 \
+  --out logs/shadow_pool_manifest_marnie_vs_ogerpon_v11.csv
+```
 
 ## 4. 看当天环境和卡组分布
 
@@ -660,6 +757,26 @@ python3 tools/bc2_failure_report.py checkpoints/bc2_mega_lucario_top1_v9_gamepla
 - `early_end`
 - `miss_attack`
 - examples CSV
+
+### 9.6 Matchup Trace
+
+`trace_matchup_decisions.py` 用于在本地直接复盘某个低胜率 matchup。它会输出 game summary、逐决策明细、choice type 聚合，适合回答“输局里具体坏在 setup、挂能量、进化、攻击还是 early END”。
+
+```bash
+python3 tools/trace_matchup_decisions.py \
+  --candidate marnie=checkpoints/pop/bc2_marnie_grimmsnarl_v10pop_all0803_set_w2.npz:logs/ladder_pool_0802_all/decks/b8f251a476e7_marnie_grimmsnarl_raihan_ramadistra.csv \
+  --opponent ogerpon=checkpoints/v10/bc2_ogerpon_v10_fixed_top2_w2.npz:logs/ladder_pool_0802_all/decks/697a82e582d5_teal_mask_ogerpon_majkel1337.csv \
+  --games 100 \
+  --workers 8 \
+  --max-turns 700 \
+  --out-prefix logs/eval_v10/marnie_vs_ogerpon_trace_g100
+```
+
+优先看：
+
+- `.summary.csv`：first attack turn、total attacks、setup active、win/loss 差异。
+- `.choice_types.csv`：PLAY/ATTACH/ABILITY/ATTACK/END 的 win/loss 差异。
+- `.decisions.csv`：loss 中高置信但明显错误的单步决策。
 
 ## 10. Kaggle 提交和分数追踪
 

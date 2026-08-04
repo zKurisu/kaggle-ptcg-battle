@@ -48,8 +48,25 @@ def _read_jobs(args: argparse.Namespace) -> list[Job]:
             name = str(raw.get("shadow_name") or checkpoint.stem)
             rank = int(raw.get("rank") or len(jobs) + 1)
             log = Path(args.log_dir) / f"{rank:03d}_{name}.log"
-            jobs.append(Job(rank, name, archetype, checkpoint, shlex.split(cmd_text), log))
+            train_cmd = shlex.split(cmd_text)
+            if args.cuda_memory_gb > 0:
+                train_cmd.extend(["--cuda-memory-gb", str(args.cuda_memory_gb)])
+            if args.cuda_memory_fraction > 0:
+                train_cmd.extend(["--cuda-memory-fraction", str(args.cuda_memory_fraction)])
+            if args.batch_size > 0:
+                train_cmd = _replace_or_append(train_cmd, "--batch-size", str(args.batch_size))
+            jobs.append(Job(rank, name, archetype, checkpoint, train_cmd, log))
     return jobs
+
+
+def _replace_or_append(cmd: list[str], flag: str, value: str) -> list[str]:
+    out = list(cmd)
+    for i, token in enumerate(out):
+        if token == flag and i + 1 < len(out):
+            out[i + 1] = value
+            return out
+    out.extend([flag, value])
+    return out
 
 
 def _launch(job: Job, gpu: str | None) -> None:
@@ -105,6 +122,12 @@ def main() -> None:
     p.add_argument("--gpus", default="0,1,2,3",
                    help="comma-separated physical GPU ids; empty runs without CUDA_VISIBLE_DEVICES")
     p.add_argument("--jobs-per-gpu", type=int, default=1)
+    p.add_argument("--cuda-memory-gb", type=float, default=0.0,
+                   help="append an approximate GiB CUDA allocator cap to manifest commands")
+    p.add_argument("--cuda-memory-fraction", type=float, default=0.0,
+                   help="append a visible-GPU CUDA allocator fraction cap to manifest commands")
+    p.add_argument("--batch-size", type=int, default=0,
+                   help="override --batch-size in manifest commands; 0 keeps manifest value")
     p.add_argument("--log-dir", default="logs/shadow_train")
     p.add_argument("--skip-existing", action="store_true")
     p.add_argument("--poll-seconds", type=float, default=30.0)

@@ -137,6 +137,21 @@ def _load_npz_init(model: torch.nn.Module, path: str, device: torch.device, *, p
     return len(loaded), skipped
 
 
+def _configure_cuda_memory_limit(device: torch.device, *, gb: float = 0.0, fraction: float = 0.0) -> str:
+    if device.type != "cuda":
+        return ""
+    if gb <= 0 and fraction <= 0:
+        return ""
+    props = torch.cuda.get_device_properties(device)
+    total_gb = props.total_memory / (1024 ** 3)
+    if gb > 0:
+        fraction = float(gb) / max(total_gb, 1e-9)
+    fraction = min(max(float(fraction), 0.01), 1.0)
+    torch.cuda.set_per_process_memory_fraction(fraction, device=device)
+    limit_gb = total_gb * fraction
+    return f"cuda_memory_limit={limit_gb:.2f}GB/{total_gb:.1f}GB fraction={fraction:.3f}"
+
+
 def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
                first_action_weight=1.0, value_weight=0.0,
                set_loss_weight=0.0, set_loss_min_count=2,
@@ -183,6 +198,10 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--width", type=float, default=2.0)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--cuda-memory-gb", type=float, default=0.0,
+                        help="cap this process' CUDA allocator to approximately N GiB; 0 disables")
+    parser.add_argument("--cuda-memory-fraction", type=float, default=0.0,
+                        help="cap this process' CUDA allocator to a fraction of the visible GPU; 0 disables")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--init", default="",
                         help="optional .npz checkpoint used to initialize the model before training")
@@ -229,6 +248,11 @@ def main() -> None:
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    memory_limit_msg = _configure_cuda_memory_limit(
+        device,
+        gb=args.cuda_memory_gb,
+        fraction=args.cuda_memory_fraction,
+    )
     paths = discover_npz_paths(args.corpus, args.archetype, args.score_bands)
     context_weights = _parse_weight_specs(args.context_weight, CONTEXT_IDS, "context")
     type_weights = _parse_weight_specs(args.type_weight, TYPE_IDS, "type")
@@ -285,6 +309,7 @@ def main() -> None:
 
     print(
         f"BC2: {args.archetype} {args.score_bands} device={device} "
+        f"{memory_limit_msg + ' ' if memory_limit_msg else ''}"
         f"width={args.width} slot_state={not args.legacy_state_pool} "
         f"state_feat_dim={state_feat_dim or 'default'} opt_feat_dim={opt_feat_dim or 'default'} "
         f"deck_sigs={args.deck_sig or 'all'} team_names={args.team_name or 'all'} "

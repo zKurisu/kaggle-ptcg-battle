@@ -245,6 +245,8 @@ def train_cmd(row: dict, args: argparse.Namespace, checkpoint_path: str) -> str:
         "--lr", str(args.lr),
         "--width", str(args.width),
         "--device", args.device,
+        "--cuda-memory-gb", str(args.cuda_memory_gb),
+        "--cuda-memory-fraction", str(args.cuda_memory_fraction),
         "--first-action-weight", str(args.first_action_weight),
         "--value-weight", str(args.value_weight),
         "--set-loss-weight", str(args.set_loss_weight),
@@ -368,6 +370,10 @@ def main() -> None:
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--width", type=float, default=2.0)
     p.add_argument("--device", default="cuda:0")
+    p.add_argument("--cuda-memory-gb", type=float, default=0.0,
+                   help="emit an approximate GiB CUDA allocator cap for each shadow train command")
+    p.add_argument("--cuda-memory-fraction", type=float, default=0.0,
+                   help="emit a visible-GPU CUDA allocator fraction cap for each shadow train command")
     p.add_argument("--init-template", default="",
                    help="optional format string for specialist init, e.g. checkpoints/pop/bc2_{archetype_slug}_tag.npz")
     p.add_argument("--init-partial", action="store_true",

@@ -82,6 +82,8 @@ def build_train_cmd(args: argparse.Namespace, job: Job) -> list[str]:
         "--lr", str(args.lr),
         "--width", str(args.width),
         "--device", "cuda:0" if job.gpu is not None else args.device,
+        "--cuda-memory-gb", str(args.cuda_memory_gb),
+        "--cuda-memory-fraction", str(args.cuda_memory_fraction),
         "--first-action-weight", str(args.first_action_weight),
         "--value-weight", str(args.value_weight),
         "--set-loss-weight", str(args.set_loss_weight),
@@ -249,6 +251,10 @@ def main() -> None:
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--width", type=float, default=2.0)
     p.add_argument("--device", default="cuda:0", help="used only when --gpus is empty")
+    p.add_argument("--cuda-memory-gb", type=float, default=0.0,
+                   help="pass an approximate GiB CUDA allocator cap to bc2_train.py")
+    p.add_argument("--cuda-memory-fraction", type=float, default=0.0,
+                   help="pass a visible-GPU CUDA allocator fraction cap to bc2_train.py")
     p.add_argument("--gpus", default="0,1,2,3", help="comma-separated physical GPU ids; empty for one local device")
     p.add_argument("--jobs-per-gpu", type=int, default=1)
     p.add_argument("--first-action-weight", type=float, default=1.5)

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 22:20 Asia/Shanghai.
+Last updated: 2026-08-05 22:32 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -167,6 +167,101 @@ Card-weight BC tested:
   - evolve vs `og5899`: `+0.0167`; vs `og697`: `-0.0067`; avg `+0.005`
   - evolve_attach vs `og5899`: `-0.0100`; vs `og697`: `+0.0033`; avg `-0.003`
 - Interpretation: simple card weighting is not enough. Do not scale this recipe or submit these checkpoints. The useful output is the tooling and negative result.
+
+## 2026-08-05 Specialist BC Wave 1
+
+Started on `ks` at `2026-08-05 22:25 Asia/Shanghai`.
+
+Runner:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/v11_specialists_20260805/wave1_runner.log'
+```
+
+Remote PID observed after startup:
+
+- parent command: `2041992`
+- runner shell: `2041993`
+- first training jobs:
+  - `marnie_vs_ogerpon_wl`: PID `2042003`, GPU `0`
+  - `marnie_vs_ogerpon_winner_only`: PID `2042009`, GPU `2`
+
+The initial `nohup` launch failed once because `logs/v11_specialists_20260805/` did not exist before shell redirection. Directories were created and the second launch succeeded. No old training process was left behind.
+
+Script:
+
+- local construction path: `/tmp/run_v11_specialist_bc_wave1.sh`
+- remote execution path: `/tmp/run_v11_specialist_bc_wave1.sh`
+- validation helper: `/tmp/validate_runner_paths.py`
+- all referenced baseline checkpoints and deck CSVs passed path validation (`checked=36 missing=0`).
+
+Resource choices:
+
+- Only GPUs `0` and `2` are used by this runner.
+- `MAX_PARALLEL=2`
+- `CUDA_MEMORY_GB=24`
+- `WORKERS=32`
+- random audit games: `300`
+- focused baseline-delta games: `200`
+- max turns: `700`
+
+Wave 1 intent:
+
+- Test whether matchup-conditioned BC with outcome reweighting or winner-only filtering repairs weak RR matchups better than simple card weighting.
+- Do not treat these checkpoints as submission candidates until their random and focused delta audits complete.
+
+Training outputs:
+
+```text
+checkpoints/specialist_v11_20260805/
+logs/v11_specialists_20260805/
+```
+
+Evaluation outputs after training finishes:
+
+```text
+logs/eval_next_v11_specialists_20260805/specialist_wave1_manifest.csv
+logs/eval_next_v11_specialists_20260805/specialist_wave1_random_g300.csv
+logs/eval_next_v11_specialists_20260805/delta_*_g200.csv
+logs/eval_next_v11_specialists_20260805/specialist_wave1_summary.txt
+```
+
+Wave 1 jobs:
+
+- `marnie_vs_ogerpon_wl`: Marnie Grimmsnarl vs Teal Mask Ogerpon, init `pop_v11all_marnie_grimmsnarl_b8f251a4_1`, `win/loss/draw=2.2/0.12/0.8`.
+- `marnie_vs_ogerpon_winner_only`: same matchup, winner-only.
+- `ogerpon_vs_crustle_wl`: Teal Mask Ogerpon vs Crustle Wall, init `pop_v11all_teal_mask_ogerpon_5899c772_2`, `win/loss/draw=3.0/0.05/0.8`.
+- `ogerpon_vs_crustle_winner_only`: same matchup, winner-only.
+- `dragapult_vs_marnie_wl`: Dragapult vs Marnie Grimmsnarl, init `pop_v11all_dragapult_cc2e995b_2`, `win/loss/draw=2.0/0.15/0.8`.
+- `dragapult_vs_crustle_wl`: Dragapult vs Crustle Wall, init `pop_v11all_dragapult_cc2e995b_2`, `win/loss/draw=2.4/0.10/0.8`.
+- `alakazam_vs_trm_wl`: Alakazam vs Team Rocket Mewtwo, init `pop_v11all_alakazam_7f9a5389_1`, `win/loss/draw=2.4/0.10/0.8`.
+- `lopunny_vs_cynthia_wl`: Mega Lopunny vs Cynthia Garchomp, init `pop_v11all_mega_lopunny_f1445356_1`, `win/loss/draw=3.0/0.08/0.8`.
+- `cynthia_vs_crustle_wl`: Cynthia Garchomp vs Crustle Wall, init `pop_v11all_cynthia_garchomp_52f46739_1`, `win/loss/draw=2.5/0.10/0.8`.
+- `trm_vs_ogerpon_wl`: Team Rocket Mewtwo vs Teal Mask Ogerpon, init `pop_v11all_team_rocket_mewtwo_f0bac971_1`, `win/loss/draw=2.2/0.12/0.8`.
+
+Weak-pair/corpus planning files:
+
+```text
+logs/eval_next_v11_specialists_20260805/rr_weak_archetype_pairs.csv
+logs/eval_next_v11_specialists_20260805/weak_pair_corpus_plan.csv
+logs/eval_next_v11_specialists_20260805/corpus_matchup_counts_by_deck.csv
+```
+
+Key sampled weak-pair counts from `weak_pair_corpus_plan.csv`:
+
+- Teal Mask Ogerpon vs Crustle Wall: RR mean `0.0451`, corpus decisions `45,409`, win decisions `6,427`, loss decisions `38,982`.
+- Marnie Grimmsnarl vs Teal Mask Ogerpon: RR mean `0.1992`, corpus decisions `246,069`, win decisions `75,030`, loss decisions `170,949`.
+- Dragapult vs Marnie Grimmsnarl: RR mean `0.1021`, corpus decisions `208,622`, win decisions `116,480`, loss decisions `92,032`.
+- Dragapult vs Crustle Wall: RR mean `0.0780`, corpus decisions `35,905`, win decisions `12,554`, loss decisions `23,351`.
+- Alakazam vs Team Rocket Mewtwo: RR mean `0.3093`, corpus decisions `99,223`, win decisions `26,137`, loss decisions `73,086`.
+
+Monitor commands:
+
+```bash
+ssh ks 'pgrep -af "run_v11_specialist_bc_wave1|bc2_train.py|eval_manifest_random.py|eval_baseline_delta.py" || true'
+ssh ks 'tail -80 /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804/logs/v11_specialists_20260805/wave1_runner.log'
+ssh ks 'ls -lh /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804/checkpoints/specialist_v11_20260805'
+```
 
 ## Kaggle Accounts And Monitoring
 

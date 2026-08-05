@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 21:14 Asia/Shanghai.
+Last updated: 2026-08-05 22:05 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -46,6 +46,7 @@ Recent relevant commits and current update:
 - Latest update in this session:
   - `tools/eval_round_robin.py`: now supports `--manifest`, `--manifest-limit`, and `--manifest-random`. It reads CSVs with `eval_entry` or `checkpoint_path`/`deck_path`, skips exact duplicate entries, and suffixes duplicate names.
   - `tools/analyze_kaggle_replays.py`: `--known-decks-dir` is now repeatable, matching the README examples and allowing 0804/0802 deck pools to be loaded together for replay naming.
+  - `tools/eval_round_robin.py`: now also supports `--mcts-entry NAME` for per-entry MCTS probes. Use this when checking whether search helps one candidate; the old global `--mcts` turns MCTS on for every policy entry and can pollute candidate-vs-opponent conclusions.
   - `tools/split_shadow_pools.py`: new tool to join shadow manifests with random audits and emit balanced environment/quality/stress/debug manifests.
   - `tools/rl_finetune_vs_pool.py`: new BC2-initialized PPO fine-tune loop against fixed `NumpyPolicy`/random opponent pools.
   - `tools/summarize_matchup_failures.py`: aggregate `trace_matchup_decisions.py` summaries into loss-vs-win failure priorities.
@@ -64,6 +65,55 @@ Remote smoke tests completed on `ks`:
 - `/tmp/ptcg_rl_tiny_rollout_0805.sh`: passed after fixing the single-opponent loader. It ran a 2-game CPU rollout/update against random Ogerpon deck, collected 106 decisions, completed PPO update, and wrote `/tmp/ptcg_rl_tiny_out.npz`.
 
 These files were synced to `ks`. Check `git status` before starting the next change.
+
+## 2026-08-05 Search/Rules/Community Diagnostics
+
+Local community logs are under `logs/kaggle_topics_20260805/`. The most relevant Kaggle discussion signals collected so far:
+
+- "How consistent is imitation learning in this setting?" reports imitation learning leaderboard instability; one participant observed validation accuracy can improve while leaderboard score remains poorly correlated.
+- "RL Beginner Question..." includes a report of policy accuracy rising from about 79% to 95%, again with leaderboard score not tightly correlated to accuracy.
+- "Kiyota RL/MCTS sample rerun..." says the starter RL/MCTS approach was weak around 250-320, while another participant reports a silver-zone RL-only agent using top replays for value-function training.
+- "Are top agents mostly heuristic..." includes a direct claim that expert BC plus rule guards can reach about 1000 points.
+- "Submission Strategy" emphasizes collecting score-band-specific agent replays and building better local validation instead of overfitting live LB.
+- "Differences Between the Official Pokemon TCG Rules and the Simulator Behavior" confirms the simulator exposes legal options and the agent only chooses indices; rule overlays should be strategic guards, not legality filters.
+
+Non-training diagnostics were run on `ks` with `/tmp/run_v11_next_phase_nontrain_diag.sh`.
+
+Outputs:
+
+- Remote/local logs: `logs/eval_next_v11_search_rules_20260805/`
+- Pulled locally after completion.
+
+Key results:
+
+- Current `main.py` keeps `USE_MCTS = False`. BC checkpoints only train the policy head; MCTS depends on a meaningful value head and is not currently a submission-path improvement.
+- Conservative rule overlay hurt random stability:
+  - Marnie pop v11all b8f251a4: `496/500 = 0.992`
+  - Ogerpon pop v11all 5899c772: `490/500 = 0.980`
+- Marnie vs Ogerpon focused RR:
+  - Plain g120: vs `og5899` `0.075`, vs `og697` `0.250`
+  - Conservative rules g120: vs `og5899` `0.075`, vs `og697` `0.158`
+  - Per-entry MCTS g40: vs both Ogerpon entries `0.000`
+- Ogerpon 5899 vs Crustle focused RR:
+  - Plain g120: vs `crustle_pop` `0.0417`, vs `crustle_safe` `0.0417`
+  - Conservative rules g120: both `0.025`
+  - Per-entry MCTS g40: vs `crustle_pop` `0.050`, vs `crustle_safe` `0.000`
+- Trace outcomes:
+  - `trace_marnie_vs_og5899_g200`: `34-166`
+  - `trace_marnie_vs_og697_g200`: `54-146`
+  - `trace_ogerpon_vs_crustle_pop_g200`: `5-195`
+  - `trace_ogerpon_vs_crustle_safe_g200`: `6-194`
+- Top loss-vs-win trace priorities:
+  - Ogerpon vs Crustle MAIN: loss states show higher `miss_attach_rate` and `miss_play_rate`.
+  - Marnie vs Ogerpon 697 MAIN: loss states show higher `miss_ability_rate`.
+  - Marnie vs Ogerpon 5899 MAIN: loss states show higher `miss_evolve_rate`.
+
+Interpretation:
+
+- Do not enable MCTS for pure BC submissions yet.
+- Do not submit current conservative/aggressive rule overlay as-is.
+- Rule support is still promising, but must be trace-driven and narrow: guard specific high-confidence strategic mistakes, not globally override all early END/ABILITY/EVOLVE/ATTACK cases.
+- Next complex-scene improvement should be outcome-aware: compare loss-vs-win traces, identify exact card/option contexts, then create targeted data filters or narrow rule/rerank guards. The previous global complex weighting improved supervised metrics but did not improve matchup win rate.
 
 ## Kaggle Accounts And Monitoring
 

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 23:55 Asia/Shanghai.
+Last updated: 2026-08-06 00:18 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -667,6 +667,19 @@ Rule/success-data exploration started:
   subset under `OUT/Archetype/out_band/name.npz`, preserving the original npz
   schema and metadata. Use it for winner-only success pools, loss pools, and
   trace/BC distillation probes.
+- New tool: `tools/audit_matchup_success_data.py`. It scans a BC corpus and
+  counts available wins/losses/decisions by `archetype`, `deck_sig`, and
+  `opponent_archetype`. With `--weak-plan`, it emits a success-data plan with
+  recommendations:
+  `same_sig_success_bc_ok`, `same_sig_sparse_use_cross_sig_or_generate`,
+  `same_sig_sparse_generate_more`, `cross_sig_teacher_needed`, and
+  `generate_success_needed`.
+- New tool: `tools/compare_bc_subsets.py`. It compares two subset `.npz` files
+  by chosen first action type/card over context, context+turn, and
+  context+option-count buckets. Current implementation is intentionally light
+  and does not import the full project card registry to keep remote runs fast.
+- New doc: `docs/10_rule_success_data.md`, covering rule-overlay discipline,
+  external source usage, and success-data classes.
 - Remote script used: `/tmp/build_success_subsets_v1.sh`.
 - Remote log: `logs/rule_success_20260805/build_success_subsets_v1.log`.
 - Local copies pulled:
@@ -699,6 +712,94 @@ Important Ogerpon caveat:
   `5899/697` losses by action type/card and by turn window, then extract only
   shared actionable rules such as attack-window timing, END/ABILITY loop guards,
   or target/retreat heuristics.
+
+Latest rule/success audit outputs:
+
+```text
+logs/rule_success_20260805/matchup_success_counts_top24.csv
+logs/rule_success_20260805/success_data_plan_top24.csv
+logs/rule_success_20260805/success_data_plan_top24_summary.txt
+logs/rule_success_20260805/matchup_success_counts_top24_1000p.csv
+logs/rule_success_20260805/success_data_plan_top24_1000p.csv
+logs/rule_success_20260805/success_data_plan_top24_1000p_summary.txt
+```
+
+All-score-band top24 audit, deck-sig rows:
+
+- `same_sig_success_bc_ok`: 13.
+- `same_sig_sparse_use_cross_sig_or_generate`: 37.
+- `same_sig_sparse_generate_more`: 26.
+- `cross_sig_teacher_needed`: 5.
+- `generate_success_needed`: 8.
+
+High-score `1000+` top24 audit, deck-sig rows:
+
+- `same_sig_success_bc_ok`: 13.
+- `same_sig_sparse_use_cross_sig_or_generate`: 20.
+- `same_sig_sparse_generate_more`: 17.
+- `cross_sig_teacher_needed`: 10.
+- `generate_success_needed`: 29.
+
+Important high-score `1000+` target counts:
+
+```text
+Marnie b8f vs Ogerpon: games=1517 W/L=446/1071 win_decisions=35715 same_sig_success_bc_ok
+Dragapult cc2 vs Marnie: games=532 W/L=326/206 win_decisions=41289 same_sig_success_bc_ok
+Dragapult cc2 vs Crustle: games=73 W/L=25/48 win_decisions=3294 sparse_use_cross_sig_or_generate
+Cynthia 52f vs Crustle: games=135 W/L=52/83 win_decisions=4025 same_sig_success_bc_ok
+Mega Lucario 43d vs Marnie: games=200 W/L=103/97 win_decisions=7199 same_sig_success_bc_ok
+TR Mewtwo f0b vs Ogerpon: games=47 W/L=20/27 win_decisions=1442 sparse_use_cross_sig_or_generate
+Mega Lopunny f144 vs Cynthia: games=5 W/L=1/4 win_decisions=65 sparse_generate_more
+Ogerpon 5899 vs Crustle: games=17 W/L=1/16 win_decisions=77 sparse_use_cross_sig_or_generate
+Ogerpon 697 vs Crustle: games=93 W/L=4/89 win_decisions=103 sparse_use_cross_sig_or_generate
+Ogerpon 2a507 vs Crustle: games=149 W/L=61/88 win_decisions=4276 same_sig_success_bc_ok
+```
+
+Batch success-vs-loss subset/compare run:
+
+- Script: `/tmp/build_compare_success_pairs_v1.sh`.
+- Status: completed successfully.
+- Remote success/loss subsets were written under
+  `data/bc_success_subsets_v11_20260805/`; large `.npz` files were not pulled
+  locally.
+- Local/remote compare CSVs live under
+  `logs/rule_success_20260805/*_success_vs_loss/`.
+
+Batch compare highlights:
+
+- `marnie_b8f_vs_ogerpon`: success rows `35715`, loss rows `76353`. Success
+  states choose/switch to `Marnie's Grimmsnarl ex` far more often and are less
+  dominated by Ogerpon target/card choices. This supports a narrow "complete and
+  keep main Grimmsnarl line vs Ogerpon" hypothesis, not a global evolve rule.
+- `dragapult_cc2_vs_marnie`: success rows `41289`, loss rows `21146`. Success
+  states choose `Dragapult ex` for `TO_ACTIVE`/`SWITCH` more often and choose
+  opponent Marnie utility cards less in damage-counter contexts. This points to
+  active/target selection rather than simple attack frequency.
+- `dragapult_cc2_vs_crustle`: success rows `3294`, loss rows `7627`. Data is
+  thinner, but wins show more Dreepy bench setup and Drakloak attach-from,
+  while losses overselect Crustle-related contexts. Treat as a trace target
+  before rules.
+- `cynthia_52f_vs_crustle`: success rows `4025`, loss rows `8396`. Success
+  states switch into non-Garchomp card `387` and choose ACTIVATE YES more often;
+  loss states switch to Garchomp ex more often. Needs card-name mapping before
+  a rule is attempted.
+- `lucario_43d_vs_marnie`: success rows `7199`, loss rows `6605`. Success
+  states choose `Mega Lucario ex` for `TO_ACTIVE`/`SWITCH` more often and choose
+  Spikemuth Gym ability less. Candidate rule: prefer main attacker in active
+  windows and avoid utility-stadium loops if attack windows exist.
+- `trm_f0b_vs_ogerpon`: success rows `1442`, loss rows `1639`. Sparse but
+  readable: wins select Team Rocket's Mewtwo ex as active more often; losses
+  choose Mimikyu/Spidops active/switch lines more often.
+- `lopunny_f144_vs_cynthia`: high-score success set has only 65 decisions from
+  one winning game; do not train or write rules from this same-sig success set.
+
+External source note:
+
+- Public PTCG sources checked include Limitless deck pages/API docs,
+  TrainerHill meta analysis, and PokemonMeta win rates. Use them only as
+  matchup and card-package hypotheses. Limitless Ogerpon Box style pages support
+  the local finding that Kangaskhan/Meowth/Clefairy tech packages are real
+  Ogerpon Box plans, but Kaggle deck signatures still require local validation.
 
 Rule strategy direction:
 

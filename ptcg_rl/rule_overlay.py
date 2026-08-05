@@ -13,7 +13,14 @@ RETREAT = 12
 ATTACK = 13
 END = 14
 
-RULE_MODES = ("conservative", "aggressive", "marnie_setup", "ogerpon_attach", "targeted")
+RULE_MODES = (
+    "conservative",
+    "aggressive",
+    "marnie_setup",
+    "ogerpon_attach",
+    "primary_active",
+    "targeted",
+)
 
 MARNIE_IMPIDIMP = 646
 MARNIE_MORGREM = 647
@@ -92,6 +99,13 @@ def _first_exact_card(obs: dict, options: list[dict], opt_type: int, card_id: in
     return None
 
 
+def _first_card_any_type(obs: dict, options: list[dict], card_ids: set[int]) -> int | None:
+    for i, opt in enumerate(options):
+        if _option_card(obs, opt) in card_ids:
+            return i
+    return None
+
+
 def apply_rule_overlay(obs: dict, action: list[int], deck: list[int] | None = None,
                        *, mode: str = "conservative") -> RuleDecision:
     """Return a guarded action for local experiments.
@@ -123,6 +137,14 @@ def apply_rule_overlay(obs: dict, action: list[int], deck: list[int] | None = No
     opp_active = _active_card_id(opp)
     chosen_type = _option_type(options[action[0]]) if action else END
     chosen_card = _option_card(obs, options[action[0]]) if action else 0
+    context = int(sel.get("context", -1) if sel.get("context") is not None else -1)
+
+    if mode == "primary_active" and plan and context in (3, 4):
+        primary = set(plan.primary_attackers)
+        if primary and chosen_card not in primary:
+            primary_pick = _first_card_any_type(obs, options, primary)
+            if primary_pick is not None:
+                return RuleDecision([primary_pick], "primary_active")
 
     if mode in ("marnie_setup", "targeted") and plan and plan.archetype == "Marnie Grimmsnarl":
         if opp_active == OGERPON_EX and turn <= 8 and chosen_type in (PLAY, ATTACH, ABILITY):

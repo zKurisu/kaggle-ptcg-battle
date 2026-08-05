@@ -9,6 +9,9 @@ from pathlib import Path
 
 import numpy as np
 
+_HERE = Path(__file__).resolve().parent
+_REPO = _HERE.parent
+
 TYPE_NAMES = {
     0: "NUMBER",
     1: "YES",
@@ -47,7 +50,7 @@ CONTEXT_NAMES = {
     43: "ACTIVATE",
 }
 
-CARD_NAMES = {
+DEFAULT_CARD_NAMES = {
     96: "Teal Mask Ogerpon ex",
     245: "Alakazam",
     272: "Lillie's Clefairy ex",
@@ -60,6 +63,21 @@ CARD_NAMES = {
     756: "Mega Kangaskhan ex",
     1071: "Meowth ex",
 }
+
+
+def load_card_names(path: str) -> dict[int, str]:
+    names = dict(DEFAULT_CARD_NAMES)
+    p = Path(path) if path else _REPO / "data" / "EN_Card_Data.csv"
+    if not p.exists():
+        return names
+    with p.open(newline="", encoding="utf-8-sig") as f:
+        for row in csv.DictReader(f):
+            card_id = (row.get("Card ID") or "").strip()
+            card_name = (row.get("Card Name") or "").strip()
+            if not card_id or not card_id.lstrip("-").isdigit() or not card_name:
+                continue
+            names[int(card_id)] = card_name
+    return names
 
 
 def read_rows(path: str, label: str) -> list[dict]:
@@ -96,7 +114,13 @@ def read_rows(path: str, label: str) -> list[dict]:
     return rows
 
 
-def summarize(rows_a: list[dict], rows_b: list[dict], group_cols: tuple[str, ...], min_count: int) -> list[dict]:
+def summarize(
+    rows_a: list[dict],
+    rows_b: list[dict],
+    group_cols: tuple[str, ...],
+    min_count: int,
+    card_names: dict[int, str],
+) -> list[dict]:
     def counts(rows):
         total = Counter()
         pair = Counter()
@@ -125,7 +149,7 @@ def summarize(rows_a: list[dict], rows_b: list[dict], group_cols: tuple[str, ...
             "type": typ,
             "type_name": TYPE_NAMES.get(typ, str(typ)),
             "card": card,
-            "card_name": CARD_NAMES.get(card, ""),
+            "card_name": card_names.get(card, ""),
             "a_count": na,
             "a_total": ta,
             "a_rate": f"{ra:.6f}",
@@ -161,16 +185,22 @@ def main() -> None:
     p.add_argument("--b-label", default="loss")
     p.add_argument("--out-dir", required=True)
     p.add_argument("--min-count", type=int, default=20)
+    p.add_argument(
+        "--card-data",
+        default="",
+        help="card metadata CSV; default uses data/EN_Card_Data.csv when present",
+    )
     args = p.parse_args()
 
+    card_names = load_card_names(args.card_data)
     rows_a = read_rows(args.a, args.a_label)
     rows_b = read_rows(args.b, args.b_label)
     out = Path(args.out_dir)
 
     summaries = {
-        "by_context_type_card.csv": summarize(rows_a, rows_b, ("context",), args.min_count),
-        "by_context_turn_type_card.csv": summarize(rows_a, rows_b, ("context", "turn_bucket"), args.min_count),
-        "by_context_nopt_type_card.csv": summarize(rows_a, rows_b, ("context", "nopt_bucket"), args.min_count),
+        "by_context_type_card.csv": summarize(rows_a, rows_b, ("context",), args.min_count, card_names),
+        "by_context_turn_type_card.csv": summarize(rows_a, rows_b, ("context", "turn_bucket"), args.min_count, card_names),
+        "by_context_nopt_type_card.csv": summarize(rows_a, rows_b, ("context", "nopt_bucket"), args.min_count, card_names),
     }
     for name, rows in summaries.items():
         write_csv(out / name, rows)

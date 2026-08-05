@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 00:18 Asia/Shanghai.
+Last updated: 2026-08-06 00:45 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -262,6 +262,133 @@ ssh ks 'pgrep -af "run_v11_specialist_bc_wave1|bc2_train.py|eval_manifest_random
 ssh ks 'tail -80 /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804/logs/v11_specialists_20260805/wave1_runner.log'
 ssh ks 'ls -lh /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804/checkpoints/specialist_v11_20260805'
 ```
+
+## 2026-08-06 Rule/Success FT Wave 2
+
+Small code updates:
+
+- `tools/compare_bc_subsets.py` now loads card names from
+  `data/EN_Card_Data.csv` by default, with the old small mapping as fallback.
+  This fixed unknown ids in success/loss reports, e.g. Cynthia `387` now maps to
+  `Cynthia's Spiritomb`.
+- `ptcg_rl/rule_overlay.py` has a new diagnostic-only mode
+  `primary_active`. It only fires in single-select `SWITCH` / `TO_ACTIVE`
+  contexts and chooses a deck-plan primary attacker when available. It is not
+  enabled by default and is not submission-ready.
+
+Crustle submission command recommended from previously live-probed models:
+
+```bash
+mkdir -p submissions
+python3 tools/package_submission.py \
+  --policy checkpoints/pop/bc2_crustle_wall_v10pop_all0803_set_w2.npz \
+  --deck logs/ladder_pool_0802_all/decks/b141ae295739_crustle_wall_where_is_my_orbit.csv \
+  --out submissions/crustle_wall_v10pop_b141ae29.tar.gz
+```
+
+Reason: this is the v10pop Crustle checkpoint already used in a Kaggle probe
+(`bc: crustle_wall_v10pop`, observed around 880 and earlier around 920). The
+v11 Crustle candidates are useful for internal testing but have weaker or less
+live-validated evidence.
+
+Remote success/loss compare outputs with full card names:
+
+```text
+logs/rule_success_20260806/
+```
+
+Key compare signals:
+
+- Marnie `b8f` vs Ogerpon: wins switch/select `Marnie's Grimmsnarl ex` more
+  often and are less dominated by Ogerpon target contexts.
+- Ogerpon vs Crustle: successful rows strongly prefer Mega Kangaskhan ex as
+  active over Ogerpon in some setup/active contexts. This points to structural
+  anti-wall play, not just more Teal Dance/attach.
+- Dragapult vs Marnie: wins choose Dragapult ex for `TO_ACTIVE`/`SWITCH` more
+  often and use Drakloak in `ATTACH_FROM`.
+- Dragapult vs Crustle: success uses more Dreepy bench/setup and less
+  Crustle-target fixation.
+- Cynthia vs Crustle: wins switch into `Cynthia's Spiritomb` more and avoid
+  over-switching into `Cynthia's Garchomp ex`.
+- Lucario vs Marnie: wins put Mega Lucario ex active more often.
+- TR Mewtwo vs Ogerpon: wins put Team Rocket's Mewtwo ex and Team Rocket's
+  Mimikyu active/bench more often.
+
+Remote runner:
+
+```text
+/tmp/run_success_ft_wave2.py
+logs/rule_success_train_20260806/wave2_runner.log
+```
+
+The first launch had a runner bookkeeping bug: it started the first four jobs
+but did not append them to `running`. The bug was fixed in `/tmp` and the runner
+was restarted with resume/skip-existing logic. The stuck old runner was killed;
+no `bc2_train.py` process remained afterward.
+
+Wave 2 checkpoints:
+
+```text
+checkpoints/success_ft_v11_20260806/
+```
+
+All eight success-only fine-tunes completed:
+
+- `marnie_b8f_vs_ogerpon_success_ft`
+- `ogerpon_xsig_vs_crustle_success_ft`
+- `dragapult_cc2_vs_marnie_success_ft`
+- `dragapult_cc2_vs_crustle_success_ft`
+- `cynthia_52f_vs_crustle_success_ft`
+- `lucario_43d_vs_marnie_success_ft`
+- `trm_f0b_vs_ogerpon_success_ft`
+- `alakazam_7f_vs_trm_marnie_success_ft`
+
+Evaluation outputs:
+
+```text
+logs/eval_rule_success_20260806/success_ft_wave2_manifest.csv
+logs/eval_rule_success_20260806/success_ft_wave2_random_g300.csv
+logs/eval_rule_success_20260806/delta_*_g200.csv
+logs/eval_rule_success_20260806/success_ft_wave2_summary.txt
+logs/eval_rule_success_20260806/success_ft_wave2_delta_summary.csv
+```
+
+Random g300:
+
+- Dragapult vs Marnie success FT: `0.803`
+- Dragapult vs Crustle success FT: `0.890`
+- Lucario vs Marnie success FT: `0.903`
+- Cynthia vs Crustle success FT: `0.923`
+- Alakazam vs TRM/Marnie success FT: `0.990`
+- Ogerpon vs Crustle cross-sig success FT: `0.993`
+- Marnie vs Ogerpon success FT: `0.997`
+- TR Mewtwo vs Ogerpon success FT: `1.000`
+
+Focused baseline-delta g200:
+
+- Marnie vs Ogerpon: `avg_delta=+0.0167`; slight local gain, still weak
+  absolute WR around `0.395`.
+- TR Mewtwo vs Ogerpon: `avg_delta=+0.0100`; slight local gain.
+- Cynthia vs Crustle: `avg_delta=+0.0050`; much smaller than the earlier wave1
+  win/loss specialist.
+- Dragapult vs Crustle: `avg_delta=-0.0050`.
+- Alakazam vs TRM/Marnie: `avg_delta=-0.0067`.
+- Lucario vs Marnie: `avg_delta=-0.0067`.
+- Dragapult vs Marnie: `avg_delta=-0.0083` and random only `0.803`.
+- Ogerpon vs Crustle: `avg_delta=-0.0167`; success-only BC did not repair this
+  structural weakness.
+
+Interpretation:
+
+- Success-only FT is useful as a diagnostic teacher/data source, not as a
+  submission recipe.
+- Marnie/Ogerpon and TRM/Ogerpon have small positive signal worth tracing, but
+  the absolute weakness remains.
+- Ogerpon/Crustle likely needs explicit anti-wall strategy construction or a
+  narrow rule/rerank guard around attacker selection and win condition; simply
+  cloning scarce winning Ogerpon rows made the focused matchup worse.
+- Dragapult success-only variants degraded random stability; do not scale this
+  recipe for Dragapult without mixing back broad population data.
 
 ## Kaggle Accounts And Monitoring
 

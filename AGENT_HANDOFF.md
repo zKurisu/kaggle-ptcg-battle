@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 09:39 Asia/Shanghai.
+Last updated: 2026-08-05 09:50 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -324,6 +324,78 @@ Recommended next:
 1. Generate v11 shadow/specialist manifest from `data/bc_corpus_banded_v11_0804_only`, but use `--min-decisions 2000` rather than 3000 if Team Rocket / thinner specialists should be included.
 2. Train v11 shadows from that manifest.
 3. For broad population baseline, use `data/bc_corpus_banded_v11_0803_0804`; for high-reactivity ladder specialists, use `v11_0804_only`.
+
+## v11 Shadow 0804 Status
+
+User completed:
+
+```text
+logs/build_shadow_pool_v11_0804_set.log
+logs/v11_pipeline/shadow_0804_set_mem8g/*.log
+```
+
+Note: expected runner path `logs/v11_pipeline/train_shadow_v11_0804_set_mem8g.runner.log` was not present during audit; only per-job logs existed under `logs/v11_pipeline/shadow_0804_set_mem8g/`.
+
+Manifest:
+
+```text
+logs/shadow_pool_manifest_v11_0804_set.csv
+rows=50
+missing_deck_path=0
+missing_eval_entry=0
+```
+
+Manifest rows by archetype:
+
+| Archetype | Rows | Sigs |
+| --- | ---: | ---: |
+| Mega Lopunny | 10 | 4 |
+| Teal Mask Ogerpon | 9 | 5 |
+| Marnie Grimmsnarl | 7 | 3 |
+| Dragapult | 6 | 5 |
+| Festival Lead | 5 | 2 |
+| Crustle Wall | 5 | 4 |
+| Alakazam | 4 | 2 |
+| Cynthia Garchomp | 2 | 1 |
+| Mega Lucario | 1 | 1 |
+| Team Rocket Mewtwo | 1 | 1 |
+
+Training status at audit:
+
+```text
+checkpoint_present=43
+checkpoint_missing=7
+bad_logs=7
+sample checkpoint dims=(80, 64)
+```
+
+All failures were CUDA OOM under the 8 GB per-process cap, mainly because the first run used batch size 2048 and likely two jobs per GPU. Missing checkpoints:
+
+```text
+rank 003 shadow_mega_lopunny_276707c0_unknown
+rank 007 shadow_dragapult_6763881e_third_ptcg_club
+rank 009 shadow_alakazam_7f9a5389_m_sato
+rank 027 shadow_alakazam_7f9a5389_team_kasa
+rank 045 shadow_alakazam_7f9a5389_northstar
+rank 046 shadow_mega_lopunny_b0cb21e2_insuperabilehart
+rank 048 shadow_alakazam_d791eb8b_goonew
+```
+
+Important implication: do not start the main random audit yet if Alakazam quality matters; all Alakazam v11 shadows are currently missing. Rerun missing jobs with `--skip-existing`, `--jobs-per-gpu 1`, and `--batch-size 1024` first:
+
+```bash
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python3 -u tools/train_shadow_manifest.py \
+  logs/shadow_pool_manifest_v11_0804_set.csv \
+  --gpus 0,1,2,3 \
+  --jobs-per-gpu 1 \
+  --batch-size 1024 \
+  --cuda-memory-gb 8 \
+  --skip-existing \
+  --log-dir logs/v11_pipeline/shadow_0804_set_mem8g_retry1024 \
+  2>&1 | tee logs/v11_pipeline/train_shadow_v11_0804_set_retry1024.runner.log
+```
+
+If any still OOM, retry the remaining jobs with `--batch-size 512`; keep `--skip-existing`.
 
 Shadow top120 baseline-delta eval:
 

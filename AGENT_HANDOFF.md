@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 10:40 Asia/Shanghai.
+Last updated: 2026-08-05 11:02 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -527,6 +527,48 @@ Interpretation:
   - Crustle `47756cdfd20f`: v10 `0.958`, v11 `0.794`
 - Do not launch full feature rollback yet. First patch missing deck paths and resume random for the 3 skipped rows, then run population-model random and balanced RR/baseline-delta. If v11 population itself is weak against random, run 64/48 rollback. If v11 population is fine but pop-init shadows remain weak, fix the specialist recipe instead of blaming features.
 - Dragapult and Crustle are the clearest remaining failures; prioritize trace and recipe checks there.
+
+Feature rollback targeted contrast for Dragapult/Crustle completed:
+
+```text
+logs/eval_shadow_v11/pop_v11_80_dragapult_crustle_random_g500.csv
+logs/eval_shadow_v11/pop_v11_64_48_dragapult_crustle_random_g500.csv
+logs/eval_shadow_v11/shadow_v11_0804_popinit_random_g500.csv
+logs/eval_shadow_v11/shadow_v11_0804_feat64_48_popinit_dc_random_g500.csv
+```
+
+Training status:
+
+- `logs/v11_pipeline/train_pop_v11_0803_0804_feat64_48_dc.runner.log`: Dragapult and Crustle 64/48 population completed, no failures.
+- `logs/shadow_pool_manifest_v11_0804_feat64_48_popinit_dc.csv`: 11 rows.
+- `logs/v11_pipeline/train_shadow_v11_0804_feat64_48_popinit_dc.runner.log`: 11/11 completed, no failures.
+
+Random 500 summary for Dragapult + Crustle only:
+
+| Variant | n | Mean | Median | Min | Max | <0.90 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `pop80` | 11 | 0.701 | 0.650 | 0.548 | 0.858 | 11 |
+| `pop64` | 11 | 0.684 | 0.616 | 0.548 | 0.828 | 11 |
+| `shadow80` | 11 | 0.683 | 0.662 | 0.572 | 0.804 | 11 |
+| `shadow64` | 11 | 0.672 | 0.658 | 0.528 | 0.804 | 11 |
+| `v10_shadow_ref` | 44 | 0.916 | 0.938 | 0.564 | 0.990 | 14 |
+
+By archetype:
+
+| Variant | Dragapult Mean | Crustle Mean |
+| --- | ---: | ---: |
+| `pop80` | 0.609 | 0.810 |
+| `pop64` | 0.580 | 0.808 |
+| `shadow80` | 0.638 | 0.738 |
+| `shadow64` | 0.607 | 0.750 |
+| `v10_shadow_ref` | 0.873 | 0.929 |
+
+Interpretation:
+
+- 64/48 rollback does not improve Dragapult/Crustle. It is slightly worse overall.
+- The v11 population baselines are already weak against random for these archetypes, so the primary issue is not just specialist overfitting.
+- Since `pop64` is not better than `pop80`, do not run full feature rollback as the next step.
+- Treat this as a data/recipe/behavior problem. Next useful diagnostics are random-loss traces and BC failure reports for Dragapult/Crustle, plus a v10-corpus/v10-recipe reproduction for these two archetypes to isolate whether v11 corpus/data distribution caused the regression.
 
 Shadow top120 baseline-delta eval:
 

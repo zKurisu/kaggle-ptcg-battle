@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 00:45 Asia/Shanghai.
+Last updated: 2026-08-06 01:20 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -167,6 +167,37 @@ Card-weight BC tested:
   - evolve vs `og5899`: `+0.0167`; vs `og697`: `-0.0067`; avg `+0.005`
   - evolve_attach vs `og5899`: `-0.0100`; vs `og697`: `+0.0033`; avg `-0.003`
 - Interpretation: simple card weighting is not enough. Do not scale this recipe or submit these checkpoints. The useful output is the tooling and negative result.
+
+## 2026-08-06 Human Matchup Strategy Ingestion
+
+User clarified the intended direction: when a weakness looks structural, the next step is not simply copying sparse winning replays. We should search human PTCG strategy sources, matchup stats, card text, tournament/deck guides, and community articles for how strong players navigate specific matchups, then translate those ideas into simulator-observable rules, teacher rollouts, or matchup-conditioned training data.
+
+New files:
+
+- `docs/11_human_matchup_strategy.md`
+- `data/matchup_strategy_seeds_v1.csv`
+
+Current seed table has 9 strategy hypotheses:
+
+- Marnie Grimmsnarl vs Teal Mask Ogerpon setup.
+- Marnie core Froslass/Munkidori/Grimmsnarl engine.
+- Conditional caution around Froslass into Munkidori-style opponents.
+- Crustle anti-ex wall plan.
+- Crustle wall plus resource-pressure plan.
+- Ogerpon vs Crustle early Dwebble punish.
+- Ogerpon vs Crustle avoid futile ex attacks into established Crustle.
+- Cynthia vs Crustle Spiritomb active/counter plan.
+- Dragapult setup coherence into Marnie/Crustle.
+
+Use these only as hypotheses. Required path for each seed:
+
+1. Confirm the card/deck exists in the exact deck CSV and local `data/EN_Card_Data.csv`.
+2. Run rich trace and count where the desired card/action was available but not selected.
+3. Implement the narrowest possible `--rules-entry`/rerank probe or teacher policy.
+4. Validate random first, then focused weakness delta, then broad balanced-shadow delta.
+5. Only after focused and broad validation pass, generate teacher-rollout success data and distill into mixed BC.
+
+Do not submit or scale a human-strategy rule solely because the explanation sounds correct. Previous rule/card-weight experiments showed that plausible global nudges can improve narrow metrics while hurting broad play.
 
 ## 2026-08-05 Specialist BC Wave 1
 

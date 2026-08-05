@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 23:41 Asia/Shanghai.
+Last updated: 2026-08-05 23:55 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -660,6 +660,54 @@ Crustle have almost no successful same-sig data. BC cannot invent a counter-plan
 from mostly losing labels. For Ogerpon vs Crustle, mine/transfer the successful
 `2a5072194fdf` games or generate new successful trajectories with rules/search/RL
 before expecting fine-tuning to improve the matchup.
+
+Rule/success-data exploration started:
+
+- New tool: `tools/build_bc_subset.py`. It builds a BCCorpus-compatible filtered
+  subset under `OUT/Archetype/out_band/name.npz`, preserving the original npz
+  schema and metadata. Use it for winner-only success pools, loss pools, and
+  trace/BC distillation probes.
+- Remote script used: `/tmp/build_success_subsets_v1.sh`.
+- Remote log: `logs/rule_success_20260805/build_success_subsets_v1.log`.
+- Local copies pulled:
+  `logs/rule_success_20260805/ogerpon_deck_compare.txt`,
+  `logs/rule_success_20260805/success_subset_shapes.txt`, and
+  `logs/eval_next_v11_weakup_20260805/weak_matchup_game_counts.csv`.
+
+Constructed remote success/loss subset corpora:
+
+```text
+data/bc_success_subsets_v11_20260805/Teal_Mask_Ogerpon/ogerpon_crustle_success_xsig/ogerpon_2a507_5899_697_vs_crustle_wins.npz
+  rows=4456 games=66 state=(80,) option=(1,64)
+data/bc_success_subsets_v11_20260805/Teal_Mask_Ogerpon/ogerpon_crustle_target_losses/ogerpon_5899_697_vs_crustle_losses.npz
+  rows=10950 games=105 state=(80,) option=(1,64)
+data/bc_success_subsets_v11_20260805/Marnie_Grimmsnarl/marnie_b8f_ogerpon_success/marnie_b8f_vs_ogerpon_wins.npz
+  rows=35715 games=446 state=(80,) option=(2,64)
+data/bc_success_subsets_v11_20260805/Alakazam/alakazam_7f_trm_marnie_success_sample/alakazam_7f_vs_trm_marnie_win_games1000.npz
+  rows=99024 games=1323 state=(80,) option=(2,64)
+```
+
+Important Ogerpon caveat:
+
+- `2a5072194fdf` is not a small edit of `5899c772bace` or `697a82e582d5`; it is
+  a materially different Ogerpon box. It has fewer Teal Mask Ogerpon, plus Mega
+  Kangaskhan ex, Meowth ex, Lillie's Clefairy ex, and many different trainer
+  ids. Do not directly train `5899/697` to imitate all `2a507` decisions unless
+  the chosen cards/actions also exist in the target deck or the aim is only a
+  diagnostic teacher policy.
+- Better next step for Ogerpon vs Crustle: compare `2a507` wins against
+  `5899/697` losses by action type/card and by turn window, then extract only
+  shared actionable rules such as attack-window timing, END/ABILITY loop guards,
+  or target/retreat heuristics.
+
+Rule strategy direction:
+
+- Keep BC as the default policy.
+- Add rules as narrow rerank/veto/bonus layers, not global action replacement.
+- Every rule should log a reason and be validated by random, focused weak-pool
+  delta, and broad environment delta.
+- If a rule produces wins in a weak matchup, use those rollouts as generated
+  successful trajectories and distill back into BC/RL-anchor training.
 
 Monitor:
 

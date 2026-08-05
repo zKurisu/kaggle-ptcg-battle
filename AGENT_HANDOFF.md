@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 23:16 Asia/Shanghai.
+Last updated: 2026-08-05 23:41 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -630,16 +630,36 @@ Wave 2 recipe:
 
 Status at `2026-08-05 23:16 Asia/Shanghai`:
 
-- Done training: `ogerpon_5899_weak_crustle_aw4`,
-  `lopunny_f144_weak_cynthia_alakazam_aw2`.
-- Running training: `marnie_b8f_weak_ogerpon_aw2p5`,
-  `alakazam_7f_weak_trm_marnie_aw2`,
-  `cynthia_52f_weak_crustle_ogerpon_aw2p5`,
-  `dragapult_cc2_weak_marnie_crustle_ogerpon_aw2`.
-- After all training jobs complete, the runner automatically writes
-  `weakup_wave2_manifest.csv`, runs random g500, focused delta g200, broad
-  delta g80, then writes `weakup_wave2_summary.txt` and
-  `weakup_wave2_summary.csv`.
+- Training finished at `2026-08-05 23:38 Asia/Shanghai`, `failed=0`.
+- Saved best checkpoints exist for all six weak-upweight candidates.
+- Random g500 completed and wrote
+  `logs/eval_next_v11_weakup_20260805/weakup_wave2_random_g500.csv`.
+- Focused delta did not run correctly because the runner's target-manifest
+  generation snippet used `f.fieldnames` instead of `reader.fieldnames`.
+  The focused logs currently show `FileNotFoundError` for missing
+  `target_*.csv`. This needs a small repair script; broad eval is unaffected.
+- Broad eval started with `broad_delta_marnie_env80_g80.csv` and was running at
+  the 23:41 check.
+
+Weak matchup game-count audit from `data/bc_corpus_banded_v11_0724_0804`:
+
+```text
+marnie_b8f_vs_ogerpon: games=2664 W/L/D=738/1925/1 wr=0.277 decisions=197329 win_decision_share=0.304
+ogerpon_5899_vs_crustle: games=57 W/L/D=1/56/0 wr=0.018 decisions=5144 win_decision_share=0.015
+ogerpon_697_vs_crustle: games=161 W/L/D=5/156/0 wr=0.031 decisions=15998 win_decision_share=0.009
+ogerpon_2a507_vs_crustle: games=204 W/L/D=81/123/0 wr=0.397 decisions=16862 win_decision_share=0.329
+alakazam_7f_vs_trm_marnie: games=6124 W/L/D=2477/3646/1 wr=0.404 decisions=465135 win_decision_share=0.402
+lopunny_f144_vs_cynthia_alakazam: games=199 W/L/D=104/95/0 wr=0.523 decisions=15850 win_decision_share=0.554
+cynthia_52f_vs_crustle_ogerpon: games=524 W/L/D=192/332/0 wr=0.366 decisions=39811 win_decision_share=0.354
+dragapult_cc2_vs_marnie_crustle_ogerpon: games=800 W/L/D=442/358/0 wr=0.552 decisions=94659 win_decision_share=0.581
+```
+
+Interpretation: some weak matchups have enough winning demonstrations for
+outcome-weighted BC, but Ogerpon `5899c772bace` and `697a82e582d5` into
+Crustle have almost no successful same-sig data. BC cannot invent a counter-plan
+from mostly losing labels. For Ogerpon vs Crustle, mine/transfer the successful
+`2a5072194fdf` games or generate new successful trajectories with rules/search/RL
+before expecting fine-tuning to improve the matchup.
 
 Monitor:
 

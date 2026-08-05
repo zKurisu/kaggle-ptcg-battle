@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 09:56 Asia/Shanghai.
+Last updated: 2026-08-05 10:08 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -415,7 +415,7 @@ logs/v11_pipeline/shadow_0804_set_mem8g_retry1024/
 
 The original `logs/v11_pipeline/shadow_0804_set_mem8g/*.log` still contains the seven stale OOM logs. Do not interpret those as final failures unless the checkpoint is missing.
 
-Next step is shadow random audit:
+Shadow random audit completed:
 
 ```bash
 python3 tools/eval_manifest_random.py \
@@ -429,6 +429,49 @@ python3 tools/eval_manifest_random.py \
   --out-csv logs/eval_shadow_v11/shadow_v11_0804_random_g500.csv \
   2>&1 | tee logs/eval_shadow_v11/shadow_v11_0804_random_g500.log
 ```
+
+Result:
+
+```text
+logs/eval_shadow_v11/shadow_v11_0804_random_g500.csv
+n=50 mean=0.667 median=0.669 min=0.130 max=0.992
+>=0.99: 1
+>=0.97: 5
+<0.95: 42
+<0.90: 40
+deck_sig_ok=50/50
+manifest_init_nonempty=0/50
+completed_logs=50/50
+```
+
+By archetype:
+
+| Archetype | n | Mean WR | Median | Min | Max | <0.90 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Dragapult | 6 | 0.367 | 0.419 | 0.130 | 0.572 | 6 |
+| Crustle Wall | 5 | 0.451 | 0.454 | 0.310 | 0.634 | 5 |
+| Team Rocket Mewtwo | 1 | 0.496 | 0.496 | 0.496 | 0.496 | 1 |
+| Marnie Grimmsnarl | 7 | 0.561 | 0.620 | 0.334 | 0.836 | 7 |
+| Alakazam | 4 | 0.735 | 0.710 | 0.568 | 0.952 | 3 |
+| Mega Lopunny | 10 | 0.761 | 0.778 | 0.656 | 0.862 | 10 |
+| Festival Lead | 5 | 0.784 | 0.758 | 0.668 | 0.976 | 4 |
+| Teal Mask Ogerpon | 9 | 0.813 | 0.958 | 0.202 | 0.992 | 3 |
+| Cynthia Garchomp | 2 | 0.878 | 0.878 | 0.852 | 0.904 | 1 |
+| Mega Lucario | 1 | 0.922 | 0.922 | 0.922 | 0.922 | 0 |
+
+Diagnostics from `/tmp/ptcg_analyze_v11_shadow_random.py` on `ks`:
+
+- Low random WR is not mainly sample-count limited: Pearson correlation with random WR was `decisions=0.09`, `episodes=0.21`, `trajectory_score=0.06`.
+- Deck paths are not corrupt: 50/50 evaluated deck CSVs hash to the expected `deck_sig`. Most deck paths resolve to `logs/ladder_pool_0802_all/decks`, but matching signatures mean the 60-card list is equivalent.
+- Training completed and did not show final errors. This is not a stale OOM issue.
+- The v11 shadow manifest has no init paths. These were trained from scratch as single team/deck specialists on 0804-only data.
+
+Interpretation:
+
+- Do not treat the current v11 shadow pool as a reliable ladder pool yet.
+- This result does not prove the new 80/64 v11 features are bad. Some v11 shadows still pass random, and the failure pattern is weakly related to data volume.
+- The most likely issue is recipe/initialization: narrow from-scratch specialists overfit local trajectory imitation and lose basic game execution. Next v11 shadow wave should initialize from strong population checkpoints, preferably v11 population trained on `data/bc_corpus_banded_v11_0803_0804`; if v11 population is not ready, use v10 population checkpoints with `--init-partial --state-feat-dim 80 --opt-feat-dim 64`.
+- Current v11 shadows can still be used for trace/debug diversity, but they should be low-trust opponents unless they pass random and RR gates.
 
 Shadow top120 baseline-delta eval:
 

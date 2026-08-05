@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 22:32 Asia/Shanghai.
+Last updated: 2026-08-05 23:16 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -527,6 +527,127 @@ Complex-v11 validation run completed on `ks` at 2026-08-05 21:08 Asia/Shanghai:
   complex metrics outcome-aware: compare loss-vs-win trace states and train on
   the specific decision contexts that differ in won games, rather than globally
   increasing `ATTACK`/`ATTACH`/multi-select weights.
+
+## Specialist And Weak-Upweight BC
+
+Pure matchup-conditioned specialist wave 1 completed on `ks`.
+
+Important wave 1 repair:
+
+- The original runner printed `training complete failed=0`, but
+  `cynthia_vs_crustle_wl` actually OOMed under set-loss. It was retried with
+  batch `512`, CUDA cap `16GB`, and `--set-loss-weight 0.0`; the repaired
+  checkpoint is
+  `checkpoints/specialist_v11_20260805/bc2_cynthia_vs_crustle_wl_w2.npz`.
+
+Wave 1 repaired random g300:
+
+- Marnie vs Ogerpon WL: `1.000`; winner-only: `0.9967`.
+- Ogerpon vs Crustle WL: `1.000`; winner-only: `0.9933`.
+- Dragapult vs Marnie WL: `0.8467`.
+- Dragapult vs Crustle WL: `0.9233`.
+- Alakazam vs TR Mewtwo WL: `0.9867`.
+- Lopunny vs Cynthia WL: `0.9800`.
+- Cynthia vs Crustle WL: `0.9567`.
+- TR Mewtwo vs Ogerpon WL: `0.9900`.
+
+Wave 1 focused g200 deltas:
+
+- `cynthia_vs_crustle_wl`: `avg_delta=+0.090`.
+- `lopunny_vs_cynthia_wl`: `+0.0283`.
+- `alakazam_vs_trm_wl`: `+0.0267`.
+- `dragapult_vs_crustle_wl`: `+0.0100`.
+- `ogerpon_vs_crustle_wl`: `+0.0067`.
+- `marnie_vs_ogerpon_wl`: `+0.0033`.
+- `marnie_vs_ogerpon_winner_only`: `-0.0033`.
+- `dragapult_vs_marnie_wl`: `-0.0083`.
+- `trm_vs_ogerpon_wl`: `-0.0200`.
+
+Wave 1 broad guardrail against the balanced 49-entry environment failed for
+almost every pure specialist:
+
+- `ogerpon_vs_crustle_wl`: `avg_delta=+0.0015`, `weighted_delta=+0.0086`,
+  `lost=20/49`; effectively flat/noisy, not a clear upgrade.
+- `ogerpon_vs_crustle_winner_only`: `avg_delta=-0.0028`,
+  `weighted_delta=+0.0018`, `lost=18/49`.
+- `alakazam_vs_trm_wl`: `avg_delta=-0.0079`,
+  `weighted_delta=-0.0116`, `lost=24/49`.
+- `lopunny_vs_cynthia_wl`: `avg_delta=-0.0202`,
+  `weighted_delta=-0.0423`, `lost=30/49`.
+- `cynthia_vs_crustle_wl`: `avg_delta=-0.0513`,
+  `weighted_delta=-0.0469`, `lost=34/49`.
+
+Interpretation: target-only filtering is causing narrow gains and broad
+regression. Do not use wave 1 checkpoints as general replacements. Keep them as
+diagnostic specialist policies only.
+
+Code update made locally and synced to `ks`:
+
+- `ptcg_rl/bc2/data.py` and `tools/bc2_train.py` now support
+  `--opponent-archetype-weight "NAME=WEIGHT"` and
+  `--opponent-deck-sig-weight SIG=WEIGHT`. These multiply sample weights without
+  filtering out non-target games.
+- Local smoke test verified that opponent archetype weights combine with
+  win/loss/draw weights as expected.
+
+Weak-upweight wave 2 started on `ks` at `2026-08-05 23:12 Asia/Shanghai`.
+
+Runner:
+
+```bash
+ssh ks 'tail -f /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804/logs/v11_weakup_20260805/wave2_runner.log'
+```
+
+Script:
+
+```text
+/tmp/run_v11_weakup_wave2.sh
+```
+
+Outputs:
+
+```text
+checkpoints/weakup_v11_20260805/
+logs/v11_weakup_20260805/
+logs/eval_next_v11_weakup_20260805/
+```
+
+Wave 2 recipe:
+
+- Keep each candidate on full `data/bc_corpus_banded_v11_0724_0804` for its
+  `--deck-sig`; do not filter to only weak-opponent games.
+- Initialize from the corresponding population checkpoint under
+  `checkpoints/pop_v11_0724_0804/`.
+- Six fine-tunes, six epochs, `lr=5e-5`, `batch=1024`, `set_loss=0.10`,
+  `win/loss/draw=1.5/0.4/0.8`, `multi_select_weight=1.1`, feature dims `80/64`.
+- Weak-opponent weights:
+  - Marnie `b8f251a476e7`: Ogerpon `2.5`.
+  - Ogerpon `5899c772bace`: Crustle `4.0`.
+  - Alakazam `7f9a538936e3`: TR Mewtwo `2.5`, Marnie `2.0`.
+  - Lopunny `f1445356c3a7`: Cynthia `2.5`, Alakazam `2.0`.
+  - Cynthia `52f467394857`: Crustle `2.5`, Ogerpon `2.0`.
+  - Dragapult `cc2e995b5ad0`: Marnie `2.5`, Crustle `2.5`, Ogerpon `2.0`.
+
+Status at `2026-08-05 23:16 Asia/Shanghai`:
+
+- Done training: `ogerpon_5899_weak_crustle_aw4`,
+  `lopunny_f144_weak_cynthia_alakazam_aw2`.
+- Running training: `marnie_b8f_weak_ogerpon_aw2p5`,
+  `alakazam_7f_weak_trm_marnie_aw2`,
+  `cynthia_52f_weak_crustle_ogerpon_aw2p5`,
+  `dragapult_cc2_weak_marnie_crustle_ogerpon_aw2`.
+- After all training jobs complete, the runner automatically writes
+  `weakup_wave2_manifest.csv`, runs random g500, focused delta g200, broad
+  delta g80, then writes `weakup_wave2_summary.txt` and
+  `weakup_wave2_summary.csv`.
+
+Monitor:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -80 logs/v11_weakup_20260805/wave2_runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && for f in logs/v11_weakup_20260805/*.log; do b=$(basename "$f"); printf "%s | " "$b"; tail -1 "$f"; done'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && ps -eo pid,ppid,stat,etime,cmd | grep -E "bc2_train.py|eval_manifest_random.py|eval_baseline_delta.py|run_v11_weakup_wave2" | grep -v grep'
+```
 
 ## Current Shadow Training
 

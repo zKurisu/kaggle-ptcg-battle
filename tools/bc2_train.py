@@ -107,6 +107,19 @@ def _parse_weight_specs(specs: list[str], names: dict[str, int], label: str) -> 
     return out
 
 
+def _parse_text_weight_specs(specs: list[str], label: str, *, lower: bool = False) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for spec in specs:
+        if "=" not in spec:
+            raise ValueError(f"{label} weight must be NAME=WEIGHT, got {spec!r}")
+        key, value = spec.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"{label} weight has an empty key in {spec!r}")
+        out[key.lower() if lower else key] = float(value)
+    return out
+
+
 def _save_npz(model: torch.nn.Module, path: str) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     np.savez_compressed(path, **{k: v.detach().cpu().numpy() for k, v in model.state_dict().items()})
@@ -229,6 +242,10 @@ def main() -> None:
                         help="filter to decisions from games against one or more opponent archetypes")
     parser.add_argument("--opponent-team-name", action="append", default=[],
                         help="filter to decisions from games against one or more exact opponent team names")
+    parser.add_argument("--opponent-deck-sig-weight", action="append", default=[],
+                        help="repeatable opponent deck signature multiplier without filtering, e.g. 697a82e582d5=2.0")
+    parser.add_argument("--opponent-archetype-weight", action="append", default=[],
+                        help="repeatable opponent archetype multiplier without filtering, e.g. 'Crustle Wall=2.0'")
     parser.add_argument("--epochs", type=int, default=12)
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -295,6 +312,15 @@ def main() -> None:
     context_weights = _parse_weight_specs(args.context_weight, CONTEXT_IDS, "context")
     type_weights = _parse_weight_specs(args.type_weight, TYPE_IDS, "type")
     card_weights = _parse_weight_specs(args.card_weight, CARD_IDS, "card")
+    opponent_deck_sig_weights = _parse_text_weight_specs(
+        args.opponent_deck_sig_weight,
+        "opponent deck sig",
+    )
+    opponent_archetype_weights = _parse_text_weight_specs(
+        args.opponent_archetype_weight,
+        "opponent archetype",
+        lower=True,
+    )
     inferred_from_init = False
     state_feat_dim = int(args.state_feat_dim) if args.state_feat_dim else None
     opt_feat_dim = int(args.opt_feat_dim) if args.opt_feat_dim else None
@@ -317,6 +343,8 @@ def main() -> None:
         opponent_deck_sigs=args.opponent_deck_sig,
         opponent_archetypes=args.opponent_archetype,
         opponent_team_names=args.opponent_team_name,
+        opponent_deck_sig_weights=opponent_deck_sig_weights,
+        opponent_archetype_weights=opponent_archetype_weights,
         winner_only=args.winner_only,
         win_weight=args.win_weight,
         loss_weight=args.loss_weight,
@@ -369,6 +397,8 @@ def main() -> None:
         f"opponent_deck_sigs={args.opponent_deck_sig or 'all'} "
         f"opponent_archetypes={args.opponent_archetype or 'all'} "
         f"opponent_team_names={args.opponent_team_name or 'all'} "
+        f"opponent_deck_sig_weights={opponent_deck_sig_weights or '{}'} "
+        f"opponent_archetype_weights={opponent_archetype_weights or '{}'} "
         f"winner_only={args.winner_only} "
         f"win/loss/draw_weight={args.win_weight}/{args.loss_weight}/{args.draw_weight} "
         f"context_weights={context_weights or '{}'} type_weights={type_weights or '{}'} "

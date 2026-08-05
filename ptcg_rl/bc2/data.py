@@ -76,6 +76,8 @@ class BCCorpus:
         opponent_deck_sigs: Iterable[str] | None = None,
         opponent_archetypes: Iterable[str] | None = None,
         opponent_team_names: Iterable[str] | None = None,
+        opponent_deck_sig_weights: dict[str, float] | None = None,
+        opponent_archetype_weights: dict[str, float] | None = None,
         winner_only: bool = False,
         win_weight: float = 1.0,
         loss_weight: float = 1.0,
@@ -97,6 +99,12 @@ class BCCorpus:
         self.opponent_deck_sigs = {str(x) for x in (opponent_deck_sigs or []) if str(x)}
         self.opponent_archetypes = {str(x).lower() for x in (opponent_archetypes or []) if str(x)}
         self.opponent_team_names = {str(x).lower() for x in (opponent_team_names or []) if str(x)}
+        self.opponent_deck_sig_weights = {
+            str(k): float(v) for k, v in (opponent_deck_sig_weights or {}).items() if str(k)
+        }
+        self.opponent_archetype_weights = {
+            str(k).lower(): float(v) for k, v in (opponent_archetype_weights or {}).items() if str(k)
+        }
         self.winner_only = bool(winner_only)
         self.win_weight = float(win_weight)
         self.loss_weight = float(loss_weight)
@@ -135,12 +143,12 @@ class BCCorpus:
                     "Corpus does not contain team_name metadata. Re-extract with the updated "
                     "tools/bc_extract_v2.py before using --team-name."
                 )
-            if self.opponent_deck_sigs and "opponent_deck_sig" not in data:
+            if (self.opponent_deck_sigs or self.opponent_deck_sig_weights) and "opponent_deck_sig" not in data:
                 raise ValueError(
                     "Corpus does not contain opponent_deck_sig metadata. Re-extract with the updated "
                     "tools/bc_extract_v2.py before using --opponent-deck-sig."
                 )
-            if self.opponent_archetypes and "opponent_archetype" not in data:
+            if (self.opponent_archetypes or self.opponent_archetype_weights) and "opponent_archetype" not in data:
                 raise ValueError(
                     "Corpus does not contain opponent_archetype metadata. Re-extract with the updated "
                     "tools/bc_extract_v2.py before using --opponent-archetype."
@@ -280,6 +288,13 @@ class BCCorpus:
             weights[bi] *= self.context_weights.get(contexts[-1], 1.0)
             weights[bi] *= self.type_weights.get(true_first_types[-1], 1.0)
             weights[bi] *= self.card_weights.get(true_first_cards[-1], 1.0)
+            if self.opponent_deck_sig_weights:
+                weights[bi] *= self.opponent_deck_sig_weights.get(str(data["opponent_deck_sig"][si]), 1.0)
+            if self.opponent_archetype_weights:
+                weights[bi] *= self.opponent_archetype_weights.get(
+                    str(data["opponent_archetype"][si]).lower(),
+                    1.0,
+                )
             if len(actions[-1]) > 1:
                 weights[bi] *= self.multi_select_weight
             if "won" in data:

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 10:08 Asia/Shanghai.
+Last updated: 2026-08-05 10:40 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -472,6 +472,52 @@ Interpretation:
 - This result does not prove the new 80/64 v11 features are bad. Some v11 shadows still pass random, and the failure pattern is weakly related to data volume.
 - The most likely issue is recipe/initialization: narrow from-scratch specialists overfit local trajectory imitation and lose basic game execution. Next v11 shadow wave should initialize from strong population checkpoints, preferably v11 population trained on `data/bc_corpus_banded_v11_0803_0804`; if v11 population is not ready, use v10 population checkpoints with `--init-partial --state-feat-dim 80 --opt-feat-dim 64`.
 - Current v11 shadows can still be used for trace/debug diversity, but they should be low-trust opponents unless they pass random and RR gates.
+
+## v11 Pop-Init Shadow Audit
+
+Remote audit at 2026-08-05 10:40 Asia/Shanghai:
+
+- Population training first failed for Alakazam, Mega Lopunny, and Cynthia Garchomp under `--cuda-memory-gb 8`, but retry with `--cuda-memory-gb 24` completed all three.
+- Final `checkpoints/pop_v11/bc2_*_v11pop_0803_0804_set_w2.npz` population checkpoints are present for all 11 trained archetypes.
+- `logs/shadow_pool_manifest_v11_0804_popinit_set.csv` has 46 rows, all with non-empty and existing `init_path`; all 46 shadow checkpoints exist.
+- `logs/v11_pipeline/train_shadow_v11_0804_popinit_set_mem8g.runner.log` completed 46/46 with no failures.
+- `logs/eval_shadow_v11/shadow_v11_0804_popinit_random_g500.csv` currently contains 43 rows because three 0804-new signatures have empty `deck_path` in the manifest and were skipped:
+  - `shadow_dragapult_7ac0181b_lumenliquidity`
+  - `shadow_dragapult_46ceec8c_rtoabc`
+  - `shadow_teal_mask_ogerpon_1784e485_213tubo`
+- The empty deck paths are from using the default `build_shadow_pool.py --known-decks-dir` search list, which does not include `logs/ladder_pool_0804_all/decks`. Rebuild or patch the manifest with `--known-decks-dir logs/ladder_pool_0804_all/decks`, then resume random eval.
+
+Current evaluated pop-init random result:
+
+```text
+n=43 mean=0.874 median=0.938 min=0.436 max=0.996
+>=0.99: 5
+>=0.97: 10
+<0.95: 27
+<0.90: 14
+```
+
+By archetype:
+
+| Archetype | n | Mean WR | Median | Min | Max | <0.90 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Dragapult | 4 | 0.621 | 0.597 | 0.572 | 0.718 | 4 |
+| Crustle Wall | 5 | 0.738 | 0.784 | 0.656 | 0.804 | 5 |
+| Teal Mask Ogerpon | 7 | 0.866 | 0.988 | 0.436 | 0.996 | 2 |
+| Mega Lucario | 1 | 0.898 | 0.898 | 0.898 | 0.898 | 1 |
+| Festival Lead | 4 | 0.903 | 0.933 | 0.752 | 0.996 | 1 |
+| Mega Lopunny | 9 | 0.935 | 0.930 | 0.904 | 0.976 | 0 |
+| Alakazam | 4 | 0.943 | 0.943 | 0.938 | 0.948 | 0 |
+| Marnie Grimmsnarl | 6 | 0.955 | 0.961 | 0.898 | 0.988 | 1 |
+| Team Rocket Mewtwo | 1 | 0.968 | 0.968 | 0.968 | 0.968 | 0 |
+| Cynthia Garchomp | 2 | 0.975 | 0.975 | 0.960 | 0.990 | 0 |
+
+Interpretation:
+
+- Pop init fixed a large part of the from-scratch v11 shadow failure: mean random improved from 0.667 to 0.874, and `<0.90` dropped from 40/50 to 14/43.
+- It still does not recover the v10 shadow random reference (`mean=0.977`, `median=0.994`).
+- Do not launch full feature rollback yet. First patch missing deck paths and resume random for the 3 skipped rows, then run population-model random and balanced RR/baseline-delta. If v11 population itself is weak against random, run 64/48 rollback. If v11 population is fine but pop-init shadows remain weak, fix the specialist recipe instead of blaming features.
+- Dragapult and Crustle are the clearest remaining failures; prioritize trace and recipe checks there.
 
 Shadow top120 baseline-delta eval:
 

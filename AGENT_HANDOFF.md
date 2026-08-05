@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 11:19 Asia/Shanghai.
+Last updated: 2026-08-05 11:55 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -598,6 +598,23 @@ Interpretation update:
 - If v11 multi-day recovers Dragapult/Crustle random quality, the regression was mostly data coverage/distribution.
 - If v11 multi-day remains low while v10 11-day is high, then investigate v11 extraction/features/training target more directly.
 - Do not treat the current 2-day v11 results as decisive evidence against v11 features.
+
+v11 multi-day Dragapult/Crustle result:
+
+```text
+pop80_v11_2d      n=11 mean=0.701 median=0.650 dragapult=0.609 crustle=0.810 <0.90=11
+shadow80_v11_2d   n=11 mean=0.683 median=0.662 dragapult=0.638 crustle=0.738 <0.90=11
+pop_v10_11d       n=11 mean=0.844 median=0.836 dragapult=0.797 crustle=0.900 <0.90=8
+pop_v11_12d       n=11 mean=0.911 median=0.906 dragapult=0.891 crustle=0.934 <0.90=2
+shadow_v11_12d    n=11 mean=0.904 median=0.922 dragapult=0.880 crustle=0.932 <0.90=5
+```
+
+Interpretation update:
+
+- This validates the data-coverage hypothesis. The 12-day v11 corpus recovers Dragapult/Crustle and is stronger than the v10 11-day population reproduction on the same 0804 deck set.
+- Do not run full 64/48 rollback. The main v11 line should use multi-day extraction.
+- Remaining shadow gap is much smaller and likely specialist/team coverage. One failure, `shadow_v11all_dragapult_cc2e995b_benarg`, was due to `--team-name Benarg` keeping zero samples in the 12-day corpus. The practical fix is to train that checkpoint as a deck-sig specialist without `--team-name`.
+- Next scale-up should train full v11 multi-day population across all relevant archetypes, then rebuild shadow manifests from `v11_0724_0804` with `--known-decks-dir logs/ladder_pool_0804_all/decks` and guard against zero-sample team specialists.
 
 Shadow top120 baseline-delta eval:
 

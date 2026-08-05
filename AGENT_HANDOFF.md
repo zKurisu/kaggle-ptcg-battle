@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 12:08 Asia/Shanghai.
+Last updated: 2026-08-05 12:50 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -26,7 +26,7 @@ Remote raw zip status at 2026-08-05 12:08 Asia/Shanghai:
 - Script path on `ks`: `/tmp/ptcg_download_july_episodes.sh`.
 - Log: `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804/logs/download_july_episodes_20260701_20260722.log`.
 - Status CSV: `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804/logs/download_july_episodes_20260701_20260722_status.csv`.
-- At the 12:08 check, `2026-07-01` was downloaded successfully and `2026-07-02` was in progress.
+- At the 12:50 check, `2026-07-01` through `2026-07-07` were downloaded successfully. `2026-07-08` was still in progress under a `/tmp/ptcg_2026-07-08_*` temp dir, and the temp zip was still growing. The job looked slow, not interrupted. The remaining target-dir-missing dates were `2026-07-08` through `2026-07-22`.
 
 Monitor with:
 

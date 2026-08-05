@@ -176,6 +176,7 @@ New files:
 
 - `docs/11_human_matchup_strategy.md`
 - `data/matchup_strategy_seeds_v1.csv`
+- `data/matchup_strategy_seed_cards_v1.csv`
 
 Current seed table has 9 strategy hypotheses:
 
@@ -198,6 +199,13 @@ Use these only as hypotheses. Required path for each seed:
 5. Only after focused and broad validation pass, generate teacher-rollout success data and distill into mixed BC.
 
 Do not submit or scale a human-strategy rule solely because the explanation sounds correct. Previous rule/card-weight experiments showed that plausible global nudges can improve narrow metrics while hurting broad play.
+
+The seed-card mapping table is deliberately separate from the strategy table.
+Use it to validate that a human guide's named cards are present in the exact
+Kaggle deck before turning the idea into a hard rule or generated-data teacher.
+Basic Energy names may come from the simulator runtime rather than
+`data/EN_Card_Data.csv`, so validate those from traces/deck IDs instead of using
+card DB presence alone.
 
 ## 2026-08-05 Specialist BC Wave 1
 

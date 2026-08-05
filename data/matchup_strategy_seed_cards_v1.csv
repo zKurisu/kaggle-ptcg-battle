@@ -1,0 +1,28 @@
+seed_id,card_name,card_id_hint,role,required_in,notes
+marnie_vs_ogerpon_setup,Marnie's Impidimp,646,own_setup,own_deck,First Marnie evolution line card.
+marnie_vs_ogerpon_setup,Marnie's Morgrem,647,own_setup,own_deck,Trace misses showed Morgrem can be available but skipped.
+marnie_vs_ogerpon_setup,Marnie's Grimmsnarl ex,648,own_setup,own_deck,Punk Up and Shadow Bullet payoff.
+marnie_vs_ogerpon_setup,Spikemuth Gym,1259,engine_search,own_deck,Searches Marnie's Pokemon in this simulator card pool.
+marnie_core_engine,Froslass,104,damage_engine,own_deck,Freezing Shroud spread engine.
+marnie_core_engine,Munkidori,112,damage_engine,own_deck,Adrena-Brain converts counters if Darkness energy is attached.
+marnie_core_engine,Marnie's Grimmsnarl ex,648,primary_attacker,own_deck,Primary setup payoff.
+marnie_core_engine,Secret Box,1092,search_engine,own_deck,Deck-guide source card; validate exact deck inclusion before using.
+marnie_core_engine,Spikemuth Gym,1259,engine_search,own_deck,Deck-guide source card.
+marnie_froslass_caution,Froslass,104,risk_card,own_deck,Use conditional trace validation rather than global ban.
+marnie_froslass_caution,Munkidori,112,opponent_counter_engine,opponent_deck,Opponent can exploit damage counters.
+crustle_wall_plan,Dwebble,344,setup_basic,own_deck,DRI Dwebble can Ascension into Crustle.
+crustle_wall_plan,Crustle,345,wall_attacker,own_deck,Mysterious Rock Inn anti-ex wall.
+crustle_resource_pressure,Crustle,345,wall_attacker,own_deck,Keep wall active and attack opportunistically.
+ogerpon_vs_crustle_dwebble_punish,Teal Mask Ogerpon ex,96,primary_attacker,own_deck,Current Ogerpon BC policies use Teal Dance and Myriad Leaf Shower.
+ogerpon_vs_crustle_dwebble_punish,Dwebble,344,opponent_setup_basic,opponent_deck,Target before Crustle wall stabilizes.
+ogerpon_vs_crustle_dwebble_punish,Crustle,345,opponent_wall,opponent_deck,Once evolved it blanks ex attack damage.
+ogerpon_vs_crustle_no_futile_attack,Teal Mask Ogerpon ex,96,primary_attacker,own_deck,Ex attack should not be forced into established Crustle.
+ogerpon_vs_crustle_no_futile_attack,Crustle,345,opponent_wall,opponent_deck,Verify simulator damage prevention before applying a veto.
+cynthia_vs_crustle_spiritomb,Cynthia's Spiritomb,387,counter_attacker,own_deck,Non-ex attacker that showed up in successful local traces.
+cynthia_vs_crustle_spiritomb,Cynthia's Garchomp ex,381,blocked_ex_attacker,own_deck,Ex attacker may be poor into Crustle wall.
+cynthia_vs_crustle_spiritomb,Crustle,345,opponent_wall,opponent_deck,Focused validation target.
+dragapult_setup_vs_marnie_crustle,Dreepy,119,setup_basic,own_deck,Early setup card.
+dragapult_setup_vs_marnie_crustle,Drakloak,120,setup_engine,own_deck,Recon Directive setup/draw engine.
+dragapult_setup_vs_marnie_crustle,Dragapult ex,121,primary_attacker,own_deck,Phantom Dive spread payoff.
+dragapult_setup_vs_marnie_crustle,Marnie's Grimmsnarl ex,648,opponent_primary,opponent_deck,One weakness target.
+dragapult_setup_vs_marnie_crustle,Crustle,345,opponent_wall,opponent_deck,One weakness target.

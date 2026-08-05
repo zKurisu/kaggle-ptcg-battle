@@ -58,6 +58,17 @@ The structured seed file is:
 data/matchup_strategy_seeds_v1.csv
 ```
 
+The seed-to-card mapping file is:
+
+```text
+data/matchup_strategy_seed_cards_v1.csv
+```
+
+Use the mapping file to separate "the article says this card matters" from
+"this exact Kaggle deck can use this card". Basic Energy names may come from
+the simulator runtime rather than `data/EN_Card_Data.csv`, so they should be
+validated from traces/deck IDs before becoming hard rules.
+
 Current seeds:
 
 - Marnie Grimmsnarl vs Ogerpon: Limitless matchup data confirms this is weak

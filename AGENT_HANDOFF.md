@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 13:42 Asia/Shanghai.
+Last updated: 2026-08-05 14:00 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -645,6 +645,14 @@ Interpretation update:
 v11 0724-0804 population/shadow training and random audits:
 
 - User reported at 2026-08-05 13:42 that the v11 population training, v11 shadow training, and random audits are complete.
+- Random analysis was written on `ks` to `logs/eval_v11_0724_0804/v11_random_analysis.txt`.
+- Population top3 random g500 (`logs/eval_v11_0724_0804/pop_top3_0804_random_g500.csv`): `n=32 mean=0.937 weighted=0.965 median=0.977 min=0.638 max=1.000`; `>=0.97=19`, `>=0.95=20`, `<0.90=7`, timeouts `0`.
+- Weak population archetypes vs random are Mega Starmie (`mean=0.682`), Dragapult (`0.866`), Mega Lucario (`0.889`), and one Ogerpon deck (`2a5072194fdf`, `0.796`). Strong population archetypes are Marnie (`0.999`), Festival Lead (`0.995`), Team Rocket Mewtwo (`0.994`), Mega Lopunny (`0.983`), Alakazam (`0.979`), Cynthia (`0.970`).
+- Shadow pop-init random g500 (`logs/eval_v11_0724_0804/shadow_v11_0724_0804_popinit_random_g500.csv`): `n=93 mean=0.943 weighted=0.948 median=0.976 min=0.388 max=1.000`; `>=0.97=58`, `>=0.95=65`, `<0.90=15`.
+- Shadow timeouts are concentrated in exactly one row: Teal Mask Ogerpon `cc3f2796d570` team `tonakaiiii`, WR `0.388`, timeouts `273`. Excluding this row, shadow summary is `n=92 mean=0.950 weighted=0.954 median=0.976 min=0.700`, `>=0.97=58`, `<0.90=14`.
+- Low shadow WR is not mainly explained by data volume or ladder score: Pearson correlation with random WR was low (`decisions=0.108`, `episodes=0.107`, `trajectory_score=0.086`, `date_count=0.115`; `decision_win_rate=-0.110`, `avg_score=-0.008`).
+- Main random failure clusters: Dragapult (`mean=0.858`, 11/13 below 0.95), Crustle (`mean=0.937`, 9/14 below 0.95), and a few Ogerpon specialist shadows (`cc3f2796`, `050cfefe`, `1784e485`, `0e532395`, `2a507219`). Marnie, Team Rocket Mewtwo, Alakazam, Mega Lopunny, and Cynthia shadows are random-stable.
+- Candidate manifest `logs/eval_v11_0724_0804/candidate_manifest_pop_top3_shadow_ge097.csv` has 90 rows = all 32 population aliases plus 58 shadow rows with random WR `>=0.97`. For submission selection, treat population rows below `0.95` as diagnostic unless RR proves a compelling matchup reason; for local ladder diversity they can still be included deliberately.
 - Next remaining validation is candidate round-robin:
 
 ```bash

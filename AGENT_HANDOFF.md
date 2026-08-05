@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 12:50 Asia/Shanghai.
+Last updated: 2026-08-05 13:42 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -17,23 +17,26 @@ For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload
 
 ## Episode Backfill
 
-Remote raw zip status at 2026-08-05 12:08 Asia/Shanghai:
+Remote raw zip status at 2026-08-05 13:42 Asia/Shanghai:
 
 - Existing before the current backfill: `pokemon-tcg-ai-battle-episodes-2026-07-23.zip` through `2026-08-04.zip` under `/home/jie/Do/0_PTCG/workspace/episodes_raw`.
 - User verified that Kaggle allows downloading earlier datasets such as `kaggle/pokemon-tcg-ai-battle-episodes-2026-07-23`.
-- Current backfill downloads `2026-07-01` through `2026-07-22` into `/home/jie/Do/0_PTCG/workspace/episodes_raw`.
-- Remote background parent PID: `582836`; script PID observed after launch: `582838`.
+- Current backfill target is `2026-07-01` through `2026-07-22` into `/home/jie/Do/0_PTCG/workspace/episodes_raw`.
+- The slow remote Kaggle download was stopped by request. No `ptcg_download_july_episodes` or `kaggle datasets download` process remained in the 13:42 check.
+- Previously observed remote background parent PID `582836` and script PID `582838` are obsolete.
 - Script path on `ks`: `/tmp/ptcg_download_july_episodes.sh`.
 - Log: `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804/logs/download_july_episodes_20260701_20260722.log`.
 - Status CSV: `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804/logs/download_july_episodes_20260701_20260722_status.csv`.
-- At the 12:50 check, `2026-07-01` through `2026-07-07` were downloaded successfully. `2026-07-08` was still in progress under a `/tmp/ptcg_2026-07-08_*` temp dir, and the temp zip was still growing. The job looked slow, not interrupted. The remaining target-dir-missing dates were `2026-07-08` through `2026-07-22`.
+- At the 13:42 check, remote target dir had valid zips for `2026-07-01` through `2026-07-09`, `2026-07-11`, and `2026-07-23` through `2026-07-31`; `2026-07-09` and `2026-07-11` both passed `python3 -m zipfile -t`.
+- Remaining missing July dates: `2026-07-10`, `2026-07-12`, `2026-07-13`, `2026-07-14`, `2026-07-15`, `2026-07-16`, `2026-07-17`, `2026-07-18`, `2026-07-19`, `2026-07-20`, `2026-07-21`, `2026-07-22`.
+- User requested future backfill use local Kaggle download then upload to `ks`, because remote Kaggle download is too slow. Local `/tmp` is small, so use one-day or bounded-parallel caching and delete local zips after upload/remote validation.
 
 Monitor with:
 
 ```bash
 ssh ks 'tail -f /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804/logs/download_july_episodes_20260701_20260722.log'
 ssh ks 'tail -30 /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804/logs/download_july_episodes_20260701_20260722_status.csv'
-ssh ks 'ps -p 582836,582838 -o pid,ppid,stat,etime,cmd'
+ssh ks 'pgrep -af "ptcg_download_july_episodes|kaggle datasets download" || true'
 ```
 
 ## Current Git State
@@ -41,6 +44,7 @@ ssh ks 'ps -p 582836,582838 -o pid,ppid,stat,etime,cmd'
 Recent relevant commits and current update:
 
 - Latest update in this session:
+  - `tools/eval_round_robin.py`: now supports `--manifest`, `--manifest-limit`, and `--manifest-random`. It reads CSVs with `eval_entry` or `checkpoint_path`/`deck_path`, skips exact duplicate entries, and suffixes duplicate names.
   - `tools/rl_finetune_vs_pool.py`: new BC2-initialized PPO fine-tune loop against fixed `NumpyPolicy`/random opponent pools.
   - `tools/summarize_matchup_failures.py`: aggregate `trace_matchup_decisions.py` summaries into loss-vs-win failure priorities.
   - `docs/05_rl_training.md`: replaced legacy `train.py` PPO notes with the new shadow/failure-pool fine-tune workflow.
@@ -637,6 +641,24 @@ Interpretation update:
 - Pulling earlier July episodes is useful for coverage and rare archetype stability, but do not blindly mix all dates into the main submission recipe. Keep date-window ablations such as 12d, 19d, and full-July-plus-0804, and consider recency weighting so older ladder distributions do not dilute 0804 matchups.
 - Remaining shadow gap is much smaller and likely specialist/team coverage. One failure, `shadow_v11all_dragapult_cc2e995b_benarg`, was due to `--team-name Benarg` keeping zero samples in the 12-day corpus. The practical fix is to train that checkpoint as a deck-sig specialist without `--team-name`.
 - Next scale-up should train full v11 multi-day population across all relevant archetypes, then rebuild shadow manifests from `v11_0724_0804` with `--known-decks-dir logs/ladder_pool_0804_all/decks` and guard against zero-sample team specialists.
+
+v11 0724-0804 population/shadow training and random audits:
+
+- User reported at 2026-08-05 13:42 that the v11 population training, v11 shadow training, and random audits are complete.
+- Next remaining validation is candidate round-robin:
+
+```bash
+python3 tools/eval_round_robin.py \
+  --manifest logs/eval_v11_0724_0804/candidate_manifest_pop_top3_shadow_ge097.csv \
+  --games 100 \
+  --workers 32 \
+  --max-turns 700 \
+  --progress-every 20 \
+  --out-csv logs/eval_v11_0724_0804/rr_candidates_pop_top3_shadow_ge097_g100.csv \
+  2>&1 | tee logs/eval_v11_0724_0804/rr_candidates_pop_top3_shadow_ge097_g100.log
+```
+
+- This command requires the `eval_round_robin.py` `--manifest` patch synced at 13:42. Remote smoke test passed with `--manifest-limit 2 --games 1` and wrote `/tmp/rr_manifest_smoke.csv`.
 
 Shadow top120 baseline-delta eval:
 

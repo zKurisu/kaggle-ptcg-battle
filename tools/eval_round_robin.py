@@ -161,6 +161,52 @@ def load_entries(specs: list[str], default_deck: str, include_random: bool,
     return entries
 
 
+def read_manifest_entry_specs(path: str, *, limit: int = 0, random_from_deck: bool = False) -> list[str]:
+    """Read eval entries from a CSV manifest.
+
+    Supports manifests produced by build_shadow_pool.py and candidate manifests
+    that contain eval_entry/checkpoint_path/deck_path columns.
+    """
+    specs: list[str] = []
+    seen_entries: set[str] = set()
+    seen_names: dict[str, int] = {}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            if limit and len(specs) >= limit:
+                break
+            name = row.get("shadow_name") or row.get("name") or row.get("team_name") or row.get("deck_sig") or ""
+            name = clean_entry_name(name)
+            deck = (row.get("deck_path") or row.get("deck") or "").strip()
+            policy = (row.get("policy_path") or row.get("checkpoint_path") or row.get("policy") or "").strip()
+            if random_from_deck:
+                if not deck:
+                    continue
+                entry = f"{name}=random:{deck}"
+            else:
+                entry = (row.get("eval_entry") or row.get("entry") or "").strip()
+                if not entry:
+                    if policy and deck:
+                        entry = f"{name}={policy}:{deck}"
+                    elif policy:
+                        entry = f"{name}={policy}"
+            if not entry or entry in seen_entries:
+                continue
+            seen_entries.add(entry)
+
+            raw_name = entry.split("=", 1)[0] if "=" in entry else entry
+            base_name = clean_entry_name(raw_name)
+            count = seen_names.get(base_name, 0) + 1
+            seen_names[base_name] = count
+            unique_name = base_name if count == 1 else f"{base_name}_{count}"
+            if unique_name != base_name:
+                if "=" in entry:
+                    entry = f"{unique_name}={entry.split('=', 1)[1]}"
+                else:
+                    entry = f"{unique_name}={entry}"
+            specs.append(entry)
+    return specs
+
+
 def entry_payload(e: Entry) -> tuple[str, str, str]:
     return e.name, e.policy_path, e.deck_path, e.rules
 
@@ -328,6 +374,12 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--entry", action="append", default=[],
                    help="NAME=POLICY[:DECK]. POLICY may be 'random'. Repeat for each agent.")
+    p.add_argument("--manifest", action="append", default=[],
+                   help="CSV with eval_entry, or policy/checkpoint + deck_path columns. Repeatable.")
+    p.add_argument("--manifest-limit", type=int, default=0,
+                   help="max entries read from each manifest; 0 means all")
+    p.add_argument("--manifest-random", action="store_true",
+                   help="use random:deck from manifest deck_path instead of policy entries")
     p.add_argument("--policy", action="append", default=[],
                    help="Shortcut for --entry basename=POLICY using --deck.")
     p.add_argument("--deck", default="deck.csv", help="default deck for entries without :DECK")
@@ -360,6 +412,12 @@ def main() -> None:
         )
 
     specs = list(args.entry)
+    for manifest in args.manifest:
+        specs.extend(
+            read_manifest_entry_specs(
+                manifest, limit=args.manifest_limit, random_from_deck=args.manifest_random
+            )
+        )
     for policy in args.policy:
         specs.append(f"{Path(policy).stem}={policy}")
     rules_by_name = {}

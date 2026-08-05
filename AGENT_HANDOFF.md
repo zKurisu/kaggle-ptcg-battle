@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 11:55 Asia/Shanghai.
+Last updated: 2026-08-05 12:08 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -11,9 +11,30 @@ This file is the first place a new agent should read before touching the project
 - Remote training repo: `ks:/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804`
 - Remote original workspace also exists in older notes: `ks:/home/jie/Do/0_PTCG/workspace/ptcg_rl_git`
 - Current remote training data: `data/bc_corpus_banded_v10_all_0803`
-- Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw` and adjacent workspace-level episode dirs may both exist; verify before launching extraction.
+- Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## Episode Backfill
+
+Remote raw zip status at 2026-08-05 12:08 Asia/Shanghai:
+
+- Existing before the current backfill: `pokemon-tcg-ai-battle-episodes-2026-07-23.zip` through `2026-08-04.zip` under `/home/jie/Do/0_PTCG/workspace/episodes_raw`.
+- User verified that Kaggle allows downloading earlier datasets such as `kaggle/pokemon-tcg-ai-battle-episodes-2026-07-23`.
+- Current backfill downloads `2026-07-01` through `2026-07-22` into `/home/jie/Do/0_PTCG/workspace/episodes_raw`.
+- Remote background parent PID: `582836`; script PID observed after launch: `582838`.
+- Script path on `ks`: `/tmp/ptcg_download_july_episodes.sh`.
+- Log: `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804/logs/download_july_episodes_20260701_20260722.log`.
+- Status CSV: `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804/logs/download_july_episodes_20260701_20260722_status.csv`.
+- At the 12:08 check, `2026-07-01` was downloaded successfully and `2026-07-02` was in progress.
+
+Monitor with:
+
+```bash
+ssh ks 'tail -f /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804/logs/download_july_episodes_20260701_20260722.log'
+ssh ks 'tail -30 /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804/logs/download_july_episodes_20260701_20260722_status.csv'
+ssh ks 'ps -p 582836,582838 -o pid,ppid,stat,etime,cmd'
+```
 
 ## Current Git State
 
@@ -613,6 +634,7 @@ Interpretation update:
 
 - This validates the data-coverage hypothesis. The 12-day v11 corpus recovers Dragapult/Crustle and is stronger than the v10 11-day population reproduction on the same 0804 deck set.
 - Do not run full 64/48 rollback. The main v11 line should use multi-day extraction.
+- Pulling earlier July episodes is useful for coverage and rare archetype stability, but do not blindly mix all dates into the main submission recipe. Keep date-window ablations such as 12d, 19d, and full-July-plus-0804, and consider recency weighting so older ladder distributions do not dilute 0804 matchups.
 - Remaining shadow gap is much smaller and likely specialist/team coverage. One failure, `shadow_v11all_dragapult_cc2e995b_benarg`, was due to `--team-name Benarg` keeping zero samples in the 12-day corpus. The practical fix is to train that checkpoint as a deck-sig specialist without `--team-name`.
 - Next scale-up should train full v11 multi-day population across all relevant archetypes, then rebuild shadow manifests from `v11_0724_0804` with `--known-decks-dir logs/ladder_pool_0804_all/decks` and guard against zero-sample team specialists.
 

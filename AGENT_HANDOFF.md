@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 16:40 Asia/Shanghai.
+Last updated: 2026-08-05 18:12 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -174,6 +174,40 @@ Important live replay caveat:
 For weakness-pool construction, use `docs/09_matchup_relations.md` first, then
 select concrete opponent policies from `deck_sig_counter_edges.csv` and
 intersect them with the audited shadow pools.
+
+V11 live submission check at 2026-08-05 18:05 Asia/Shanghai:
+
+- `jie` submitted `55264182` (`bc: pop_v11all_marnie_grimmsnarl_b8f251a4_1`,
+  observed score 889.2) and `55264151`
+  (`bc: pop_v11all_teal_mask_ogerpon_5899c772_2`, observed score 751.1).
+- Replay analysis was saved locally and remotely at
+  `logs/kaggle_replay_v11_submit_20260805/`.
+- After using `--team-name "Jie Orkarin"` to include most same-deck cases:
+  - Marnie `55264182`: 23 attributed games, 15/8, WR 0.652.
+  - Ogerpon `55264151`: 24 attributed games, 15/9, WR 0.625.
+- Interpretation: Marnie did not really contradict local weighted RR; its local
+  weighted RR was also about 0.652. The score is probably early rating variance
+  and opponent-rating effects.
+- Ogerpon did contradict the local aggregate ranking. The replay sample had
+  Ogerpon 0/4 into Crustle Wall, matching the known hard weakness, plus losses
+  to live signatures not represented in the candidate RR pool, especially Mega
+  Lucario `ab089ccfad1a`.
+- Local candidate RR is therefore a useful internal candidate filter, not a
+  Kaggle score predictor until live replay opponent signatures are added to the
+  environment pool.
+
+Remote RL pilot status from 2026-08-05 18:09 Asia/Shanghai:
+
+- Both pilot jobs completed under `logs/rl/`.
+- Marnie `b8f251` vs Ogerpon pool:
+  `logs/rl/pilot_marnie_b8f_vs_ogerpon_metrics.csv`, 8 iterations x 64 games,
+  per-iteration WR ranged 0.203-0.344.
+- Ogerpon `5899` vs Crustle pool:
+  `logs/rl/pilot_ogerpon_5899_vs_crustle_metrics.csv`, 8 iterations x 64 games,
+  per-iteration WR ranged 0.016-0.047.
+- Do not treat the saved RL checkpoints as candidates yet. They need random,
+  baseline-delta, and broad RR validation. The pilot mainly confirms these are
+  hard weakness pools, especially Ogerpon into Crustle.
 
 ## Current Shadow Training
 

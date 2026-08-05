@@ -198,6 +198,50 @@ Current active replay rows showed:
   conflicts with the 0804/12-day episode prior that Alakazam beats Crustle.
   Check exact Crustle signatures before using this as a training target.
 
+## V11 Submission Replay Check
+
+On 2026-08-05, `jie` submitted:
+
+- `55264182`: `bc: pop_v11all_marnie_grimmsnarl_b8f251a4_1`, score observed
+  around 889.2 after the early batch.
+- `55264151`: `bc: pop_v11all_teal_mask_ogerpon_5899c772_2`, score observed
+  around 751.1 after the early batch.
+
+Replay pull saved at:
+
+```text
+logs/kaggle_replay_v11_submit_20260805/
+```
+
+The replay sample was still small:
+
+- Marnie `55264182`: 23 attributed games, 15/8, WR 0.652.
+- Ogerpon `55264151`: 24 attributed games, 15/9, WR 0.625.
+
+Interpretation:
+
+- Marnie did not underperform the local weighted RR win-rate estimate; local
+  weighted RR for this candidate was 0.652, matching the pulled replay sample.
+  The lower Kaggle score is likely early rating variance plus opponent-rating
+  effects, not immediate evidence that the model is bad.
+- Ogerpon did underperform its local weighted RR estimate. The main reason is
+  current live opponent composition: Ogerpon was 0/4 into Crustle Wall in the
+  replay sample, and this exactly matches the known hard weakness from episode
+  and RR data. It also lost 2/3 to a live Mega Lucario signature
+  `ab089ccfad1a`, which was not represented in the candidate RR pool.
+- Many live opponent signatures were not in `candidate_manifest_pop_top3_shadow_ge097.csv`.
+  The local pool is useful for relative testing, but it is not a reliable
+  Kaggle score predictor until live replay opponent signatures are added as
+  deck-sig shadows or otherwise weighted into the environment pool.
+
+Action:
+
+- Add live replay opponent signatures, especially Ogerpon losses to Crustle
+  (`8e4fb0aa3e67`, `21218b184038`, `14f6f8138286`, `1aeea67ee0a7`) and Mega
+  Lucario (`ab089ccfad1a`), to the next shadow/deck-sig coverage pass.
+- Treat RR ranking as a candidate filter, then validate against a live replay
+  opponent pool before spending more submissions.
+
 ## Usage For Training
 
 1. Build weakness pools from the stable archetype edges first.

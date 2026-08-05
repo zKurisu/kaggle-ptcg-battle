@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 09:50 Asia/Shanghai.
+Last updated: 2026-08-05 09:56 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -360,7 +360,7 @@ Manifest rows by archetype:
 | Mega Lucario | 1 | 1 |
 | Team Rocket Mewtwo | 1 | 1 |
 
-Training status at audit:
+Initial training status before retry:
 
 ```text
 checkpoint_present=43
@@ -396,6 +396,39 @@ PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python3 -u tools/train_shadow_m
 ```
 
 If any still OOM, retry the remaining jobs with `--batch-size 512`; keep `--skip-existing`.
+
+Retry completed with `--batch-size 1024`; final audit:
+
+```text
+checkpoint_present=50
+checkpoint_missing=0
+Alakazam done=4 missing=0
+all manifest archetypes done
+```
+
+Retry logs:
+
+```text
+logs/v11_pipeline/train_shadow_v11_0804_set_retry1024.runner.log
+logs/v11_pipeline/shadow_0804_set_mem8g_retry1024/
+```
+
+The original `logs/v11_pipeline/shadow_0804_set_mem8g/*.log` still contains the seven stale OOM logs. Do not interpret those as final failures unless the checkpoint is missing.
+
+Next step is shadow random audit:
+
+```bash
+python3 tools/eval_manifest_random.py \
+  --manifest logs/shadow_pool_manifest_v11_0804_set.csv \
+  --games 500 \
+  --workers 24 \
+  --max-turns 700 \
+  --progress-every 50 \
+  --skip-bad-entries \
+  --resume \
+  --out-csv logs/eval_shadow_v11/shadow_v11_0804_random_g500.csv \
+  2>&1 | tee logs/eval_shadow_v11/shadow_v11_0804_random_g500.log
+```
 
 Shadow top120 baseline-delta eval:
 

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 09:25 Asia/Shanghai.
+Last updated: 2026-08-05 09:39 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -287,6 +287,43 @@ Interpretation:
 - 0804 has enough high-quality data to justify v11 extraction immediately.
 - Do not run a broad blind v11 training wave first. The 0804 ladder shifted materially: Mega Lopunny, Mega Lucario, Dragapult, Ogerpon, and Marnie all need explicit deck-sig/matchup treatment.
 - Best next order: extract v11 from 0804 (and optionally 0803+0804 combined under a separate output), then run targeted recipe training for top signatures and matchup-conditioned BC. Use trace/RR to decide which archetypes get RL fine-tune.
+
+## v11 Extraction Status
+
+User completed steps 2-5 from the v11 workflow. Remote audit at 2026-08-05 09:39 Asia/Shanghai:
+
+- `logs/build_ladder_pool_0804_all.log`: complete, 4,811 0804 episodes, 112 deck sigs, outputs under `logs/ladder_pool_0804_all/`.
+- `logs/extract_v11_0804_only.log`: complete, 763,202 decisions, `bad=0`, `err=0`, 54 `.npz` files.
+- `logs/extract_v11_0803_0804.log`: complete for both zip files, 111 `.npz` files. Log lines are interleaved because `--workers 2` processed 0803 and 0804 concurrently.
+- User manually verified `data/bc_corpus_banded_v11_0804_only`: `state feat=(80,)`, `option feat=(2, 64)` in sample, `feature_version=v11_matchup_mechanic`, and opponent metadata keys are present.
+
+Corpus summary:
+
+| Corpus | Files | Decisions | Dims | Feature Version |
+| --- | ---: | ---: | --- | --- |
+| `data/bc_corpus_banded_v11_0804_only` | 54 | 763,202 | state 80 / option 64 | `v11_matchup_mechanic` |
+| `data/bc_corpus_banded_v11_0803_0804` | 111 | ~1,528,400 | state 80 / option 64 | `v11_matchup_mechanic` |
+
+0804-only top training bands/decks from stats:
+
+| Archetype | Top Sig | Kept In Top Bands | Notes |
+| --- | --- | ---: | --- |
+| Marnie Grimmsnarl | `b8f251a476e7` | 140,101 | huge dominant sig; top3 bands total kept 162,050 |
+| Mega Lopunny | `f1445356c3a7` | 31,232 | `276707c0fdb4` is also important |
+| Alakazam | `7f9a538936e3` | 29,175 | strong data volume but Kaggle shadow probe was volatile |
+| Dragapult | `cc2e995b5ad0` | 20,227 | also include 0804-new `7ac0181b46a0` later |
+| Teal Mask Ogerpon | `697a82e582d5` | 16,112 | `5899c772bace` and `2a5072194fdf` remain relevant |
+| Mega Lucario | `43d6d8b0fce9` | 14,498 | clean high-score single sig |
+| Festival Lead | `e82dcbe62260` | 12,969 | enough for specialist |
+| Cynthia Garchomp | `52f467394857` | 15,398 | enough for specialist |
+| Crustle Wall | `47756cdfd20f` | 7,428 | top bands are thinner; include multiple sigs |
+| Team Rocket Mewtwo | `f0bac971c56d` | 4,302 | thin; treat as probe/specialist |
+
+Recommended next:
+
+1. Generate v11 shadow/specialist manifest from `data/bc_corpus_banded_v11_0804_only`, but use `--min-decisions 2000` rather than 3000 if Team Rocket / thinner specialists should be included.
+2. Train v11 shadows from that manifest.
+3. For broad population baseline, use `data/bc_corpus_banded_v11_0803_0804`; for high-reactivity ladder specialists, use `v11_0804_only`.
 
 Shadow top120 baseline-delta eval:
 

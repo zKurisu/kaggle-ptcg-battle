@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 18:12 Asia/Shanghai.
+Last updated: 2026-08-05 20:22 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -208,6 +208,59 @@ Remote RL pilot status from 2026-08-05 18:09 Asia/Shanghai:
 - Do not treat the saved RL checkpoints as candidates yet. They need random,
   baseline-delta, and broad RR validation. The pilot mainly confirms these are
   hard weakness pools, especially Ogerpon into Crustle.
+
+## Complex Scene Diagnostics
+
+User ran four v11 diagnostic commands for:
+
+- Marnie Grimmsnarl `b8f251a476e7` vs Ogerpon.
+- Teal Mask Ogerpon `5899c772bace` vs Crustle Wall.
+
+Local copies are in:
+
+```text
+logs/complex_v11/
+```
+
+Marnie vs Ogerpon findings:
+
+- This is not primarily a data-scarcity issue: `MAIN` has 52,842 examples and
+  exact/top3 are 0.724/0.958.
+- Accuracy falls with option count: exact 0.895 for 2 options, 0.637 for 6-10,
+  and 0.586 for 11+.
+- Main weak contexts are `DISCARD` exact 0.153 on 222 samples, `ATTACH_TO`
+  exact 0.408 on 2,468 samples, `TO_BENCH` exact 0.642, `SWITCH` exact 0.674,
+  and `TO_HAND` exact 0.684.
+- `ATTACH_TO` has a cardinality/over-selection problem:
+  true length 2.95 vs predicted 3.39, under 0.109, over 0.342.
+- Type confusions are mostly `PLAY <-> ABILITY`, `ATTACH -> PLAY`, and
+  `ATTACK -> PLAY`; `RETREAT` exact is only 0.494 and often becomes early
+  `END` or `ATTACK`.
+- Interpretation: the right action is often in top3, but ranking, multi-target
+  cardinality, and stage-specific target selection are weak.
+
+Ogerpon `5899` vs Crustle findings:
+
+- This is data-scarce after filters: only 997 `MAIN` examples and 1,553 total
+  decisions in the diagnostic table.
+- `MAIN` exact/top3 are 0.684/0.932. `ATTACH_TO` is fine at 0.978; set-style
+  targets are mostly fine except tiny `DISCARD` n=19.
+- The main strategic miss is tempo: true `ATTACK` exact is 0.688 and
+  miss-attack is 0.312; confusion has `ATTACK -> PLAY` 46 times, the largest
+  non-correct class.
+- Do not train a pure Ogerpon-vs-Crustle BC specialist from this narrow slice
+  alone; it is likely to overfit. Prefer mixed Ogerpon training with
+  archetype-level Crustle overweight plus attack/attach/retreat/context weights,
+  then validate against random, Crustle shadow pool, and broad RR.
+
+Immediate training direction from these diagnostics:
+
+- For Marnie-like decks, prioritize complex-weighted BC: higher weights for
+  option-count >= 6, `TO_HAND`, `ATTACH_TO`, `DISCARD`, `TO_BENCH`, `SWITCH`,
+  `ATTACH`, `RETREAT`, and `ATTACK`, plus stronger set/cardinality loss.
+- For Ogerpon-like decks, prioritize tempo diagnostics and attack-vs-play
+  ranking in weakness matchups; RL can be used after trace, but current PPO
+  pilot checkpoints are not candidate quality yet.
 
 ## Current Shadow Training
 

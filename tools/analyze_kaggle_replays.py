@@ -148,11 +148,14 @@ def ids_text(cards: list[int] | None) -> str:
     return " ".join(str(x) for x in cards) if cards else ""
 
 
-def load_known_decks(paths: list[str], deck_dir: str) -> dict[str, str]:
+def load_known_decks(paths: list[str], deck_dirs: list[str] | str | None) -> dict[str, str]:
     known: dict[str, str] = {}
     all_paths = [Path(p) for p in paths]
-    if deck_dir:
-        all_paths.extend(sorted(Path(deck_dir).glob("*.csv")))
+    if isinstance(deck_dirs, (str, Path)):
+        deck_dirs = [str(deck_dirs)] if deck_dirs else []
+    for deck_dir in deck_dirs or []:
+        if deck_dir:
+            all_paths.extend(sorted(Path(deck_dir).glob("*.csv")))
     for path in all_paths:
         try:
             cards = read_deck(str(path))
@@ -403,7 +406,12 @@ def main() -> None:
     p.add_argument("--assume-agent-index", type=int, default=None,
                    help="fallback index if team/deck matching cannot identify our agent")
     p.add_argument("--deck", default="", help="our submitted deck CSV; used for agent detection")
-    p.add_argument("--known-decks-dir", default="decks", help="directory of deck CSVs for naming deck signatures")
+    p.add_argument(
+        "--known-decks-dir",
+        action="append",
+        default=[],
+        help="directory of deck CSVs for naming deck signatures; repeatable",
+    )
     p.add_argument("--known-deck", action="append", default=[], help="extra known deck CSV; repeatable")
     p.add_argument("--cache-dir", default="logs/kaggle_replays", help="where replay/log files are cached")
     p.add_argument("--out", default="", help="episode-level CSV output")
@@ -426,7 +434,7 @@ def main() -> None:
     summary_out = Path(args.summary_out) if args.summary_out else default_summary_path(str(out))
     cache_dir = Path(args.cache_dir) / submission_id
     our_deck = read_deck(args.deck) if args.deck else None
-    known_decks = load_known_decks(args.known_deck, args.known_decks_dir)
+    known_decks = load_known_decks(args.known_deck, args.known_decks_dir or ["decks"])
     if our_deck is not None:
         known_decks.setdefault(deck_sig(our_deck), Path(args.deck).stem)
 

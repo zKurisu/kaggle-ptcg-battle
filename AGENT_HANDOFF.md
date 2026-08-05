@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 14:00 Asia/Shanghai.
+Last updated: 2026-08-05 14:59 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -45,6 +45,7 @@ Recent relevant commits and current update:
 
 - Latest update in this session:
   - `tools/eval_round_robin.py`: now supports `--manifest`, `--manifest-limit`, and `--manifest-random`. It reads CSVs with `eval_entry` or `checkpoint_path`/`deck_path`, skips exact duplicate entries, and suffixes duplicate names.
+  - `tools/analyze_kaggle_replays.py`: `--known-decks-dir` is now repeatable, matching the README examples and allowing 0804/0802 deck pools to be loaded together for replay naming.
   - `tools/rl_finetune_vs_pool.py`: new BC2-initialized PPO fine-tune loop against fixed `NumpyPolicy`/random opponent pools.
   - `tools/summarize_matchup_failures.py`: aggregate `trace_matchup_decisions.py` summaries into loss-vs-win failure priorities.
   - `docs/05_rl_training.md`: replaced legacy `train.py` PPO notes with the new shadow/failure-pool fine-tune workflow.
@@ -94,6 +95,15 @@ Latest observed `by` score-monitor rows at `2026-08-04T22:57:08+00:00`:
 | `55234481` | `bc: ogerpon_v10_fixed_top3` | 718.5 |
 
 User noted `55234504` peaked around 1040 even though not all score changes are recorded.
+
+Important Kaggle replay constraint:
+
+- Kaggle ladder currently only uses the latest two submissions per account for new matches. When analyzing live replay results, prioritize only the latest two `jie` submissions plus the latest two `by` submissions; older replay pulls are useful only as historical/ablation evidence.
+- Current active set checked at 2026-08-05 14:59 Asia/Shanghai:
+  - `jie`: `55252321` (`bc: v10shadow_festival_iliamna`, score 930.6), `55241767` (`bc: submission_alakazam_v10pop`, score 902.7).
+  - `by`: `55254351` (`bc: v10shadow_marnie_dries_tufa_labs`, score 955.2), `55252351` (`bc: v10shadow_alakazam_majkel1337`, score 841.2).
+- Focused latest-two replay analysis is saved locally and remotely at `logs/kaggle_replay_latest2_20260805/`. It includes replay JSONs, row CSVs, decision summaries, opponent deck CSVs, `submission_summary.csv`, `loss_opponents.csv`, and `summary.txt`. Local copy size was about 478 MB.
+- A partial broader historical pull was also left on `ks` at `logs/kaggle_replay_dual_20260805/`; it includes `jie` old Ogerpon/v8/v9/v7 comparisons, but it is not the current live ladder set.
 
 ## Current Shadow Training
 
@@ -201,6 +211,31 @@ Probe submissions on `by` account:
 
 - `55241683`: Crustle Wall v10pop, current monitored score around 880.1; earlier observed around 920.
 - `55241705`: Team Rocket Mewtwo v10pop, current monitored score around 715.1; earlier observed around 635.
+
+Focused Kaggle latest-two replay analysis, 2026-08-05:
+
+```text
+logs/kaggle_replay_latest2_20260805/summary.txt
+logs/kaggle_replay_latest2_20260805/submission_summary.csv
+logs/kaggle_replay_latest2_20260805/loss_opponents.csv
+```
+
+Current active-submission replay outcomes:
+
+| Account | Submission | Archetype | Score | Replay W/L/D | Replay WR | Main observed losses |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| `jie` | `55252321` | Festival Lead shadow | 930.6 | 31/24/0 | 56.4% | Marnie `b8f251...` 9/15, Alakazam `7f9...` 5/7, Lopunny `2767...` 1/2 |
+| `jie` | `55241767` | Alakazam v10pop | 902.7 | 42/22/0 | 65.6% | Marnie `b8f251...` 7/19, Crustle `96d...` 0/2 |
+| `by` | `55254351` | Marnie shadow Dries | 955.2 | 34/14/0 | 70.8% | mostly dispersed; Alakazam `7f9...` was strong at 6/7 |
+| `by` | `55252351` | Alakazam shadow Majkel | 841.2 | 27/18/0 | 60.0% | dispersed unknown sigs; Marnie `b8f251...` was 5/7, not the main problem |
+
+Interpretation:
+
+- The best current live replay signal is `by` Marnie shadow: strong non-mirror replay WR and good result into `7f9...` Alakazam, despite many skipped same-deck mirrors.
+- `jie` Alakazam v10pop has a real observed weakness into Marnie `b8f251...` (7/19), matching local pressure concerns.
+- `by` Alakazam shadow does not show the same Marnie collapse in this sample, but its losses are spread across unknown signatures and it has higher early-end rate (`0.0258`, loss-side `0.0440`), suggesting narrower/generalization issues.
+- `jie` Festival shadow has poor second-player replay WR (41.7%) and only 56.4% overall in the current active replay sample; treat it as a probe, not a confirmed strong candidate.
+- Many same-deck mirrors are skipped because replay agent identification currently uses deck matching and both agents can have the same 60-card list. Next replay-tool improvement should use team/submission metadata as a fallback for same-deck matches.
 
 Local random 500:
 

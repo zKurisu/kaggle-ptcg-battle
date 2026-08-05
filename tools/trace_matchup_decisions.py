@@ -104,6 +104,26 @@ DECISION_FIELDS = [
     "early_end",
     "short_optional_multi",
     "available_type_counts",
+    "available_play_cards",
+    "available_play_card_names",
+    "available_attach_cards",
+    "available_attach_card_names",
+    "available_evolve_cards",
+    "available_evolve_card_names",
+    "available_ability_cards",
+    "available_ability_card_names",
+    "available_retreat_cards",
+    "available_retreat_card_names",
+    "available_attack_cards",
+    "available_attack_card_names",
+    "top_option_indices",
+    "top_option_probs",
+    "top_option_type_names",
+    "top_option_card_names",
+    "top1_type_name",
+    "top1_card_name",
+    "chosen_first_rank",
+    "chosen_first_prob",
 ]
 
 SUMMARY_FIELDS = [
@@ -209,6 +229,68 @@ def option_counts(types: list[int]) -> str:
     return " ".join(f"{type_name(k)}:{v}" for k, v in sorted(counts.items()))
 
 
+def join_limited(values: list, limit: int = 12) -> str:
+    values = list(values)
+    shown = values[:limit]
+    suffix = ["..."] if len(values) > limit else []
+    return " | ".join(str(x) for x in [*shown, *suffix] if str(x))
+
+
+def cards_by_type(opt_types: list[int], opt_cards: list[int], opt_type: int) -> list[int]:
+    out = []
+    seen = set()
+    for typ, card in zip(opt_types, opt_cards):
+        if typ != opt_type:
+            continue
+        if card in seen:
+            continue
+        seen.add(card)
+        out.append(card)
+    return out
+
+
+def ranking_fields(policy, obs: dict, chosen: list[int], *, top_n: int = 8) -> dict:
+    if policy is None or not hasattr(policy, "first_step_ranking"):
+        return {
+            "top_option_indices": "",
+            "top_option_probs": "",
+            "top_option_type_names": "",
+            "top_option_card_names": "",
+            "top1_type_name": "",
+            "top1_card_name": "",
+            "chosen_first_rank": "",
+            "chosen_first_prob": "",
+        }
+    try:
+        ranking = policy.first_step_ranking(obs)
+    except Exception as exc:
+        return {
+            "top_option_indices": "",
+            "top_option_probs": "",
+            "top_option_type_names": "",
+            "top_option_card_names": f"rank_error:{exc}",
+            "top1_type_name": "",
+            "top1_card_name": "",
+            "chosen_first_rank": "",
+            "chosen_first_prob": "",
+        }
+    top = ranking[:top_n]
+    chosen_idx = chosen[0] if chosen else -1
+    rank_by_idx = {int(row["index"]): i + 1 for i, row in enumerate(ranking)}
+    prob_by_idx = {int(row["index"]): float(row["prob"]) for row in ranking}
+    top1 = top[0] if top else {}
+    return {
+        "top_option_indices": " ".join(str(int(row["index"])) for row in top),
+        "top_option_probs": " ".join(f"{float(row['prob']):.4f}" for row in top),
+        "top_option_type_names": " | ".join(type_name(int(row["type"])) for row in top),
+        "top_option_card_names": " | ".join(card_name(int(row["card"])) for row in top),
+        "top1_type_name": type_name(int(top1.get("type", 0))) if top1 else "",
+        "top1_card_name": card_name(int(top1.get("card", 0))) if top1 else "",
+        "chosen_first_rank": rank_by_idx.get(chosen_idx, ""),
+        "chosen_first_prob": f"{prob_by_idx[chosen_idx]:.4f}" if chosen_idx in prob_by_idx else "",
+    }
+
+
 def choose_action(entry: Entry, obs: dict, args: argparse.Namespace) -> list[int]:
     return policy_action(
         entry,
@@ -226,6 +308,7 @@ def encode_decision(
     game: int,
     step: int,
     candidate_side: int,
+    policy=None,
 ) -> dict:
     cur = obs.get("current") or {}
     players = cur.get("players") or [{}, {}]
@@ -275,6 +358,11 @@ def encode_decision(
         "opp_hand": safe_int(opp.get("handCount")),
         "available_type_counts": option_counts(opt_types),
     }
+    for label in ("play", "attach", "evolve", "ability", "retreat", "attack"):
+        cards = cards_by_type(opt_types, opt_cards, ACTION_TYPES[label])
+        row[f"available_{label}_cards"] = " ".join(map(str, cards))
+        row[f"available_{label}_card_names"] = join_limited([card_name(c) for c in cards])
+    row.update(ranking_fields(policy, obs, chosen))
     for label, typ in ACTION_TYPES.items():
         row[f"{label}_available"] = int(typ in types_set)
         row[f"{label}_chosen"] = int(typ in chosen_types)
@@ -337,7 +425,15 @@ def play_traced_game(
             action = choose_action(entry, obs, args)
             if side == candidate_side:
                 try:
-                    decisions.append(encode_decision(encoder, obs, action, game, steps, candidate_side))
+                    decisions.append(encode_decision(
+                        encoder,
+                        obs,
+                        action,
+                        game,
+                        steps,
+                        candidate_side,
+                        policy=entry.policy,
+                    ))
                 except Exception as exc:
                     decisions.append({
                         "game": game,

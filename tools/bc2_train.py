@@ -15,6 +15,7 @@ _REPO = _HERE.parent
 sys.path.insert(0, str(_REPO))
 
 from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, sequence_nll
+from ptcg_rl.deck_plans import CARD_NAMES
 from ptcg_rl.model import PolicyValueNet
 
 
@@ -84,6 +85,8 @@ TYPE_IDS = {
     "SKILL": 15,
     "SPECIAL_CONDITION": 16,
 }
+
+CARD_IDS = {str(name).upper(): int(card_id) for card_id, name in CARD_NAMES.items()}
 
 
 def _parse_weight_specs(specs: list[str], names: dict[str, int], label: str) -> dict[int, float]:
@@ -272,6 +275,8 @@ def main() -> None:
                         help="repeatable context multiplier, e.g. MAIN=2.0 or 21=2.5")
     parser.add_argument("--type-weight", action="append", default=[],
                         help="repeatable true first option type multiplier, e.g. ATTACK=2.5")
+    parser.add_argument("--card-weight", action="append", default=[],
+                        help="repeatable true first option card multiplier, e.g. 647=2.5")
     parser.add_argument("--multi-select-weight", type=float, default=1.0,
                         help="sample multiplier when the labeled action selects more than one option")
     parser.add_argument("--checkpoint-every", type=int, default=1)
@@ -289,6 +294,7 @@ def main() -> None:
     paths = discover_npz_paths(args.corpus, args.archetype, args.score_bands)
     context_weights = _parse_weight_specs(args.context_weight, CONTEXT_IDS, "context")
     type_weights = _parse_weight_specs(args.type_weight, TYPE_IDS, "type")
+    card_weights = _parse_weight_specs(args.card_weight, CARD_IDS, "card")
     inferred_from_init = False
     state_feat_dim = int(args.state_feat_dim) if args.state_feat_dim else None
     opt_feat_dim = int(args.opt_feat_dim) if args.opt_feat_dim else None
@@ -317,6 +323,7 @@ def main() -> None:
         draw_weight=args.draw_weight,
         context_weights=context_weights,
         type_weights=type_weights,
+        card_weights=card_weights,
         multi_select_weight=args.multi_select_weight,
         load_progress_every=args.load_progress_every,
     )
@@ -365,6 +372,7 @@ def main() -> None:
         f"winner_only={args.winner_only} "
         f"win/loss/draw_weight={args.win_weight}/{args.loss_weight}/{args.draw_weight} "
         f"context_weights={context_weights or '{}'} type_weights={type_weights or '{}'} "
+        f"card_weights={card_weights or '{}'} "
         f"multi_select_weight={args.multi_select_weight} "
         f"set_loss={args.set_loss_weight}/{args.set_loss_min_count}/{args.set_loss_negative_weight} "
         f"params={params/1e6:.1f}M",

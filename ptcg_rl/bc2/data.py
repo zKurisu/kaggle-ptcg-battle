@@ -82,6 +82,7 @@ class BCCorpus:
         draw_weight: float = 1.0,
         context_weights: dict[int, float] | None = None,
         type_weights: dict[int, float] | None = None,
+        card_weights: dict[int, float] | None = None,
         multi_select_weight: float = 1.0,
         load_progress_every: int = 0,
     ):
@@ -102,6 +103,7 @@ class BCCorpus:
         self.draw_weight = float(draw_weight)
         self.context_weights = {int(k): float(v) for k, v in (context_weights or {}).items()}
         self.type_weights = {int(k): float(v) for k, v in (type_weights or {}).items()}
+        self.card_weights = {int(k): float(v) for k, v in (card_weights or {}).items()}
         self.multi_select_weight = float(multi_select_weight)
         self.npz_data: list[dict[str, np.ndarray]] = []
         self.groups: list[list[tuple[int, int]]] = []
@@ -250,6 +252,7 @@ class BCCorpus:
         actions: list[list[int]] = []
         contexts: list[int] = []
         true_first_types: list[int] = []
+        true_first_cards: list[int] = []
 
         for bi, (di, si) in enumerate(indices):
             data = self.npz_data[di]
@@ -272,9 +275,11 @@ class BCCorpus:
             contexts.append(int(round(float(feats[bi, 17]) * 64.0)))
             first = actions[-1][0] if actions[-1] else -1
             true_first_types.append(int(opt_type[bi, first]) if first >= 0 else -1)
+            true_first_cards.append(int(opt_card[bi, first]) if first >= 0 else -1)
             weights[bi] += self.option_weight * np.log1p(float(n))
             weights[bi] *= self.context_weights.get(contexts[-1], 1.0)
             weights[bi] *= self.type_weights.get(true_first_types[-1], 1.0)
+            weights[bi] *= self.card_weights.get(true_first_cards[-1], 1.0)
             if len(actions[-1]) > 1:
                 weights[bi] *= self.multi_select_weight
             if "won" in data:

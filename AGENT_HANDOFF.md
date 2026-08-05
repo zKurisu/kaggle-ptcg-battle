@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 22:05 Asia/Shanghai.
+Last updated: 2026-08-05 22:20 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -47,6 +47,10 @@ Recent relevant commits and current update:
   - `tools/eval_round_robin.py`: now supports `--manifest`, `--manifest-limit`, and `--manifest-random`. It reads CSVs with `eval_entry` or `checkpoint_path`/`deck_path`, skips exact duplicate entries, and suffixes duplicate names.
   - `tools/analyze_kaggle_replays.py`: `--known-decks-dir` is now repeatable, matching the README examples and allowing 0804/0802 deck pools to be loaded together for replay naming.
   - `tools/eval_round_robin.py`: now also supports `--mcts-entry NAME` for per-entry MCTS probes. Use this when checking whether search helps one candidate; the old global `--mcts` turns MCTS on for every policy entry and can pollute candidate-vs-opponent conclusions.
+  - `ptcg_rl/numpy_policy.py`: now has `first_step_ranking()` for diagnostics only; submission selection is unchanged.
+  - `tools/trace_matchup_decisions.py`: rich trace fields now include available action cards and first-step top option ranking.
+  - `tools/trace_outcome_gap_report.py`: new report tool for loss-vs-win overrepresented decision patterns; includes a `miss_card_summary` view for available-card/actual-choice misses.
+  - `tools/bc2_train.py` / `ptcg_rl/bc2/data.py`: `--card-weight ID=WEIGHT` multiplies samples whose true first selected option has that card id.
   - `tools/split_shadow_pools.py`: new tool to join shadow manifests with random audits and emit balanced environment/quality/stress/debug manifests.
   - `tools/rl_finetune_vs_pool.py`: new BC2-initialized PPO fine-tune loop against fixed `NumpyPolicy`/random opponent pools.
   - `tools/summarize_matchup_failures.py`: aggregate `trace_matchup_decisions.py` summaries into loss-vs-win failure priorities.
@@ -114,6 +118,55 @@ Interpretation:
 - Do not submit current conservative/aggressive rule overlay as-is.
 - Rule support is still promising, but must be trace-driven and narrow: guard specific high-confidence strategic mistakes, not globally override all early END/ABILITY/EVOLVE/ATTACK cases.
 - Next complex-scene improvement should be outcome-aware: compare loss-vs-win traces, identify exact card/option contexts, then create targeted data filters or narrow rule/rerank guards. The previous global complex weighting improved supervised metrics but did not improve matchup win rate.
+
+Follow-up rich trace and card-weight experiments:
+
+- Rich trace outputs:
+  - `logs/eval_next_v11_rich_trace_20260805/`
+  - `rich_outcome_gap_report.csv`
+  - `rich_outcome_gap_report_v2.csv`
+  - `failure_trace_priority.csv`
+- Rich trace outcomes:
+  - Marnie vs Ogerpon 5899: `17-183`
+  - Marnie vs Ogerpon 697: `42-158`
+  - Ogerpon 5899 vs Crustle pop: `10-190`
+  - Ogerpon 5899 vs Crustle safe: `9-191`
+- Marnie signals from `miss_card_summary`:
+  - vs 5899: missed `Marnie's Morgrem` while choosing Basic Darkness Energy, Munkidori ability, Spikemuth Gym ability, Munkidori play, Rare Candy, etc.
+  - vs 697: strongest aggregate miss was Basic Darkness Energy attach being skipped for Marnie basics/Spikemuth/Munkidori; missed Morgrem was present but less concentrated.
+- Ogerpon vs Crustle rich trace is dominated by long losing loops: Teal Dance, repeated grass attach, draw/search, and attacks into Crustle. This looks more like structural matchup/wall handling than a simple single-action card-weight issue.
+
+Targeted rules tested:
+
+- Code modes added for local experiments only: `marnie_setup`, `ogerpon_attach`, `targeted`.
+- Output path: `logs/eval_next_v11_targeted_rules_20260805/`
+- Random:
+  - Marnie `marnie_setup`: `499/500 = 0.998`
+  - Ogerpon `ogerpon_attach`: `499/500 = 0.998`
+- Focused RR g200:
+  - Marnie plain vs `og5899`: `0.090`; `marnie_setup`: `0.140`
+  - Marnie plain vs `og697`: `0.200`; `marnie_setup`: `0.165`
+  - Ogerpon plain vs `crustle_pop`: `0.045`; `ogerpon_attach`: `0.030`
+  - Ogerpon plain vs `crustle_safe`: `0.045`; `ogerpon_attach`: `0.050`
+- Interpretation: these rule modes are not submission candidates. Keep only as diagnostic scaffolding; do not broaden them without a positive focused + broad validation.
+
+Card-weight BC tested:
+
+- Training logs: `logs/v11_complex_cardw_20260805/`
+- Checkpoints: `checkpoints/complex_v11_cardw_20260805/` on `ks`
+- Marnie/Ogerpon filtered corpus smoke test kept `111,658` decisions; Ogerpon 5899 vs Crustle kept only `1,553` decisions and split to `train=165`, so narrow Ogerpon-vs-Crustle BC was not trained.
+- Marnie variants:
+  - `bc2_marnie_b8f_vs_ogerpon_evolve_cardw_w2.npz`: MAIN 1.15, EVOLVE 1.7, card 647=2.3, 648=1.8. Best val `0.6668`.
+  - `bc2_marnie_b8f_vs_ogerpon_evolve_attach_cardw_w2.npz`: MAIN 1.15, EVOLVE 1.5, ATTACH 1.25, card 647=2.0, 648=1.6, Basic Darkness Energy 7=1.5. Best val `0.7029`.
+- Eval logs: `logs/eval_next_v11_cardw_20260805/`
+- Random g500:
+  - baseline: `500/500 = 1.000`
+  - evolve: `496/500 = 0.992`
+  - evolve_attach: `495/500 = 0.990`
+- Baseline-delta vs two Ogerpons, g300:
+  - evolve vs `og5899`: `+0.0167`; vs `og697`: `-0.0067`; avg `+0.005`
+  - evolve_attach vs `og5899`: `-0.0100`; vs `og697`: `+0.0033`; avg `-0.003`
+- Interpretation: simple card weighting is not enough. Do not scale this recipe or submit these checkpoints. The useful output is the tooling and negative result.
 
 ## Kaggle Accounts And Monitoring
 

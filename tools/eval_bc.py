@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from ptcg_rl.numpy_policy import NumpyPolicy
 from ptcg_rl.deck_registry import registry_deck_for_policy
-from ptcg_rl.rule_overlay import apply_rule_overlay
+from ptcg_rl.rule_overlay import RULE_MODES, apply_rule_overlay
 
 _WORKER_POLICY = None
 _WORKER_DECK = None
@@ -176,7 +176,7 @@ def main():
     p.add_argument("--workers", type=int, default=1,
                    help="parallel game worker processes; each worker loads the policy once")
     p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--rules", choices=["", "conservative", "aggressive"], default="",
+    p.add_argument("--rules", choices=["", *RULE_MODES], default="",
                    help="experimental BC+rule overlay for local evaluation only")
     args = p.parse_args()
 

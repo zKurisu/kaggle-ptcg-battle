@@ -189,6 +189,78 @@ class NumpyPolicy:
 
         return picks[:d.max_count]
 
+    def first_step_ranking(self, obs_dict: dict, temperature: float = 1.0) -> list[dict]:
+        """Return the first-pick option ranking used by greedy selection.
+
+        This is a diagnostic helper for trace tooling. It includes the STOP row
+        as index ``-1`` when STOP is legal at the first pick.
+        """
+        sel = obs_dict.get("select")
+        if sel is None:
+            raise ValueError("deck selection has no option ranking")
+
+        d = self.encoder.encode(obs_dict)
+        n = len(d.opt_type)
+        h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats)
+        opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
+
+        parts = [
+            self.w["card_emb.weight"][d.opt_card],
+            self.w["card_emb.weight"][d.opt_card2],
+            self.w["attack_emb.weight"][d.opt_attack],
+            self.w["opt_type_emb.weight"][d.opt_type],
+        ]
+        if self._has_option_context:
+            ctx = np.rint(opt_feats[:, 3] * 64.0).astype(np.int64).clip(0, 64)
+            sel_type = np.rint(opt_feats[:, 4] * 16.0).astype(np.int64).clip(0, 16)
+            area = np.rint(opt_feats[:, 7] * 16.0).astype(np.int64).clip(0, 16)
+            idx = np.rint(opt_feats[:, 8] * 64.0).astype(np.int64).clip(0, 64)
+            inplay_area = np.rint(opt_feats[:, 9] * 16.0).astype(np.int64).clip(0, 16)
+            inplay_idx = np.rint(opt_feats[:, 10] * 10.0).astype(np.int64).clip(0, 16)
+            parts.extend([
+                self.w["context_emb.weight"][ctx],
+                self.w["select_type_emb.weight"][sel_type],
+                self.w["area_emb.weight"][area],
+                self.w["index_emb.weight"][idx],
+                self.w["inplay_area_emb.weight"][inplay_area],
+                self.w["inplay_index_emb.weight"][inplay_idx],
+            ])
+        parts.append(opt_feats)
+        opt_x = np.concatenate(parts, axis=-1)
+        opts = _relu(_linear(self.w["opt_fc.weight"], self.w["opt_fc.bias"], opt_x))
+
+        rows = np.concatenate([opts, self.w["stop_vec"][np.newaxis, :]], axis=0)
+        hx = np.broadcast_to(h, (n + 1, self._hd))
+        picked = np.zeros(self._oe, dtype=np.float32)
+        px = np.broadcast_to(picked, (n + 1, self._oe))
+        score_x = np.concatenate([hx, rows, px], axis=-1)
+        logits = _linear(
+            self.w["score_fc2.weight"],
+            self.w["score_fc2.bias"],
+            _relu(_linear(self.w["score_fc1.weight"], self.w["score_fc1.bias"], score_x)),
+        ).reshape(-1)
+        if temperature != 1.0:
+            logits = logits / temperature
+        avail = np.ones(n + 1, dtype=bool)
+        avail[n] = d.min_count <= 0
+        logits = np.where(avail, logits, NEG_INF)
+        shifted = logits - np.max(logits)
+        probs = np.exp(shifted) / np.exp(shifted).sum()
+
+        ranking = []
+        for i in range(n + 1):
+            if not avail[i]:
+                continue
+            ranking.append({
+                "index": i if i < n else -1,
+                "logit": float(logits[i]),
+                "prob": float(probs[i]),
+                "type": int(d.opt_type[i]) if i < n else 14,
+                "card": int(d.opt_card[i]) if i < n else 0,
+            })
+        ranking.sort(key=lambda r: (-float(r["prob"]), int(r["index"])))
+        return ranking
+
     # ── MCTS search ─────────────────────────────────────────────────
 
     def select_mcts(self, obs_dict: dict, deck: list[int],

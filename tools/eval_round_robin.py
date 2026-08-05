@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from ptcg_rl.numpy_policy import NumpyPolicy
 from ptcg_rl.deck_registry import registry_deck_for_policy
-from ptcg_rl.rule_overlay import apply_rule_overlay
+from ptcg_rl.rule_overlay import RULE_MODES, apply_rule_overlay
 
 _WORKER_A: "Entry | None" = None
 _WORKER_B: "Entry | None" = None
@@ -435,11 +435,11 @@ def main() -> None:
     rules_by_name = {}
     for spec in args.rules_entry:
         if "=" not in spec:
-            p.error("--rules-entry must be NAME=conservative or NAME=aggressive")
+            p.error(f"--rules-entry must be NAME=<mode>, where mode is one of: {', '.join(RULE_MODES)}")
         name, mode = spec.split("=", 1)
         mode = mode.strip()
-        if mode not in ("conservative", "aggressive"):
-            p.error("--rules-entry mode must be conservative or aggressive")
+        if mode not in RULE_MODES:
+            p.error(f"--rules-entry mode must be one of: {', '.join(RULE_MODES)}")
         rules_by_name[clean_entry_name(name)] = mode
     mcts_by_name = {clean_entry_name(name) for name in args.mcts_entry}
     entries = load_entries(

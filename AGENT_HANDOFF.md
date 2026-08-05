@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 11:02 Asia/Shanghai.
+Last updated: 2026-08-05 11:19 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -569,6 +569,35 @@ Interpretation:
 - The v11 population baselines are already weak against random for these archetypes, so the primary issue is not just specialist overfitting.
 - Since `pop64` is not better than `pop80`, do not run full feature rollback as the next step.
 - Treat this as a data/recipe/behavior problem. Next useful diagnostics are random-loss traces and BC failure reports for Dragapult/Crustle, plus a v10-corpus/v10-recipe reproduction for these two archetypes to isolate whether v11 corpus/data distribution caused the regression.
+
+Corpus coverage audit:
+
+- The user correctly noted that `data/bc_corpus_banded_v10_all_0803` is not just one or two days. It covers 11 daily episode files from 2026-07-24 through 2026-08-03.
+- `data/bc_corpus_banded_v11_0803_0804` covers only 2026-08-03 and 2026-08-04.
+- Therefore the `pop_v10_repro` result is not a fair feature-only comparison; it also benefits from much broader historical coverage.
+
+Top-band target archetype coverage:
+
+| Corpus | Dates | Dragapult Decisions | Crustle Decisions |
+| --- | --- | ---: | ---: |
+| `v10_all_0803` | 2026-07-24..2026-08-03 | 312,662 | 304,073 |
+| `v11_0803_0804` | 2026-08-03..2026-08-04 | 119,806 | 60,604 |
+| `v11_0804_only` | 2026-08-04 | 60,898 | 25,140 |
+
+All-archetype corpus coverage:
+
+| Corpus | Dates | Total Decisions |
+| --- | --- | ---: |
+| `v10_all_0803` | 11 days | about 8.37M |
+| `v11_0803_0804` | 2 days | about 1.53M |
+| `v11_0804_only` | 1 day | about 0.76M |
+
+Interpretation update:
+
+- The main next experiment should be a v11 multi-day extraction matching the 2026-07-24..2026-08-03 coverage of `v10_all_0803`, optionally plus 2026-08-04 as a separate corpus.
+- If v11 multi-day recovers Dragapult/Crustle random quality, the regression was mostly data coverage/distribution.
+- If v11 multi-day remains low while v10 11-day is high, then investigate v11 extraction/features/training target more directly.
+- Do not treat the current 2-day v11 results as decisive evidence against v11 features.
 
 Shadow top120 baseline-delta eval:
 

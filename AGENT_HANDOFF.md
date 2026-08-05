@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 20:22 Asia/Shanghai.
+Last updated: 2026-08-05 20:47 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -261,6 +261,38 @@ Immediate training direction from these diagnostics:
 - For Ogerpon-like decks, prioritize tempo diagnostics and attack-vs-play
   ranking in weakness matchups; RL can be used after trace, but current PPO
   pilot checkpoints are not candidate quality yet.
+
+Complex-weighted v11 training check at 2026-08-05 20:47 Asia/Shanghai:
+
+- Checkpoints exist on `ks` under `checkpoints/complex_v11/`:
+  `bc2_marnie_b8f_v11all_complex_w2.npz`,
+  `bc2_marnie_b8f_vs_ogerpon_complex_w2.npz`,
+  `bc2_ogerpon_5899_v11all_tempo_complex_w2.npz`, and
+  `bc2_ogerpon_5899_vs_crustle_tempo_probe_w2.npz`.
+- Post diagnostics are on `ks` under `logs/complex_v11/post/`.
+- Marnie b8f vs Ogerpon overall exact/top3:
+  pre `0.7663/0.9633`, global complex `0.7665/0.9639`, conditioned probe
+  `0.7693/0.9643`.
+- Marnie did improve in targeted areas, but only modestly:
+  `DISCARD` exact `0.153 -> 0.189 -> 0.216`,
+  `ATTACH_TO` exact `0.408 -> 0.412 -> 0.423`,
+  `RETREAT` exact `0.494 -> 0.592 -> 0.617`,
+  `ATTACK` miss rate `0.197 -> 0.159 -> 0.146`.
+- Marnie tradeoff: `PLAY` exact dropped from `0.717` to `0.679/0.692`, so
+  the current hand-tuned weights are too blunt for submission without random
+  and RR validation.
+- Ogerpon 5899 vs Crustle overall exact/top3:
+  pre `0.7489/0.9491`, global tempo-complex `0.7733/0.9530`, conditioned
+  probe `0.7675/0.9491`.
+- Ogerpon global model is the better BC checkpoint from this run. It improved
+  `MAIN` exact `0.684 -> 0.724`, `ATTACK` exact `0.688 -> 0.822`, attack miss
+  rate `0.312 -> 0.178`, and `ATTACH` exact `0.603 -> 0.756`.
+- Ogerpon conditioned probe overcorrected attack timing: `ATTACK` exact reached
+  `0.879`, but `PLAY` exact dropped to `0.581` and `PLAY -> ATTACK` confusion
+  increased, so do not treat it as a submission candidate.
+- Next check before scaling this across population: run random g500 for the four
+  complex checkpoints, then run baseline-delta/RR only for models that do not
+  lose random stability.
 
 ## Current Shadow Training
 

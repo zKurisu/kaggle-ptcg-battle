@@ -481,29 +481,25 @@ Remote audit at 2026-08-05 10:40 Asia/Shanghai:
 - Final `checkpoints/pop_v11/bc2_*_v11pop_0803_0804_set_w2.npz` population checkpoints are present for all 11 trained archetypes.
 - `logs/shadow_pool_manifest_v11_0804_popinit_set.csv` has 46 rows, all with non-empty and existing `init_path`; all 46 shadow checkpoints exist.
 - `logs/v11_pipeline/train_shadow_v11_0804_popinit_set_mem8g.runner.log` completed 46/46 with no failures.
-- `logs/eval_shadow_v11/shadow_v11_0804_popinit_random_g500.csv` currently contains 43 rows because three 0804-new signatures have empty `deck_path` in the manifest and were skipped:
-  - `shadow_dragapult_7ac0181b_lumenliquidity`
-  - `shadow_dragapult_46ceec8c_rtoabc`
-  - `shadow_teal_mask_ogerpon_1784e485_213tubo`
-- The empty deck paths are from using the default `build_shadow_pool.py --known-decks-dir` search list, which does not include `logs/ladder_pool_0804_all/decks`. Rebuild or patch the manifest with `--known-decks-dir logs/ladder_pool_0804_all/decks`, then resume random eval.
+- Initial pop-init random eval contained 43 rows because three 0804-new signatures had empty `deck_path` in the manifest and were skipped. The user rebuilt/patched with 0804 deck paths and resumed random eval; the CSV now contains 46/46 rows.
 
 Current evaluated pop-init random result:
 
 ```text
-n=43 mean=0.874 median=0.938 min=0.436 max=0.996
+n=46 mean=0.860 median=0.934 min=0.436 max=0.996
 >=0.99: 5
 >=0.97: 10
 <0.95: 27
-<0.90: 14
+<0.90: 17
 ```
 
 By archetype:
 
 | Archetype | n | Mean WR | Median | Min | Max | <0.90 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Dragapult | 4 | 0.621 | 0.597 | 0.572 | 0.718 | 4 |
+| Dragapult | 6 | 0.638 | 0.636 | 0.572 | 0.718 | 6 |
 | Crustle Wall | 5 | 0.738 | 0.784 | 0.656 | 0.804 | 5 |
-| Teal Mask Ogerpon | 7 | 0.866 | 0.988 | 0.436 | 0.996 | 2 |
+| Teal Mask Ogerpon | 8 | 0.840 | 0.984 | 0.436 | 0.996 | 3 |
 | Mega Lucario | 1 | 0.898 | 0.898 | 0.898 | 0.898 | 1 |
 | Festival Lead | 4 | 0.903 | 0.933 | 0.752 | 0.996 | 1 |
 | Mega Lopunny | 9 | 0.935 | 0.930 | 0.904 | 0.976 | 0 |
@@ -514,8 +510,21 @@ By archetype:
 
 Interpretation:
 
-- Pop init fixed a large part of the from-scratch v11 shadow failure: mean random improved from 0.667 to 0.874, and `<0.90` dropped from 40/50 to 14/43.
+- Pop init fixed a large part of the from-scratch v11 shadow failure: mean random improved from 0.667 to 0.860, and `<0.90` dropped from 40/50 to 17/46.
 - It still does not recover the v10 shadow random reference (`mean=0.977`, `median=0.994`).
+- v10's micro mean is inflated by many high-WR Marnie/Alakazam rows, but this does not explain the full gap. After archetype balancing:
+  - v10 raw micro mean: `0.977`
+  - v10 macro-by-archetype mean: `0.951`
+  - v10 reweighted to v11 pop-init archetype distribution: `0.952`
+  - v11 pop-init actual micro mean: `0.860`
+  - v11 pop-init macro-by-archetype mean: `0.879`
+- Biggest common-signature regressions:
+  - Dragapult `cc2e995b5ad0`: v10 `0.826`, v11 pop-init `0.575`
+  - Dragapult `6763881ee2d5`: v10 `0.878`, v11 `0.616`
+  - Dragapult `d112d6fbe57d`: v10 `0.958`, v11 `0.718`
+  - Crustle `7ee600c6f769`: v10 `0.945`, v11 `0.656`
+  - Crustle `b141ae295739`: v10 `0.924`, v11 `0.662`
+  - Crustle `47756cdfd20f`: v10 `0.958`, v11 `0.794`
 - Do not launch full feature rollback yet. First patch missing deck paths and resume random for the 3 skipped rows, then run population-model random and balanced RR/baseline-delta. If v11 population itself is weak against random, run 64/48 rollback. If v11 population is fine but pop-init shadows remain weak, fix the specialist recipe instead of blaming features.
 - Dragapult and Crustle are the clearest remaining failures; prioritize trace and recipe checks there.
 

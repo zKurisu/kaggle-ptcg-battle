@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 08:52 Asia/Shanghai.
+Last updated: 2026-08-05 09:25 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -192,6 +192,101 @@ Local category round-robin g200 vs core categories:
 - Team Rocket Mewtwo: avg 0.505, min 0.100 vs Mega Lopunny, losing 3/10
 
 Important conclusion: random is not enough. Use random only as a sanity check, then run category round-robin, ladder/failure pool evaluation, and matchup trace.
+
+## 0804 Ladder Audit
+
+The 0804 raw episodes are present on `ks` as:
+
+```text
+/home/jie/Do/0_PTCG/workspace/episodes_raw/pokemon-tcg-ai-battle-episodes-2026-08-04.zip
+```
+
+It contains 4,811 episode JSON files plus one CSV, about 743 MB. A 0804-only ladder pool was built without overwriting older pools:
+
+```text
+logs/ladder_pool_0804_all/pool_manifest.csv
+logs/ladder_pool_0804_all/archetype_stats.csv
+logs/ladder_pool_0804_all/decks/
+logs/build_ladder_pool_0804_all.log
+```
+
+Build command used a temporary 0804-only symlink dir because `/home/jie/Do/0_PTCG/workspace/episodes_raw` contains 12 zip files:
+
+```bash
+mkdir -p /tmp/ptcg_episodes_0804_only
+ln -sf /home/jie/Do/0_PTCG/workspace/episodes_raw/pokemon-tcg-ai-battle-episodes-2026-08-04.zip \
+  /tmp/ptcg_episodes_0804_only/pokemon-tcg-ai-battle-episodes-2026-08-04.zip
+python3 -u tools/build_ladder_pool.py \
+  --episodes-dir /tmp/ptcg_episodes_0804_only \
+  --out logs/ladder_pool_0804_all \
+  --top 0 \
+  --min-games 1 \
+  --progress-every 500 \
+  2>&1 | tee logs/build_ladder_pool_0804_all.log
+```
+
+0804 pool summary:
+
+```text
+unique deck sigs: 112
+deck-side games: 19,244
+total weight: 36,097.3
+score bands by games:
+  1200+:      3,510 games, 4 decks
+  1100-1199: 9,056 games, 16 decks
+  1000-1099: 5,552 games, 30 decks
+```
+
+Top archetypes by 0804 weight:
+
+| Archetype | Decks | Games | Weight | Max Score |
+| --- | ---: | ---: | ---: | ---: |
+| Marnie Grimmsnarl | 9 | 5,952 | 10,641.2 | 1,175.7 |
+| Mega Lopunny | 5 | 2,860 | 6,233.7 | 1,205.5 |
+| Teal Mask Ogerpon | 17 | 2,286 | 4,111.2 | 1,273.8 |
+| Alakazam | 18 | 2,884 | 3,452.5 | 1,088.5 |
+| Dragapult | 13 | 1,214 | 2,803.5 | 1,116.7 |
+| Crustle Wall | 15 | 1,194 | 2,551.6 | 1,156.9 |
+| Mega Lucario | 7 | 582 | 1,996.2 | 1,273.8 |
+| Cynthia Garchomp | 3 | 882 | 1,548.5 | 1,115.7 |
+| Festival Lead | 6 | 654 | 1,277.2 | 1,108.5 |
+| Team Rocket Mewtwo | 9 | 264 | 584.4 | 1,156.9 |
+
+Top 0804 deck signatures:
+
+| Sig | Archetype | Games | Weight | Score | Team |
+| --- | --- | ---: | ---: | ---: | --- |
+| `b8f251a476e7` | Marnie Grimmsnarl | 5,074 | 9,336.3 | 1,175.7 | Raihan Ramadistra |
+| `7f9a538936e3` | Alakazam | 2,588 | 2,989.3 | 1,084.9 | M Sato |
+| `f1445356c3a7` | Mega Lopunny | 1,144 | 2,970.4 | 1,205.5 | ntumlnoob |
+| `276707c0fdb4` | Mega Lopunny | 1,274 | 2,313.3 | 1,205.5 | www... |
+| `43d6d8b0fce9` | Mega Lucario | 478 | 1,890.1 | 1,273.8 | Majkel1337 |
+| `697a82e582d5` | Teal Mask Ogerpon | 614 | 1,483.9 | 1,273.8 | Majkel1337 |
+| `52f467394857` | Cynthia Garchomp | 716 | 1,314.5 | 1,115.7 | Octavi Grau |
+| `7ac0181b46a0` | Dragapult | 330 | 990.0 | 1,116.7 | LumenLiquidity |
+| `5899c772bace` | Teal Mask Ogerpon | 518 | 958.3 | 1,133.8 | keidroid |
+| `e82dcbe62260` | Festival Lead | 440 | 916.4 | 1,108.5 | __Taichicchi__ |
+| `2c22fa761816` | Marnie Grimmsnarl | 640 | 885.2 | 1,108.5 | KawattaTaido |
+| `47756cdfd20f` | Crustle Wall | 328 | 704.8 | 1,156.9 | M Sato |
+| `3cd5039c59d2` | Crustle Wall | 246 | 692.4 | 1,120.0 | Oshbocker |
+| `f0bac971c56d` | Team Rocket Mewtwo | 122 | 366.0 | 1,156.9 | flg |
+
+Compared with `logs/ladder_pool_0802_all/pool_manifest.csv`:
+
+```text
+0804 rows: 112
+0802 rows: 82
+common sigs: 50
+new-only sigs: 62
+```
+
+Important new/high-weight 0804-only signatures include `7ac0181b46a0` Dragapult, `1784e485688c` Ogerpon, `46ceec8cc5ae` Dragapult, `f63436c208ad` Mega Starmie, `0e532395fc46` Ogerpon, and `45eb2708a6d1` Crustle.
+
+Interpretation:
+
+- 0804 has enough high-quality data to justify v11 extraction immediately.
+- Do not run a broad blind v11 training wave first. The 0804 ladder shifted materially: Mega Lopunny, Mega Lucario, Dragapult, Ogerpon, and Marnie all need explicit deck-sig/matchup treatment.
+- Best next order: extract v11 from 0804 (and optionally 0803+0804 combined under a separate output), then run targeted recipe training for top signatures and matchup-conditioned BC. Use trace/RR to decide which archetypes get RL fine-tune.
 
 Shadow top120 baseline-delta eval:
 

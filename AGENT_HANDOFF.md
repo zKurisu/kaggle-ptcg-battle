@@ -207,6 +207,47 @@ Basic Energy names may come from the simulator runtime rather than
 `data/EN_Card_Data.csv`, so validate those from traces/deck IDs instead of using
 card DB presence alone.
 
+## Top-K Deck-Signature Training Axis
+
+User raised an important training-selection issue: many archetypes may be better
+served by exact `top1`, `top2`, or `top3` deck-signature training rather than
+archetype-level mixed training, even when local random or broad RR looks close.
+Treat this as an explicit ablation axis for every serious archetype, not just
+as an Ogerpon special case.
+
+Evidence already in the project:
+
+- Ogerpon `v10_fixed_top2` recovered the v7-level Kaggle result, with final
+  around `951.8` and user-observed peak around `1040`.
+- Ogerpon `v10_fixed_top3` dropped to around `720.5`; adding one more high-sample
+  signature diluted the policy rather than improving it.
+- README already warns that all-mixed Ogerpon can have good offline accuracy
+  while losing game-plan sharpness.
+
+Technical interpretation:
+
+- `bc2_train.py` can filter by `--deck-sig`, but the submitted policy does not
+  receive an explicit own `deck_sig` feature at inference time. If two signatures
+  under the same archetype require different sequencing in visually similar
+  states, mixed BC averages incompatible teachers.
+- Top-k training reduces teacher entropy and preserves a sharper game plan.
+  It can beat broader mix on Kaggle even if local random/RR differences are
+  small, because Kaggle opponents punish plan dilution more than legal random.
+- `mix` should be used only when the archetype's top signatures share a coherent
+  action policy, or as a robustness/shadow-opponent recipe rather than a
+  submission recipe.
+
+Required future comparison per archetype:
+
+1. Train/evaluate `top1`, `top2`, `top3`, optionally `top5`, and controlled
+   win-weighted `mix`.
+2. Pair each checkpoint with a compatible submission deck; do not let registry
+   silently map a top-k checkpoint to an unrelated top1 deck.
+3. Compare random, focused weakness delta, balanced-shadow RR, and first-step
+   ranking entropy/top1-vs-top3 gaps.
+4. Use Kaggle live probes sparingly to calibrate which local metric predicts
+   top-k sharpness for that archetype.
+
 ## 2026-08-05 Specialist BC Wave 1
 
 Started on `ks` at `2026-08-05 22:25 Asia/Shanghai`.

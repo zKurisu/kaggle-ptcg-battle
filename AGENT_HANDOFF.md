@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 15:20 Asia/Shanghai.
+Last updated: 2026-08-05 16:40 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -105,6 +105,75 @@ Important Kaggle replay constraint:
   - `by`: `55254351` (`bc: v10shadow_marnie_dries_tufa_labs`, score 955.2), `55252351` (`bc: v10shadow_alakazam_majkel1337`, score 841.2).
 - Focused latest-two replay analysis is saved locally and remotely at `logs/kaggle_replay_latest2_20260805/`. It includes replay JSONs, row CSVs, decision summaries, opponent deck CSVs, `submission_summary.csv`, `loss_opponents.csv`, and `summary.txt`. Local copy size was about 478 MB.
 - A partial broader historical pull was also left on `ks` at `logs/kaggle_replay_dual_20260805/`; it includes `jie` old Ogerpon/v8/v9/v7 comparisons, but it is not the current live ladder set.
+
+## Matchup Relations
+
+New reusable tool:
+
+```bash
+python3 tools/analyze_episode_matchups.py --help
+```
+
+It aggregates directional matchup results from Kaggle episode ZIPs and can
+overlay pulled replay row CSVs from `tools/analyze_kaggle_replays.py`.
+
+Generated outputs are local and remote at:
+
+```text
+logs/matchup_notes_20260805/0804_score900/
+logs/matchup_notes_20260805/0724_0804_score900/
+```
+
+Committed record:
+
+```text
+docs/09_matchup_relations.md
+```
+
+Data windows:
+
+- `0804_score900`: 4,811 episode files, 4,382 games used, current 900+ known
+  deck signatures only, plus 212 latest replay rows.
+- `0724_0804_score900`: 54,105 episode files, 46,566 games used, current 900+
+  known deck signatures only, plus the same 212 latest replay rows.
+
+Stable high-level priors from both windows:
+
+- Mega Lucario strongly beats Mega Lopunny.
+- Mega Lopunny beats Crustle Wall, Festival Lead, Teal Mask Ogerpon, and has a
+  smaller edge into Marnie Grimmsnarl.
+- Crustle Wall beats Teal Mask Ogerpon and Dragapult.
+- Teal Mask Ogerpon beats Marnie Grimmsnarl and Cynthia Garchomp.
+- Alakazam beats Crustle Wall, Teal Mask Ogerpon, and Cynthia Garchomp.
+- Festival Lead beats Marnie Grimmsnarl.
+- Marnie Grimmsnarl has a smaller long-window edge into Alakazam.
+- Dragapult has a smaller long-window edge into Alakazam.
+
+12-day-only priors that did not pass the stricter 0804 single-day threshold:
+
+- Team Rocket Mewtwo beats Alakazam.
+- Teal Mask Ogerpon beats Team Rocket Mewtwo.
+- Crustle Wall beats Festival Lead.
+- Mega Lucario beats Alakazam.
+- Alakazam slightly beats Mega Lopunny.
+- Cynthia Garchomp beats Team Rocket Mewtwo.
+- Festival Lead slightly beats Teal Mask Ogerpon.
+- Crustle Wall slightly beats Cynthia Garchomp.
+
+Important live replay caveat:
+
+- Latest replay rows are biased to the newest two submissions per account.
+  Replay evidence should be treated as live probes, not as a complete metagame
+  matrix.
+- Current replay pull: Marnie shadow `b8f251a476e7` was strong into Alakazam
+  `7f9a538936e3` (6/7 from the Marnie-side pull; combined Alakazam-side rows
+  were 12/26). Festival shadow `e82dcbe62260` was 9/15 into Marnie but 0/3 into
+  Dragapult. Alakazam vs Crustle replay rows were poor despite episode priors
+  favoring Alakazam, so inspect exact Crustle signatures before training.
+
+For weakness-pool construction, use `docs/09_matchup_relations.md` first, then
+select concrete opponent policies from `deck_sig_counter_edges.csv` and
+intersect them with the audited shadow pools.
 
 ## Current Shadow Training
 

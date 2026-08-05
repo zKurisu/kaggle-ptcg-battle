@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 20:47 Asia/Shanghai.
+Last updated: 2026-08-05 21:14 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -290,9 +290,45 @@ Complex-weighted v11 training check at 2026-08-05 20:47 Asia/Shanghai:
 - Ogerpon conditioned probe overcorrected attack timing: `ATTACK` exact reached
   `0.879`, but `PLAY` exact dropped to `0.581` and `PLAY -> ATTACK` confusion
   increased, so do not treat it as a submission candidate.
-- Next check before scaling this across population: run random g500 for the four
-  complex checkpoints, then run baseline-delta/RR only for models that do not
-  lose random stability.
+
+Complex-v11 validation run completed on `ks` at 2026-08-05 21:08 Asia/Shanghai:
+
+- Remote outputs are under `logs/eval_complex_v11/`; summary is
+  `logs/eval_complex_v11/summary.txt`. CSVs and summary were pulled locally to
+  the same path.
+- Random g500 was stable for all four complex checkpoints:
+  Marnie global/conditioned both `0.998`, Ogerpon global `0.990`, Ogerpon
+  conditioned `0.994`.
+- Marnie vs Ogerpon pool g200:
+  - `marnie_global`: `avg_delta=-0.0088`, `weighted_delta=-0.0088`, lost `3/4`.
+  - `marnie_cond_ogerpon`: `avg_delta=+0.0037`, `weighted_delta=+0.0037`, lost
+    `3/4`; only improved vs the new complex Ogerpon, not robustly vs original
+    Ogerpon pool.
+- Ogerpon 5899 vs Crustle pool g200:
+  - `og5899_global_tempo`: `avg_delta=-0.0138`, lost `3/4`.
+  - `og5899_cond_crustle`: `avg_delta=-0.0213`, lost `3/4`.
+  - This invalidates the apparent supervised attack-timing gain as a Crustle
+    matchup fix.
+- Ogerpon broad environment g80:
+  - `og5899_global_tempo`: `avg_delta=-0.0283`, `weighted_delta=-0.0399`, lost
+    `32/49`; worst was `shadow_alakazam_7f9a5389_miya:-0.3125`.
+  - `og5899_cond_crustle`: `avg_delta=-0.0316`, `weighted_delta=-0.0445`, lost
+    `36/49`.
+  - Do not submit or scale these Ogerpon complex-weighted recipes.
+- Marnie broad environment g80:
+  - `marnie_global`: `avg_delta=+0.0094`, `weighted_delta=+0.0031`, lost
+    `20/49`.
+  - `marnie_cond_ogerpon`: `avg_delta=+0.0115`, `weighted_delta=+0.0161`, lost
+    `20/49`; it improved some Alakazam/TR Mewtwo/Marnie rows but had large
+    regressions, including `shadow_team_rocket_mewtwo_2c3f6873:-0.1500`,
+    `shadow_marnie_grimmsnarl_2c22fa76_dries_tufa_labs:-0.1125`, and
+    `shadow_marnie_grimmsnarl_2c22fa76_jz:-0.1000`.
+- Interpretation: random is too weak as a gate, and current hand-tuned complex
+  sample weights can move supervised metrics without improving matchup win
+  rate. Do not scale this recipe across population yet. Next work should make
+  complex metrics outcome-aware: compare loss-vs-win trace states and train on
+  the specific decision contexts that differ in won games, rather than globally
+  increasing `ATTACK`/`ATTACH`/multi-select weights.
 
 ## Current Shadow Training
 

@@ -1,30 +1,99 @@
-# 05 — RL Training Commands
+# 05 — RL Fine-tuning
 
-## Start Training
+The old `train.py` / `ptcg_rl.trainer.PPOTrainer` path is legacy self-play code.
+For the current BC2 pipeline, use `tools/rl_finetune_vs_pool.py`.
+
+RL is only for targeted fine-tuning from a strong BC/shadow checkpoint against a
+known weakness pool. Do not use it for from-scratch training, and do not accept a
+checkpoint only because training-pool win rate rises.
+
+## Pilot Command
+
 ```bash
-cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git
-CUDA_VISIBLE_DEVICES=3 python3 -u train.py \
-    --iterations 500 --games 32 --device cuda:0 \
-    --mcts --mcts-sims 32
+CUDA_VISIBLE_DEVICES=0 python3 -u tools/rl_finetune_vs_pool.py \
+  --policy-init checkpoints/pop/bc2_marnie_grimmsnarl_v10pop_all0803_set_w2.npz \
+  --deck logs/ladder_pool_0802_all/decks/b8f251a476e7_marnie_grimmsnarl_raihan_ramadistra.csv \
+  --opponent ogerpon_top2=checkpoints/v10/bc2_ogerpon_v10_fixed_top2_w2.npz:logs/ladder_pool_0802_all/decks/697a82e582d5_teal_mask_ogerpon_majkel1337.csv \
+  --opponent-manifest logs/shadow_pool_manifest_v10_all0803_popinit_set.csv \
+  --manifest-archetype-regex "Teal Mask Ogerpon" \
+  --skip-bad-entries \
+  --iterations 12 \
+  --games-per-iter 64 \
+  --ppo-epochs 3 \
+  --minibatch 256 \
+  --lr 3e-5 \
+  --clip-eps 0.1 \
+  --entropy-coef 0.003 \
+  --bc-anchor-weight 0.15 \
+  --bc-anchor-corpus data/bc_corpus_banded_v11_matchup_0803 \
+  --bc-anchor-archetype "Marnie Grimmsnarl" \
+  --bc-anchor-deck-sig b8f251a476e7 \
+  --bc-anchor-opponent-archetype "Teal Mask Ogerpon" \
+  --bc-anchor-batch-size 512 \
+  --device cuda:0 \
+  --cuda-memory-gb 8 \
+  --max-turns 700 \
+  --checkpoint-dir checkpoints/rl/marnie_vs_ogerpon_pilot \
+  --metrics-csv logs/rl/marnie_vs_ogerpon_pilot_metrics.csv \
+  --save checkpoints/rl/bc2_marnie_vs_ogerpon_rl_pilot_w2.npz \
+  2>&1 | tee logs/rl/marnie_vs_ogerpon_pilot.log
 ```
 
-## Monitor
+For another archetype, keep the same structure and replace:
+
+- `--policy-init` and `--deck` with the target checkpoint/deck.
+- `--opponent` / `--opponent-manifest` filters with its weak matchup pool.
+- `--bc-anchor-*` filters with the corresponding target archetype and opponent.
+
+## Validation Gate
+
+Evaluate every saved checkpoint before treating it as useful:
+
 ```bash
-tail -f train.log                    # training output
-tail -1 checkpoints/ppo_iter*.pt    # latest checkpoint  
-nvidia-smi                           # GPU usage
+python3 tools/eval_bc.py CHECKPOINT.npz \
+  --deck TARGET_DECK.csv \
+  --games 500 \
+  --workers 8 \
+  --max-turns 700
+
+python3 tools/eval_baseline_delta.py \
+  --baseline base=BASELINE.npz:TARGET_DECK.csv \
+  --candidate rl=CHECKPOINT.npz:TARGET_DECK.csv \
+  --opponent-manifest FAILURE_OR_SHADOW_POOL.csv \
+  --manifest-limit 120 \
+  --skip-bad-entries \
+  --games 80 \
+  --workers 8 \
+  --max-turns 700 \
+  --out-csv logs/rl/rl_vs_baseline_shadow_probe.csv
 ```
 
-## Evaluate
+Then trace the worst remaining matchup:
+
 ```bash
-python3 -c "from ptcg_rl.trainer import export_numpy; ..."
-python3 main.py                      # local smoke test
+python3 tools/trace_matchup_decisions.py \
+  --candidate rl=CHECKPOINT.npz:TARGET_DECK.csv \
+  --opponent weak=OPPONENT.npz:OPPONENT_DECK.csv \
+  --games 100 \
+  --max-turns 700 \
+  --out-prefix logs/rl/trace_target_vs_weak_g100
 ```
 
-## Package for Kaggle
+Aggregate multiple trace summaries with:
+
 ```bash
-# After training produces policy.npz:
-cp main.py deck.csv policy.npz /tmp/submit/
-cp -r cg ptcg_rl /tmp/submit/
-cd /tmp/submit && tar czf submission.tar.gz *
+python3 tools/summarize_matchup_failures.py \
+  "logs/rl/*.summary.csv" \
+  --min-loss-decisions 20 \
+  --out-csv logs/rl/failure_trace_priority.csv
 ```
+
+## Current Limits
+
+- Rollout is single-process. This is deliberate for the first infrastructure
+  pass; parallel actors can be added after the update loop is behaviorally
+  validated.
+- Opponents are fixed `NumpyPolicy`/random entries. The trainable side is a
+  torch `PolicyValueNet` initialized from BC2 `.npz`.
+- The script auto-infers width and feature dimensions from `--policy-init`.
+- BC anchor is strongly recommended. Without it, run only short sanity tests.

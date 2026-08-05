@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-05 07:45 Asia/Shanghai.
+Last updated: 2026-08-05 08:52 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -17,16 +17,26 @@ For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload
 
 ## Current Git State
 
-Recent relevant commits:
+Recent relevant commits and current update:
 
-- Latest local change: add `tools/eval_manifest_random.py` for batch random evaluation of manifest/shadow policies.
+- Latest update in this session:
+  - `tools/rl_finetune_vs_pool.py`: new BC2-initialized PPO fine-tune loop against fixed `NumpyPolicy`/random opponent pools.
+  - `tools/summarize_matchup_failures.py`: aggregate `trace_matchup_decisions.py` summaries into loss-vs-win failure priorities.
+  - `docs/05_rl_training.md`: replaced legacy `train.py` PPO notes with the new shadow/failure-pool fine-tune workflow.
+  - `README.md`: added RL fine-tune and trace summary usage; removed stale `--workers` from the trace command example.
+- Previous local change: add `tools/eval_manifest_random.py` for batch random evaluation of manifest/shadow policies.
 - `00f3a0b` Handle duplicate shadow manifest entries
 - `c0e0366` Add agent handoff notes
 - `1d421ad` Document current BC pipeline notes
 - `edc0113` Add matchup-aware BC data pipeline features
 - `950f7fa` Add matchup decision trace diagnostic
 
-The worktree was clean before adding the current random-eval helper and this handoff update.
+Remote smoke tests completed on `ks`:
+
+- `/tmp/ptcg_rl_dry_run_0805.sh`: passed. It compiled the new tools, ran trace-summary aggregation, and loaded Marnie `state=64`/`option=48` checkpoint plus 1 explicit Ogerpon and 3 Ogerpon shadow opponents.
+- `/tmp/ptcg_rl_tiny_rollout_0805.sh`: passed after fixing the single-opponent loader. It ran a 2-game CPU rollout/update against random Ogerpon deck, collected 106 decisions, completed PPO update, and wrote `/tmp/ptcg_rl_tiny_out.npz`.
+
+These files were synced to `ks`. Check `git status` before starting the next change.
 
 ## Kaggle Accounts And Monitoring
 
@@ -275,9 +285,17 @@ python3 tools/trace_matchup_decisions.py \
   --candidate marnie=checkpoints/pop/bc2_marnie_grimmsnarl_v10pop_all0803_set_w2.npz:logs/ladder_pool_0802_all/decks/b8f251a476e7_marnie_grimmsnarl_raihan_ramadistra.csv \
   --opponent ogerpon=checkpoints/v10/bc2_ogerpon_v10_fixed_top2_w2.npz:logs/ladder_pool_0802_all/decks/697a82e582d5_teal_mask_ogerpon_majkel1337.csv \
   --games 100 \
-  --workers 8 \
   --max-turns 700 \
   --out-prefix logs/eval_v10/marnie_vs_ogerpon_trace_g100
+```
+
+Batch trace-summary priority ranking:
+
+```bash
+python3 tools/summarize_matchup_failures.py \
+  "logs/eval_v10/category_rr_v10pop_20260804/failure_traces_g100/*.summary.csv" \
+  --min-loss-decisions 20 \
+  --out-csv logs/eval_v10/category_rr_v10pop_20260804/failure_trace_priority.csv
 ```
 
 Batch random evaluation for manifest/shadow policies:
@@ -298,15 +316,55 @@ python3 tools/eval_manifest_random.py \
 
 Use `--games 500` and a different output name for the 500-game version. The script appends each policy result immediately, so `--resume` is safe after interruption.
 
+New targeted RL infrastructure:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 -u tools/rl_finetune_vs_pool.py \
+  --policy-init checkpoints/pop/bc2_marnie_grimmsnarl_v10pop_all0803_set_w2.npz \
+  --deck logs/ladder_pool_0802_all/decks/b8f251a476e7_marnie_grimmsnarl_raihan_ramadistra.csv \
+  --opponent ogerpon_top2=checkpoints/v10/bc2_ogerpon_v10_fixed_top2_w2.npz:logs/ladder_pool_0802_all/decks/697a82e582d5_teal_mask_ogerpon_majkel1337.csv \
+  --opponent-manifest logs/shadow_pool_manifest_v10_all0803_popinit_set.csv \
+  --manifest-archetype-regex "Teal Mask Ogerpon" \
+  --skip-bad-entries \
+  --iterations 12 \
+  --games-per-iter 64 \
+  --ppo-epochs 3 \
+  --minibatch 256 \
+  --lr 3e-5 \
+  --clip-eps 0.1 \
+  --entropy-coef 0.003 \
+  --bc-anchor-weight 0.15 \
+  --bc-anchor-corpus data/bc_corpus_banded_v11_matchup_0803 \
+  --bc-anchor-archetype "Marnie Grimmsnarl" \
+  --bc-anchor-deck-sig b8f251a476e7 \
+  --bc-anchor-opponent-archetype "Teal Mask Ogerpon" \
+  --bc-anchor-batch-size 512 \
+  --device cuda:0 \
+  --cuda-memory-gb 8 \
+  --max-turns 700 \
+  --checkpoint-dir checkpoints/rl/marnie_vs_ogerpon_pilot \
+  --metrics-csv logs/rl/marnie_vs_ogerpon_pilot_metrics.csv \
+  --save checkpoints/rl/bc2_marnie_vs_ogerpon_rl_pilot_w2.npz \
+  2>&1 | tee logs/rl/marnie_vs_ogerpon_pilot.log
+```
+
+Status and constraints:
+
+- `rl_finetune_vs_pool.py` compiled locally and passed remote dry-run plus 2-game CPU rollout/update smoke test.
+- It auto-infers BC2 width and feature dimensions from `--policy-init`, so v10 64/48 checkpoints remain compatible.
+- Rollout is currently single-process and should be used for small targeted pilots first.
+- Use BC anchor whenever v11 matchup corpus exists; without anchor, only run tiny sanity checks because PPO can overfit a fixed opponent pool quickly.
+- Acceptance gate is external evaluation: random, core RR, balanced shadow/failure pool, and trace. Do not accept based on training-pool WR alone.
+
 ## Next Work
 
 Immediate:
 
-1. Build a submission-candidate shortlist from shadow random >=99%, zero timeouts, high trajectory weight, and archetype diversity.
-2. Build balanced-per-archetype and hard-pool views from the completed shadow pool; top120 is useful but Marnie-heavy.
-3. Deep-dive random losses/timeouts for Ogerpon/Crustle/Dragapult/Mega Lucario before using them as submission candidates.
-4. Run baseline-delta eval for shortlisted shadow submission candidates against shadow top80/top120/top160 and balanced pools.
-5. Decide whether each failure calls for feature changes, matchup-conditioned data selection, or deck-sig specialist/shadow training.
+1. Build balanced-per-archetype and hard-pool views from the completed shadow pool; top120 is useful but Marnie-heavy.
+2. For each target archetype, select weak matchups from RR/baseline-delta, run `trace_matchup_decisions.py`, and aggregate with `summarize_matchup_failures.py`.
+3. Decide per weakness whether to use matchup-conditioned BC, rule overlay, deck-sig shadow/specialist, or RL fine-tune.
+4. Run the first real RL pilot only after choosing a curated opponent pool and, preferably, after v11 matchup corpus exists for BC anchoring.
+5. Deep-dive random losses/timeouts for Ogerpon/Crustle/Dragapult/Mega Lucario before using them as submission candidates or high-trust RL opponents.
 
 Pipeline direction:
 

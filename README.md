@@ -767,7 +767,6 @@ python3 tools/trace_matchup_decisions.py \
   --candidate marnie=checkpoints/pop/bc2_marnie_grimmsnarl_v10pop_all0803_set_w2.npz:logs/ladder_pool_0802_all/decks/b8f251a476e7_marnie_grimmsnarl_raihan_ramadistra.csv \
   --opponent ogerpon=checkpoints/v10/bc2_ogerpon_v10_fixed_top2_w2.npz:logs/ladder_pool_0802_all/decks/697a82e582d5_teal_mask_ogerpon_majkel1337.csv \
   --games 100 \
-  --workers 8 \
   --max-turns 700 \
   --out-prefix logs/eval_v10/marnie_vs_ogerpon_trace_g100
 ```
@@ -777,6 +776,58 @@ python3 tools/trace_matchup_decisions.py \
 - `.summary.csv`：first attack turn、total attacks、setup active、win/loss 差异。
 - `.choice_types.csv`：PLAY/ATTACH/ABILITY/ATTACK/END 的 win/loss 差异。
 - `.decisions.csv`：loss 中高置信但明显错误的单步决策。
+
+多个 trace 跑完后，用汇总器按 loss-vs-win 差异排优先级：
+
+```bash
+python3 tools/summarize_matchup_failures.py \
+  "logs/eval_v10/category_rr_v10pop_20260804/failure_traces_g100/*.summary.csv" \
+  --min-loss-decisions 20 \
+  --out-csv logs/eval_v10/category_rr_v10pop_20260804/failure_trace_priority.csv
+```
+
+### 9.7 Shadow/Failure-pool RL Fine-tune
+
+`tools/rl_finetune_vs_pool.py` 是新的 BC2 初始化 PPO 入口，用于“强 BC checkpoint 针对已知弱点 pool 做小步 fine-tune”。它不是从零训练，也不是全量 ladder RL。第一阶段只做短 run，保存每轮 checkpoint，然后用 random、core RR、shadow/failure pool 和 trace 复查。
+
+示例：Marnie 针对 Ogerpon pool 的保守 pilot。其他卡组也按同样模式，把 `--policy-init`、`--deck`、`--opponent*`、BC anchor 过滤换成对应弱点。
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 -u tools/rl_finetune_vs_pool.py \
+  --policy-init checkpoints/pop/bc2_marnie_grimmsnarl_v10pop_all0803_set_w2.npz \
+  --deck logs/ladder_pool_0802_all/decks/b8f251a476e7_marnie_grimmsnarl_raihan_ramadistra.csv \
+  --opponent ogerpon_top2=checkpoints/v10/bc2_ogerpon_v10_fixed_top2_w2.npz:logs/ladder_pool_0802_all/decks/697a82e582d5_teal_mask_ogerpon_majkel1337.csv \
+  --opponent-manifest logs/shadow_pool_manifest_v10_all0803_popinit_set.csv \
+  --manifest-archetype-regex "Teal Mask Ogerpon" \
+  --skip-bad-entries \
+  --iterations 12 \
+  --games-per-iter 64 \
+  --ppo-epochs 3 \
+  --minibatch 256 \
+  --lr 3e-5 \
+  --clip-eps 0.1 \
+  --entropy-coef 0.003 \
+  --bc-anchor-weight 0.15 \
+  --bc-anchor-corpus data/bc_corpus_banded_v11_matchup_0803 \
+  --bc-anchor-archetype "Marnie Grimmsnarl" \
+  --bc-anchor-deck-sig b8f251a476e7 \
+  --bc-anchor-opponent-archetype "Teal Mask Ogerpon" \
+  --bc-anchor-batch-size 512 \
+  --device cuda:0 \
+  --cuda-memory-gb 8 \
+  --max-turns 700 \
+  --checkpoint-dir checkpoints/rl/marnie_vs_ogerpon_pilot \
+  --metrics-csv logs/rl/marnie_vs_ogerpon_pilot_metrics.csv \
+  --save checkpoints/rl/bc2_marnie_vs_ogerpon_rl_pilot_w2.npz \
+  2>&1 | tee logs/rl/marnie_vs_ogerpon_pilot.log
+```
+
+注意：
+
+- 脚本会从 `--policy-init` 自动推断 `width`、`state_feat_dim`、`opt_feat_dim`、slot-state 和 option-context，避免 v10 64/48 与 v11 80/64 混用。
+- `--bc-anchor-*` 需要 v11 matchup corpus；如果还没有新抽取，可先去掉所有 `--bc-anchor-*` 做很短的 sanity run，但不能直接信任结果。
+- PPO rollout 目前是单进程，先用于验证机制和小规模 matchup fine-tune；确认有效后再考虑并行 actor。
+- 接受一个 RL checkpoint 的门槛不是训练池 WR 上升，而是 holdout opponent、random、core RR、balanced shadow pool 都没有明显退化。
 
 ## 10. Kaggle 提交和分数追踪
 

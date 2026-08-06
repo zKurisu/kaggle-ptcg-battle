@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 12:39 Asia/Shanghai.
+Last updated: 2026-08-06 13:18 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -2303,6 +2303,88 @@ Status and constraints:
 - Rollout is currently single-process and should be used for small targeted pilots first.
 - Use BC anchor whenever v11 matchup corpus exists; without anchor, only run tiny sanity checks because PPO can overfit a fixed opponent pool quickly.
 - Acceptance gate is external evaluation: random, core RR, balanced shadow/failure pool, and trace. Do not accept based on training-pool WR alone.
+
+## 2026-08-06 Aggressive Teacher Rollout Pivot
+
+User explicitly redirected away from filtered BC, winner-only BC, and small data/parameter tweaks as the main path. Treat those as negative controls. The current direction is to use compute for generated success data and teacher policies:
+
+- Generate weak-matchup success trajectories from policy portfolios.
+- Make exploration controlled by the model's top-ranked actions rather than full random sampling.
+- Use narrow, trace-auditable rules as teacher scaffolding only.
+- Distill generated wins only after the generated corpus is summarized by matchup, opponent, and actor mode.
+
+New code added locally and synced to `ks`:
+
+- `tools/generate_rollout_bc.py`
+  - Adds actor mode `topk@K`.
+  - Actor examples: `topk@2+rules:targeted=2`, `topk@3+rules:stage2_setup=2`.
+  - Records rule intervention reason in `actor_mode`, e.g. `topk@3+rules:targeted|stage2_setup_evolve`.
+- `ptcg_rl/numpy_policy.py`
+  - `NumpyPolicy.select(..., top_k=K)` masks sampling to the top K currently legal rows at each sequential pick.
+- `ptcg_rl/rule_overlay.py`
+  - Adds `stage2_setup`.
+  - `targeted` now includes a generic early Stage-2 setup guard: prefer available evolution-chain actions through turn 10 and setup/primary active choices through turn 4.
+  - This is for teacher rollout generation and probes, not a submission default.
+- `tools/plan_rollout_teacher_jobs.py`
+  - Reads RR or baseline-delta weakness CSVs plus candidate manifests.
+  - Emits a balanced weak-matchup rollout plan CSV and a runnable shell script.
+  - Default actor portfolio is `greedy/topk/sample/random + rules:<rule_mode>` with game-level actor scope.
+
+Local smoke command used:
+
+```bash
+python3 tools/plan_rollout_teacher_jobs.py \
+  --weakness-csv logs/eval_v11_0724_0804/rr_candidates_pop_top3_shadow_ge097_g100.csv \
+  --candidate-manifest logs/eval_v11_0724_0804/candidate_manifest_pop_top3_shadow_ge097.csv \
+  --max-win-rate 0.45 \
+  --max-per-archetype 3 \
+  --max-per-candidate 2 \
+  --max-jobs 30 \
+  --games 480 \
+  --workers 12 \
+  --parallel-jobs 5 \
+  --max-turns 420 \
+  --rule-mode targeted \
+  --out-root data/generated_rollout_bc_teacher_v11all_rr \
+  --out-band weak_win_search \
+  --log-dir logs/rollout_teacher_v11all_rr \
+  --out-csv logs/rollout_teacher_v11all_rr/plan.csv \
+  --skipped-csv logs/rollout_teacher_v11all_rr/skipped.csv \
+  --out-sh logs/rollout_teacher_v11all_rr/run_rollout_teacher_jobs.sh
+```
+
+The local plan generated 30 jobs with 3 weak matchups each for these archetypes: Alakazam, Cynthia Garchomp, Dragapult, Festival Lead, Marnie Grimmsnarl, Mega Lopunny, Mega Lucario, Mega Starmie, Teal Mask Ogerpon, Team Rocket Mewtwo.
+
+Remote active jobs at 2026-08-06 13:18:
+
+- Quick no-MCTS rollout still running:
+  - Script: `/tmp/run_rollout_search_nomcts_quick_20260806.sh`
+  - Corpus: `data/generated_rollout_bc_rollout_search_nomcts_quick_20260806`
+  - Logs: `logs/rollout_search_nomcts_quick_20260806/`
+  - At last check: about 27 `.npz` chunks and about 54 matching rollout processes.
+- Distill watcher still waiting for quick rollout:
+  - Script: `/tmp/run_rollout_distill_after_quick_20260806.sh`
+  - Log: `logs/rollout_distill_20260806/runner.log`
+  - It will train/evaluate Marnie/Ogerpon2a/Cynthia aux-corpus distill only after quick rollout ends.
+- New teacher-rollout waiter started:
+  - PID observed: `3138676`
+  - Script: `/tmp/run_rollout_teacher_v11all_rr_topk_20260806.sh`
+  - Log: `logs/rollout_teacher_v11all_rr_topk_20260806/runner.log`
+  - Output corpus: `data/generated_rollout_bc_rollout_teacher_v11all_rr_topk_20260806`
+  - It waits for quick rollout, distill watcher, and related train/eval processes to finish before launching 30 topk teacher jobs.
+
+Check status with:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 40 logs/rollout_distill_20260806/runner.log && tail -n 40 logs/rollout_teacher_v11all_rr_topk_20260806/runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && echo quick=$(pgrep -af "generated_rollout_bc_rollout_search_nomcts_quick_20260806" | wc -l) teacher_waiter=$(pgrep -af "run_rollout_teacher_v11all_rr_topk_20260806" | wc -l) npz=$(find data/generated_rollout_bc_rollout_search_nomcts_quick_20260806 -name "*.npz" 2>/dev/null | wc -l)'
+```
+
+Interpretation as of the pivot:
+
+- Pure `sample@T` rollout can discover some Marnie vs Ogerpon success games, but Dragapult vs Marnie/Crustle remains nearly barren.
+- If the topk+targeted teacher batch still cannot generate wins for a matchup, that matchup likely needs a stronger hand-authored teacher or simulator-search primitive rather than more replay filtering.
+- Do not train from the generated corpus until `tools/summarize_rollout_bc.py` shows adequate rows/episodes per target and actor modes are not dominated by fallback/random.
 
 ## Next Work
 

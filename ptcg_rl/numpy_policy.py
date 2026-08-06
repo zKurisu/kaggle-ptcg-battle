@@ -122,7 +122,8 @@ class NumpyPolicy:
 
     # ── greedy / sampling select ────────────────────────────────────
 
-    def select(self, obs_dict: dict, greedy: bool = True, temperature: float = 1.0) -> list[int]:
+    def select(self, obs_dict: dict, greedy: bool = True, temperature: float = 1.0,
+               top_k: int = 0) -> list[int]:
         """Action selection. temperature=1.0 = greedy, >1.0 = more random."""
         sel = obs_dict.get("select")
         if sel is None:
@@ -175,6 +176,13 @@ class NumpyPolicy:
             if temperature != 1.0:
                 logits = logits / temperature
             logits = logits - logits.max()
+            if not greedy and top_k > 0:
+                legal = np.flatnonzero(avail)
+                if len(legal) > top_k:
+                    keep = legal[np.argsort(logits[legal])[-top_k:]]
+                    top_mask = np.zeros_like(avail)
+                    top_mask[keep] = True
+                    logits = np.where(top_mask, logits, NEG_INF)
             probs = np.exp(logits) / np.exp(logits).sum()
 
             if greedy:

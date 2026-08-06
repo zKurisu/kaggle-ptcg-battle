@@ -20,6 +20,7 @@ RULE_MODES = (
     "ogerpon_attach",
     "ogerpon_no_futile_crustle",
     "cynthia_spiritomb_crustle",
+    "stage2_setup",
     "primary_active",
     "targeted",
 )
@@ -177,6 +178,18 @@ def apply_rule_overlay(obs: dict, action: list[int], deck: list[int] | None = No
                 grimmsnarl = _first_exact_card(obs, options, EVOLVE, MARNIE_GRIMMSNARL_EX)
                 if grimmsnarl is not None:
                     return RuleDecision([grimmsnarl], "marnie_setup_grimmsnarl")
+
+    if mode in ("stage2_setup", "targeted") and plan and plan.evolution_chain:
+        if turn <= 10 and chosen_type in (PLAY, ATTACH, ABILITY, END):
+            evo = _first_card_tag(plan, obs, options, EVOLVE, set(plan.evolution_chain))
+            if evo is not None:
+                return RuleDecision([evo], "stage2_setup_evolve")
+        if context in (3, 4) and turn <= 4:
+            setup = set(plan.setup_basics) | set(plan.primary_attackers)
+            if setup and chosen_card not in setup:
+                pick = _first_card_any_type(obs, options, setup)
+                if pick is not None:
+                    return RuleDecision([pick], "stage2_setup_active")
 
     if mode in ("ogerpon_attach", "targeted") and plan and plan.archetype == "Teal Mask Ogerpon":
         if opp_active in (DWEBBLE, CRUSTLE) and chosen_type == ABILITY and chosen_card == OGERPON_EX:

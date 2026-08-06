@@ -52,6 +52,7 @@ class ActorSpec:
     raw: str
     base: str
     temperature: float
+    top_k: int
     rules: str
     weight: float
 
@@ -99,11 +100,17 @@ def _parse_actor(spec: str) -> ActorSpec:
     if base.startswith("sample@"):
         temperature = float(base.split("@", 1)[1])
         base = "sample"
-    if base not in {"greedy", "sample", "random", "mcts"}:
-        raise ValueError(f"unknown actor base {base!r}; use greedy, sample[@T], random, mcts")
+    top_k = 0
+    if base.startswith("topk@"):
+        top_k = int(base.split("@", 1)[1])
+        base = "topk"
+    if base not in {"greedy", "sample", "topk", "random", "mcts"}:
+        raise ValueError(f"unknown actor base {base!r}; use greedy, sample[@T], topk@K, random, mcts")
     if temperature <= 0:
         raise ValueError(f"temperature must be positive: {spec!r}")
-    return ActorSpec(raw=mode, base=base, temperature=temperature, rules=rules, weight=weight)
+    if base == "topk" and top_k <= 0:
+        raise ValueError(f"topk actor requires a positive K: {spec!r}")
+    return ActorSpec(raw=mode, base=base, temperature=temperature, top_k=top_k, rules=rules, weight=weight)
 
 
 def _choose_actor(actors: list[ActorSpec], rng: random.Random) -> ActorSpec:
@@ -169,27 +176,34 @@ def _select_candidate_action(
     epsilon_random: float,
     mcts_sims: int,
     time_budget: float,
-) -> list[int]:
+) -> tuple[list[int], str]:
     sel = obs.get("select") or {}
     if not sel.get("option"):
-        return []
+        return [], actor.raw
     if rng.random() < epsilon_random:
-        return _legal_random(sel, rng)
+        return _legal_random(sel, rng), f"{actor.raw}|epsilon_random"
 
+    actor_label = actor.raw
     try:
         if entry.policy is None or actor.base == "random":
             action = _legal_random(sel, rng)
         elif actor.base == "mcts":
             action = entry.policy.select_mcts(obs, entry.deck, sims=mcts_sims, time_budget=time_budget)
+        elif actor.base == "topk":
+            action = entry.policy.select(obs, greedy=False, temperature=actor.temperature, top_k=actor.top_k)
         elif actor.base == "sample":
             action = entry.policy.select(obs, greedy=False, temperature=actor.temperature)
         else:
             action = entry.policy.select(obs, greedy=True)
         if actor.rules:
-            action = apply_rule_overlay(obs, action, entry.deck, mode=actor.rules).action
+            decision = apply_rule_overlay(obs, action, entry.deck, mode=actor.rules)
+            action = decision.action
+            if decision.reason:
+                actor_label = f"{actor.raw}|{decision.reason}"
     except Exception:
         action = _legal_random(sel, rng)
-    return _sanitize_action(action, sel, rng)
+        actor_label = f"{actor.raw}|fallback_random"
+    return _sanitize_action(action, sel, rng), actor_label
 
 
 def _encode_decision(
@@ -304,7 +318,7 @@ def _play_rollout_game(
             side = int(cur.get("yourIndex", 0) or 0)
             if side == candidate_side:
                 actor = game_actor or _choose_actor(actors, rng)
-                action = _select_candidate_action(
+                action, actor_label = _select_candidate_action(
                     candidate,
                     obs,
                     actor,
@@ -314,7 +328,7 @@ def _play_rollout_game(
                     time_budget=time_budget,
                 )
                 stats["decisions_seen"] += 1
-                row = _encode_decision(encoder, obs, action, actor.raw)
+                row = _encode_decision(encoder, obs, action, actor_label)
                 if row is not None:
                     decisions.append(row)
             else:

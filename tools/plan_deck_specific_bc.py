@@ -306,12 +306,18 @@ def write_script(path: str, plan: list[dict], args: argparse.Namespace) -> None:
         "#!/usr/bin/env bash",
         "set -euo pipefail",
         f"mkdir -p {shlex.quote(args.log_dir)} {shlex.quote(args.checkpoint_dir)}",
+    ]
+    if args.torch_cuda_alloc_conf:
+        lines.append(f"export PYTORCH_CUDA_ALLOC_CONF={shlex.quote(args.torch_cuda_alloc_conf)}")
+    lines.extend([
         "",
         "JOB_NAMES=()",
+        "JOB_SAVES=()",
         "JOB_CMDS=()",
-    ]
+    ])
     for row in plan:
         lines.append(f"JOB_NAMES+=({shlex.quote(row['job_name'])})")
+        lines.append(f"JOB_SAVES+=({shlex.quote(row['save'])})")
         lines.append(f"JOB_CMDS+=({shlex.quote(train_cmd(args, row))})")
     lines.extend(
         [
@@ -344,7 +350,21 @@ def write_script(path: str, plan: list[dict], args: argparse.Namespace) -> None:
             "  while claim_job; do",
             "    local idx=\"$CLAIMED_IDX\"",
             "    local name=\"${JOB_NAMES[$idx]}\"",
+            "    local save=\"${JOB_SAVES[$idx]}\"",
             "    local cmd=\"${JOB_CMDS[$idx]}\"",
+        ]
+    )
+    if args.skip_existing:
+        lines.extend(
+            [
+                "    if [[ -s \"$save\" ]]; then",
+                "      echo \"SKIP existing $name -> $save\"",
+                "      continue",
+                "    fi",
+            ]
+        )
+    lines.extend(
+        [
             "    echo \"==== $name gpu=${GPU_ID:-cpu}\"",
             "    if ! eval \"$cmd\"; then",
             "      echo \"FAILED $name gpu=${GPU_ID:-cpu}\" >&2",
@@ -479,6 +499,8 @@ def main() -> None:
                    help="pass --cuda-memory-gb to emitted train commands; 0 disables")
     p.add_argument("--cuda-memory-fraction", type=float, default=0.0,
                    help="pass --cuda-memory-fraction to emitted train commands; 0 disables")
+    p.add_argument("--torch-cuda-alloc-conf", default="",
+                   help="export PYTORCH_CUDA_ALLOC_CONF in emitted train scripts")
     p.add_argument("--init", default="",
                    help="optional checkpoint passed to emitted train commands")
     p.add_argument("--init-partial", action="store_true",
@@ -520,6 +542,8 @@ def main() -> None:
     p.add_argument("--winner-only", action="store_true")
     p.add_argument("--legacy-state-pool", action="store_true")
     p.add_argument("--checkpoint-every", type=int, default=1)
+    p.add_argument("--skip-existing", action="store_true",
+                   help="emitted training script skips jobs whose final checkpoint already exists")
     p.add_argument("--random-games", type=int, default=500)
     p.add_argument("--ladder-games", type=int, default=100)
     p.add_argument("--ladder-top", type=int, default=40)

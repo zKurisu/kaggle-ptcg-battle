@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 16:59 Asia/Shanghai.
+Last updated: 2026-08-06 17:53 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -2507,6 +2507,41 @@ Full 35-day v11 extraction:
   - It waits for `.extract_done` and `train_w2.sh`, patches generated training commands from `--cuda-memory-gb 18`/`18.0` to `--cuda-memory-gb 8`, then launches `train_w2.sh`.
   - Width 3/4 are intentionally not auto-started.
   - At 16:58 it was still waiting: `extract_done=no train_script=no`.
+
+Update at 2026-08-06 17:53:
+
+- Full v11 all-data extraction completed:
+  - `extract_done=Thu Aug  6 05:32:17 PM CST 2026`
+  - Files: `1495` `.npz`
+  - Size: `2.7G`
+  - Shape check passed: state feature `(80,)`, option feature `(2, 64)`, `feature_version=v11_matchup_mechanic`, and `opponent_*` metadata present.
+- Stats and plans completed:
+  - `stats_done=Thu Aug  6 05:43:41 PM CST 2026`
+  - `plan_done=Thu Aug  6 05:43:41 PM CST 2026`
+  - Main plans: `plan_w2.csv`, `plan_w3.csv`, `plan_w4.csv`
+  - Main w2 plan has `35` jobs across `12` archetypes. `Iono Bellibolt` and `N's Zoroark` are absent from 900+ because their total/high-score sample counts are too small.
+- Main w2 was first launched by the watcher with `batch-size=1024` and `--cuda-memory-gb 8`.
+  - This was too tight: Alakazam sig2/sig3 failed with PyTorch CUDA OOM at about `8.3-8.5GiB` process use while the allocator cap was `8GiB`.
+  - This was a cap/batch issue, not physical A800 capacity. Physical free memory was still tens of GiB.
+- The batch=1024 main w2 and the low-data watcher were stopped to avoid accumulating more OOM failed jobs.
+- `tools/plan_deck_specific_bc.py` was updated again:
+  - `--skip-existing`: generated scripts skip jobs whose final checkpoint already exists.
+  - `--torch-cuda-alloc-conf`: generated scripts can export `PYTORCH_CUDA_ALLOC_CONF`.
+- Resume job started at 2026-08-06 17:51:
+  - Script: `/tmp/run_v11all35_w2_resume_bs512_mem7_20260806.sh`
+  - Log dir: `logs/deck_sig_specialists_v11all35_20260806/w2_resume_bs512_mem7/`
+  - Resume runner: `logs/deck_sig_specialists_v11all35_20260806/w2_resume_bs512_mem7/train_w2_resume_bs512_mem7.runner.log`
+  - Checkpoint dir remains: `checkpoints/deck_sig_specialists_v11all35_20260806/w2`
+  - Config: `batch-size=512`, `--cuda-memory-gb 7`, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, `--skip-existing`.
+  - At first check it skipped existing Archaludon and Crustle final checkpoints and was running Alakazam sig1/sig2/sig3 plus Cynthia sig1.
+- Low-data follow-up for missing archetypes was restarted:
+  - Script: `/tmp/run_v11all35_lowdata_sig_w2_after_main_20260806.sh`
+  - Log dir: `logs/deck_sig_specialists_v11all35_20260806/lowdata_w2/`
+  - It waits for no active `v11all35_sigpure_top3_w2` process, then trains 4 low-data jobs:
+    - Iono Bellibolt `142204e32bde`, `4073` decisions.
+    - N's Zoroark `115babb20c85`, `7413` decisions.
+    - N's Zoroark `085ceaad1b1d`, `7257` decisions.
+    - N's Zoroark `6b9dd8aa6a69`, `3894` decisions.
 
 Check progress:
 

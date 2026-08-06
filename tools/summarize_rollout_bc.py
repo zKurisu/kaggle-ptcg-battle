@@ -7,6 +7,7 @@ import ast
 import csv
 import glob
 import os
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -95,9 +96,7 @@ def summarize_worker_csv(path: str) -> dict:
 
 def _tag_from_npz(path: str) -> str:
     stem = Path(path).stem
-    if "_w" in stem and stem.rsplit("_w", 1)[1].isdigit():
-        return stem.rsplit("_w", 1)[0]
-    return stem
+    return re.sub(r"_w\d{3}(?:_p\d{3})?$", "", stem)
 
 
 def summarize_npz(path: str) -> dict:

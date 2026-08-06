@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 20:18 Asia/Shanghai.
+Last updated: 2026-08-06 22:08 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -2652,6 +2652,105 @@ ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && set
 ```
 
 The watcher above should start width 2 automatically, so run this manually only if the watcher is stopped. Only start width 3/4 after width 2 has no failed jobs and GPU memory remains stable.
+
+## 2026-08-06 Deck-Sig Width 3/4 Status
+
+Remote controller:
+
+```text
+script: /tmp/watch_repair_w3_then_w4_20260806.sh
+log: logs/deck_sig_specialists_v11all35_20260806/controller_w3_then_w4_20260806/controller.log
+checkpoints:
+  checkpoints/deck_sig_specialists_v11all35_20260806/w3/
+  checkpoints/deck_sig_specialists_v11all35_20260806/w3_lowdata/
+  checkpoints/deck_sig_specialists_v11all35_20260806/w4/
+  checkpoints/deck_sig_specialists_v11all35_20260806/w4_lowdata/
+```
+
+Status checked at `2026-08-06 22:08 Asia/Shanghai`:
+
+- Width 3 main completed: `35/35`.
+- Width 3 lowdata completed: `4/4`, saved under `w3_lowdata/`.
+- Width 4 main is still running: `20/35`.
+- Width 4 lowdata has not started: `0/4`.
+- Active width 4 jobs at the check were Alakazam sig1, Alakazam sig2, Marnie
+  sig1, and Marnie sig2 on GPU 0 with `--cuda-memory-gb 8.0`.
+- There were earlier `Killed` events for Alakazam width 3 repairs, but final
+  width 3 checkpoints exist and load; treat the killed logs as process/memory
+  pressure during repair, not as corrupt completed artifacts.
+
+Width 3 random g200 outputs:
+
+```text
+logs/eval_deck_sig_specialists_v11all35_20260806/manifest_w3_all39.csv
+logs/eval_deck_sig_specialists_v11all35_20260806/random_w3_all39_g200.csv
+logs/eval_deck_sig_specialists_v11all35_20260806/random_w3_all39_g200_joined.csv
+logs/eval_deck_sig_specialists_v11all35_20260806/random_w3_all39_summary.txt
+```
+
+Width 3 random summary:
+
+- Evaluated `26/39`; same 13 rows are blocked by missing deck CSVs:
+  Archaludon sig1/2, Marnie sig3, Mega Lucario sig1/3, Mega Starmie sig1/2/3,
+  Team Rocket Mewtwo sig2, Iono Bellibolt sig1, and all three N's Zoroark
+  lowdata signatures.
+- Mean `0.932`, median `0.980`, min `0.595`, max `1.000`.
+- `>=0.97`: 15 entries; `>=0.95`: 18 entries; `<0.90`: 7 entries.
+- Compared to width 2 random, width 3 is clearly better on random:
+  mean `0.913 -> 0.932`, median `0.965 -> 0.980`, and `>=0.97` count
+  `12 -> 15`.
+
+Width 3 best random rows by archetype:
+
+```text
+Alakazam sig1 7f9a5389: 1.000
+Archaludon sig3 22aed761: 0.595
+Crustle Wall sig1 3cd5039c: 0.975
+Cynthia Garchomp sig1 52f46739: 1.000
+Dragapult sig1 0b7b5a14: 0.965
+Festival Lead sig2 41ffa789: 1.000
+Marnie Grimmsnarl sig1 b8f251a4: 1.000
+Mega Lopunny sig3 f1445356: 0.995
+Mega Lucario sig2 43d6d8b0: 0.920
+Teal Mask Ogerpon sig3 5899c772: 0.995
+Team Rocket Mewtwo sig1 06f0b265: 1.000
+```
+
+Width 3 random-stable RR g80 outputs:
+
+```text
+logs/eval_deck_sig_specialists_v11all35_20260806/candidate_manifest_w3_random_ge097.csv
+logs/eval_deck_sig_specialists_v11all35_20260806/rr_w3_random_ge097_g80.csv
+logs/eval_deck_sig_specialists_v11all35_20260806/rr_w3_random_ge097_g80_summary.txt
+```
+
+Width 3 RR top rows among 15 random-stable candidates:
+
+```text
+Crustle sig1 3cd5039c: avg=0.622 worst=0.263 losses=6
+Marnie sig1 b8f251a4: avg=0.604 worst=0.150 losses=2
+Alakazam sig1 7f9a5389: avg=0.596 worst=0.062 losses=4
+Ogerpon sig3 5899c772: avg=0.557 worst=0.037 losses=7
+Festival sig1 e82dcbe6: avg=0.546 worst=0.375 losses=6
+Ogerpon sig1 697a82e5: avg=0.542 worst=0.025 losses=7
+```
+
+Interpretation:
+
+- Width 3 is a useful random-stability improvement over width 2, but not a
+  clean RR improvement. Its RR pool is larger and harder (`15` entries vs
+  width 2's `12`), so compare trends rather than raw avg alone.
+- Crustle sig1 remains the strongest local deck-sig candidate and is still the
+  first Kaggle probe candidate from this axis.
+- Marnie sig1 improved as a local RR candidate (`0.583` width 2 to `0.604`
+  width 3), but the Ogerpon weakness remains severe: `0.200` vs Ogerpon 5899
+  and `0.150` vs Ogerpon 697 in the width 3 RR.
+- Alakazam sig1 has excellent random, but the RR worst row is Team Rocket
+  Mewtwo sig1 at `0.062`; do not treat it as ladder-safe without a live probe.
+- Team Rocket Mewtwo sig1 is polarizing: it crushes Alakazam in this RR but
+  loses badly to Ogerpon and Mega Lopunny; average only `0.475`.
+- Do not judge width 4 yet. It still needs main completion, lowdata completion,
+  then the same random and RR gate before comparing with width 2/3.
 
 ## Next Work
 

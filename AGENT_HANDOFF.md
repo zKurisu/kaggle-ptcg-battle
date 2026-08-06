@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 19:35 Asia/Shanghai.
+Last updated: 2026-08-06 20:18 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -2588,6 +2588,37 @@ ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tai
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && echo w3_final=$(find checkpoints/deck_sig_specialists_v11all35_20260806/w3 -maxdepth 1 -name "bc2_*_v11all35_sigpure_top3_w3.npz" 2>/dev/null | grep -v "_ep[0-9]" | wc -l) w4_final=$(find checkpoints/deck_sig_specialists_v11all35_20260806/w4 -maxdepth 1 -name "bc2_*_v11all35_sigpure_top3_w4.npz" 2>/dev/null | grep -v "_ep[0-9]" | wc -l) w3_low=$(find checkpoints/deck_sig_specialists_v11all35_20260806/w3_lowdata -maxdepth 1 -name "bc2_*.npz" 2>/dev/null | grep -v "_ep[0-9]" | wc -l) w4_low=$(find checkpoints/deck_sig_specialists_v11all35_20260806/w4_lowdata -maxdepth 1 -name "bc2_*.npz" 2>/dev/null | grep -v "_ep[0-9]" | wc -l)'
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && find logs/deck_sig_specialists_v11all35_20260806/w3_bs384_mem8 logs/deck_sig_specialists_v11all35_20260806/w4_bs256_mem8 logs/deck_sig_specialists_v11all35_20260806/controller_w3_then_w4_20260806 -type f -name "*.log" -print0 | xargs -0 grep -Hn "FAILED\|OutOfMemory\|Traceback\|Killed" | sed -n "1,160p"'
 ```
+
+Width-2 evaluation update at 2026-08-06 20:18:
+
+- Manifest/eval files:
+  - `logs/eval_deck_sig_specialists_v11all35_20260806/manifest_w2_all39.csv`
+  - `logs/eval_deck_sig_specialists_v11all35_20260806/random_w2_all39_g200.csv`
+  - `logs/eval_deck_sig_specialists_v11all35_20260806/random_w2_all39_g200_joined.csv`
+  - `logs/eval_deck_sig_specialists_v11all35_20260806/random_w2_all39_summary.txt`
+  - `logs/eval_deck_sig_specialists_v11all35_20260806/candidate_manifest_w2_random_ge097.csv`
+  - `logs/eval_deck_sig_specialists_v11all35_20260806/rr_w2_random_ge097_g80.csv`
+  - `logs/eval_deck_sig_specialists_v11all35_20260806/rr_w2_random_ge097_g80_summary.txt`
+- Random g200:
+  - Evaluated `26/39` checkpoints. The other `13` currently lack deck CSVs in the known 0802/0803/0804 ladder pool deck dirs, so they cannot be safely evaluated or packaged yet.
+  - Mean `0.913`, median `0.965`, min `0.545`, max `1.000`.
+  - `12` checkpoints are `>=0.970`; `7` are `<0.900`.
+  - Strong random candidates: Alakazam sig1/sig2/sig3, Cynthia sig1, Festival sig1/sig2, Marnie sig1/sig2, Mega Lopunny sig3, Ogerpon sig1/sig3, Crustle sig1.
+  - Weak random rows: Archaludon sig3 `0.545`, Cynthia sig2 `0.680`, Dragapult sig2/sig3 `0.785/0.750`, Crustle sig2/sig3 `0.860/0.805`, Ogerpon sig2 `0.825`.
+- RR g80 among the 12 random-stable candidates:
+  - Best weighted/average rows:
+    - Crustle sig1 `3cd5039c`: avg `0.652`, worst `0.263` vs Marnie sig1.
+    - Ogerpon sig3 `5899c772`: avg `0.590`, worst `0.013` vs Crustle sig1.
+    - Marnie sig1 `b8f251a4`: avg `0.583`, worst `0.125` vs Ogerpon sig3.
+    - Alakazam sig1 `7f9a5389`: avg `0.582`, worst `0.300` vs Marnie sig1.
+    - Ogerpon sig1 `697a82e5`: avg `0.562`, worst `0.050` vs Crustle sig1.
+  - Festival sig2 has perfect random but poor RR avg `0.312`; do not submit based on random alone.
+  - Marnie still has the known structural Ogerpon weakness: sig1/sig2 are only about `0.075-0.138` into Ogerpon sig1/sig3 in this small RR.
+  - Ogerpon still has the known Crustle weakness: Ogerpon sig1/sig3 are about `0.050/0.013` into Crustle sig1.
+- Submission interpretation:
+  - If spending a Kaggle slot purely as a probe, the only width-2 model that looks locally strongest is Crustle sig1 `3cd5039c`.
+  - Secondary probes: Ogerpon sig3 `5899c772`, Marnie sig1 `b8f251a4`, Alakazam sig1 `7f9a5389`. These have clear known bad matchups and should not be treated as ladder-safe.
+  - Do not submit unchecked missing-deck rows, Festival sig2, weak Dragapult/Crustle/Ogerpon sig2 rows, or any row with random `<0.95`.
 
 Check progress:
 

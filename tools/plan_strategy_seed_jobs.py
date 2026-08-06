@@ -93,6 +93,8 @@ DEFAULT_GROUPS = {
 
 DEFAULT_RULE_MODE_BY_SEED = {
     "marnie_vs_ogerpon_setup": "marnie_setup",
+    "ogerpon_vs_crustle_no_futile_attack": "ogerpon_no_futile_crustle",
+    "cynthia_vs_crustle_spiritomb": "cynthia_spiritomb_crustle",
 }
 
 
@@ -541,19 +543,20 @@ def write_shell(path: Path, rows: list[dict], args: argparse.Namespace) -> None:
         "",
     ]
     for row in rows:
-        lines.extend([
-            f"echo '[trace] {row['task_id']} {row['seed_id']}'",
-            row["trace_cmd"],
-            row["gap_cmd"],
-            "",
-        ])
-        if row.get("rule_probe_cmd"):
+        if args.command_scope in ("all", "trace"):
+            lines.extend([
+                f"echo '[trace] {row['task_id']} {row['seed_id']}'",
+                row["trace_cmd"],
+                row["gap_cmd"],
+                "",
+            ])
+        if args.command_scope in ("all", "rule_probe") and row.get("rule_probe_cmd"):
             lines.extend([
                 f"echo '[rule_probe] {row['task_id']} {row['rule_mode']}'",
                 row["rule_probe_cmd"],
                 "",
             ])
-    if rows:
+    if rows and args.command_scope in ("all", "trace"):
         aggregate = shell_cmd([
             args.python,
             "tools/trace_outcome_gap_report.py",
@@ -721,6 +724,8 @@ def main() -> None:
                    help="emit tasks even when local deck validation proves required cards are absent")
     p.add_argument("--rule-mode", action="append", default=[],
                    help="override/add existing rule probe mode, e.g. seed_id=marnie_setup")
+    p.add_argument("--command-scope", choices=["all", "trace", "rule_probe"], default="all",
+                   help="which commands to place in the generated shell script")
     p.add_argument("--python", default="python3")
     p.add_argument("--games", type=int, default=120)
     p.add_argument("--rule-games", type=int, default=80)

@@ -166,3 +166,23 @@ Planner statuses:
 - `trace_then_matchup_bc`: first verify the trace gap, then build a filtered or
   weighted matchup BC corpus.
 - `trace_first`: gather evidence before choosing an intervention.
+
+Summarize a completed planner directory:
+
+```bash
+python3 tools/summarize_strategy_seed_jobs.py \
+  --job-dir logs/strategy_seed_jobs_20260806 \
+  --weak-wr 0.35 \
+  --strong-wr 0.85 \
+  --top 20
+```
+
+The summary writes:
+
+- `strategy_seed_summary_matchups.csv`
+- `strategy_seed_summary_seeds.csv`
+- `strategy_seed_summary.md`
+
+Rule-only probe directories are supported too. If a rule has negative or tiny
+`avg_rule_delta`, mark it as `do_not_scale_current_rule` and move back to trace,
+teacher rollout, or matchup-conditioned BC.

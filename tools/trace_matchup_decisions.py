@@ -80,6 +80,10 @@ DECISION_FIELDS = [
     "my_active_name",
     "opp_active",
     "opp_active_name",
+    "my_bench_cards",
+    "my_bench_card_names",
+    "opp_bench_cards",
+    "opp_bench_card_names",
     "my_bench_count",
     "opp_bench_count",
     "my_prizes",
@@ -219,6 +223,16 @@ def active_card(player: dict) -> int:
     return safe_int(active[0].get("id"))
 
 
+def bench_cards(player: dict) -> list[int]:
+    cards = []
+    for p in player.get("bench") or []:
+        if p:
+            cid = safe_int(p.get("id"))
+            if cid:
+                cards.append(cid)
+    return cards
+
+
 def in_play_count(player: dict) -> int:
     active = 1 if active_card(player) else 0
     return active + len([p for p in (player.get("bench") or []) if p])
@@ -325,6 +339,8 @@ def encode_decision(
     chosen_cards = [opt_cards[i] for i in chosen]
     types_set = set(opt_types)
     context = safe_int(sel.get("context"))
+    my_bench = bench_cards(me)
+    opp_bench = bench_cards(opp)
 
     row = {
         "game": game,
@@ -348,6 +364,10 @@ def encode_decision(
         "my_active_name": card_name(active_card(me)),
         "opp_active": active_card(opp),
         "opp_active_name": card_name(active_card(opp)),
+        "my_bench_cards": " ".join(map(str, my_bench)),
+        "my_bench_card_names": " | ".join(card_name(c) for c in my_bench),
+        "opp_bench_cards": " ".join(map(str, opp_bench)),
+        "opp_bench_card_names": " | ".join(card_name(c) for c in opp_bench),
         "my_bench_count": max(0, in_play_count(me) - 1),
         "opp_bench_count": max(0, in_play_count(opp) - 1),
         "my_prizes": len(me.get("prize") or []),

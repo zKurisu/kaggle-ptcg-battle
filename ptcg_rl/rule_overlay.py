@@ -18,6 +18,8 @@ RULE_MODES = (
     "aggressive",
     "marnie_setup",
     "ogerpon_attach",
+    "ogerpon_no_futile_crustle",
+    "cynthia_spiritomb_crustle",
     "primary_active",
     "targeted",
 )
@@ -30,6 +32,8 @@ SPIKEMUTH_GYM = 1259
 OGERPON_EX = 96
 DWEBBLE = 344
 CRUSTLE = 345
+CYNTHIA_GARCHOMP_EX = 381
+CYNTHIA_SPIRITOMB = 387
 
 
 @dataclass(frozen=True)
@@ -78,6 +82,15 @@ def _active_card_id(player: dict) -> int:
     if active and active[0]:
         return int(active[0].get("id") or 0)
     return 0
+
+
+def _bench_card_ids(player: dict) -> set[int]:
+    ids = set()
+    for p in player.get("bench") or []:
+        if p:
+            ids.add(int(p.get("id") or 0))
+    ids.discard(0)
+    return ids
 
 
 def _has_energy_attach_available(options: list[dict]) -> bool:
@@ -135,6 +148,7 @@ def apply_rule_overlay(obs: dict, action: list[int], deck: list[int] | None = No
     opp = players[1 - you] if 1 - you < len(players) else {}
     my_active = _active_card_id(me)
     opp_active = _active_card_id(opp)
+    my_bench = _bench_card_ids(me)
     chosen_type = _option_type(options[action[0]]) if action else END
     chosen_card = _option_card(obs, options[action[0]]) if action else 0
     context = int(sel.get("context", -1) if sel.get("context") is not None else -1)
@@ -169,6 +183,32 @@ def apply_rule_overlay(obs: dict, action: list[int], deck: list[int] | None = No
             attaches = _find_type(options, ATTACH)
             if attaches:
                 return RuleDecision([attaches[0]], "ogerpon_attach_before_teal_dance_vs_crustle")
+
+    if mode == "ogerpon_no_futile_crustle" and plan and plan.archetype == "Teal Mask Ogerpon":
+        if my_active == OGERPON_EX and opp_active == CRUSTLE and chosen_type == ATTACK:
+            # Probe only: an ex attack into Crustle's Mysterious Rock Inn is
+            # usually blanked. Prefer any available setup/draw/retreat option
+            # before accepting the attack; broad validation decides if this
+            # creates harmful loops.
+            for opt_type in (PLAY, ABILITY, ATTACH, RETREAT, END):
+                picks = _find_type(options, opt_type)
+                if picks:
+                    return RuleDecision([picks[0]], "ogerpon_avoid_futile_ex_attack_into_crustle")
+
+    if mode == "cynthia_spiritomb_crustle" and plan and plan.archetype == "Cynthia Garchomp":
+        if opp_active == CRUSTLE:
+            if context in (3, 4) and chosen_card != CYNTHIA_SPIRITOMB:
+                spiritomb = _first_card_any_type(obs, options, {CYNTHIA_SPIRITOMB})
+                if spiritomb is not None:
+                    return RuleDecision([spiritomb], "cynthia_spiritomb_active_vs_crustle")
+            if (
+                my_active == CYNTHIA_GARCHOMP_EX
+                and CYNTHIA_SPIRITOMB in my_bench
+                and chosen_type == ATTACK
+            ):
+                retreats = _find_type(options, RETREAT)
+                if retreats:
+                    return RuleDecision([retreats[0]], "cynthia_retreat_to_spiritomb_vs_crustle")
 
     # Never end before taking a clearly available mandatory tempo action.
     if mode in ("conservative", "aggressive") and chosen_type == END:

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 02:10 Asia/Shanghai.
+Last updated: 2026-08-06 02:45 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -178,6 +178,7 @@ New files:
 - `data/matchup_strategy_seeds_v1.csv`
 - `data/matchup_strategy_seed_cards_v1.csv`
 - `tools/plan_strategy_seed_jobs.py`
+- `tools/summarize_strategy_seed_jobs.py`
 
 Current seed table has 9 strategy hypotheses:
 
@@ -265,6 +266,57 @@ Initial live result from the first generated task:
 - `marnie_setup` rule probe over 80 games: plain Marnie vs Ogerpon `6/80 =
   0.075`; rule Marnie vs Ogerpon `8/80 = 0.100`. This is only a tiny focused
   improvement and still indicates a structural weakness.
+
+The 24-task run completed. Summary files on `ks`:
+
+```text
+logs/strategy_seed_jobs_20260806/strategy_seed_summary_matchups.csv
+logs/strategy_seed_jobs_20260806/strategy_seed_summary_seeds.csv
+logs/strategy_seed_jobs_20260806/strategy_seed_summary.md
+logs/strategy_seed_jobs_20260806/strategy_seed_gap_report.csv
+```
+
+Seed-level summary:
+
+- `ogerpon_vs_crustle_dwebble_punish`: `4-116`, WR `0.033`; recommendation
+  `prioritize_teacher_rollout_success_data`.
+- `ogerpon_vs_crustle_no_futile_attack`: `5-115`, WR `0.042`; initial narrow
+  rule idea needs proof and is not enough.
+- `cynthia_vs_crustle_spiritomb`: `8-112`, WR `0.067`; Spiritomb idea needs
+  deeper teacher/success construction or much narrower triggers.
+- `dragapult_setup_vs_marnie_crustle`: vs Crustle `10-110`, vs Marnie `15-105`;
+  recommendation `prioritize_matchup_conditioned_bc`.
+- `marnie_vs_ogerpon_setup`: `11-109`, WR `0.092`; `marnie_setup` rule delta
+  was only `+0.025`, so do not scale the current rule.
+- `crustle_wall_plan` / `crustle_resource_pressure`: average WR around
+  `0.71-0.73`, but Crustle is weak into Alakazam/Marnie/Lopunny in this probe.
+
+Two additional experimental rule modes were added for probing only:
+
+- `ogerpon_no_futile_crustle`
+- `cynthia_spiritomb_crustle`
+
+Rule-probe-only run on `ks`:
+
+```text
+logs/strategy_seed_rule_probes_20260806/
+```
+
+Results:
+
+- Ogerpon no-futile vs Crustle, 200 games: plain `10/200 = 0.050`; rule
+  `8/200 = 0.040`; delta `-0.010`.
+- Cynthia Spiritomb vs Crustle, 200 games: plain `30/200 = 0.150`; rule
+  `24/200 = 0.120`; delta `-0.030`.
+
+Interpretation: do not scale these rules. They are useful negative probes. The
+Crustle-wall weaknesses need generated success data / teacher rollout or
+matchup-conditioned BC, not broader single-action guards.
+
+Trace fields now include `my_bench_cards`, `my_bench_card_names`,
+`opp_bench_cards`, and `opp_bench_card_names`. Use this for the next
+Dwebble-punish analysis, because the earlier trace only had active cards and
+could not reliably detect whether Dwebble was still punishable on the bench.
 
 ## Top-K Deck-Signature Training Axis
 

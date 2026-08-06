@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import re
 import shlex
@@ -51,6 +52,7 @@ class Job:
     save: Path
     log: Path
     acc_log: Path
+    init: str = ""
     corpus_files: int = 0
     decisions: int = 0
     gpu: str | None = None
@@ -93,10 +95,20 @@ def build_train_cmd(args: argparse.Namespace, job: Job) -> list[str]:
         "--checkpoint-every", str(args.checkpoint_every),
         "--save", str(job.save),
     ]
+    for value in args.aux_corpus:
+        cmd.extend(["--aux-corpus", value])
+    if args.aux_score_bands:
+        cmd.extend(["--aux-score-bands", *args.aux_score_bands])
+    if args.aux_repeat != 1:
+        cmd.extend(["--aux-repeat", str(args.aux_repeat)])
     if args.state_feat_dim:
         cmd.extend(["--state-feat-dim", str(args.state_feat_dim)])
     if args.opt_feat_dim:
         cmd.extend(["--opt-feat-dim", str(args.opt_feat_dim)])
+    if job.init:
+        cmd.extend(["--init", job.init])
+    if job.init and args.init_partial:
+        cmd.append("--init-partial")
     for value in args.opponent_deck_sig:
         cmd.extend(["--opponent-deck-sig", value])
     for value in args.opponent_archetype:
@@ -133,6 +145,8 @@ def count_decisions(paths: list[str]) -> int:
 
 def preflight_corpus(args: argparse.Namespace, archetype: str) -> tuple[int, int]:
     paths = discover_npz_paths(args.corpus, archetype, args.score_bands)
+    if args.min_decisions <= 0:
+        return len(paths), 0
     return len(paths), count_decisions(paths) if paths else 0
 
 
@@ -158,6 +172,25 @@ def build_accuracy_cmd(args: argparse.Namespace, job: Job) -> list[str]:
     if args.winner_only_accuracy:
         cmd.append("--winner-only")
     return cmd
+
+
+def read_init_manifest(path: str) -> dict[str, str]:
+    if not path:
+        return {}
+    out: dict[str, str] = {}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            archetype = str(row.get("archetype", "")).strip()
+            policy = (
+                row.get("policy_path")
+                or row.get("checkpoint_path")
+                or row.get("policy")
+                or ""
+            )
+            policy = str(policy).strip()
+            if archetype and policy and archetype not in out:
+                out[archetype] = policy
+    return out
 
 
 def launch_job(args: argparse.Namespace, job: Job, gpu: str | None) -> None:
@@ -212,6 +245,7 @@ def finish_job(args: argparse.Namespace, job: Job) -> None:
 
 def make_jobs(args: argparse.Namespace) -> list[Job]:
     tag = args.tag or f"{score_tag(args.score_bands)}_w{args.width:g}"
+    init_by_arch = read_init_manifest(args.init_manifest)
     jobs = []
     for arch in args.archetype:
         files, decisions = preflight_corpus(args, arch)
@@ -232,7 +266,17 @@ def make_jobs(args: argparse.Namespace) -> list[Job]:
         if args.skip_existing and save.exists():
             print(f"Skip existing {arch}: {save}", flush=True)
             continue
-        jobs.append(Job(arch, save, log, acc_log, corpus_files=files, decisions=decisions))
+        jobs.append(
+            Job(
+                arch,
+                save,
+                log,
+                acc_log,
+                init=init_by_arch.get(arch, args.init),
+                corpus_files=files,
+                decisions=decisions,
+            )
+        )
     return jobs
 
 
@@ -259,6 +303,12 @@ def print_status(pending: list[Job], running: list[Job], completed: list[Job], f
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--corpus", default="data/bc_corpus_banded_v4")
+    p.add_argument("--aux-corpus", action="append", default=[],
+                   help="extra corpus root mixed into each archetype training job; repeatable")
+    p.add_argument("--aux-score-bands", nargs="+", default=[],
+                   help="score bands to read from --aux-corpus; omit to use bc2_train.py default")
+    p.add_argument("--aux-repeat", type=int, default=1,
+                   help="repeat aux corpus paths N times as a coarse sample multiplier")
     p.add_argument("--archetype", action="append", default=[],
                    help="archetype to train; repeat. Defaults to common population.")
     p.add_argument("--score-bands", nargs="+", default=["1200+", "1100-1199", "1000-1099"])
@@ -269,6 +319,12 @@ def main() -> None:
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--width", type=float, default=2.0)
     p.add_argument("--device", default="cuda:0", help="used only when --gpus is empty")
+    p.add_argument("--init", default="",
+                   help="optional checkpoint used to initialize every job unless --init-manifest provides an archetype-specific path")
+    p.add_argument("--init-manifest", default="",
+                   help="CSV with archetype and policy_path/checkpoint_path columns; first row per archetype initializes that job")
+    p.add_argument("--init-partial", action="store_true",
+                   help="pass --init-partial through to bc2_train.py when an init checkpoint is used")
     p.add_argument("--cuda-memory-gb", type=float, default=0.0,
                    help="pass an approximate GiB CUDA allocator cap to bc2_train.py")
     p.add_argument("--cuda-memory-fraction", type=float, default=0.0,
@@ -336,7 +392,7 @@ def main() -> None:
         prefix = f"CUDA_VISIBLE_DEVICES={slot} " if slot is not None else ""
         print(
             f"  {job.archetype}: files={job.corpus_files} decisions={job.decisions} "
-            f"save={job.save}",
+            f"save={job.save} init={job.init or '-'}",
             flush=True,
         )
         if args.dry_run:

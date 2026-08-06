@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 13:18 Asia/Shanghai.
+Last updated: 2026-08-06 13:25 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -2329,6 +2329,10 @@ New code added locally and synced to `ks`:
   - Reads RR or baseline-delta weakness CSVs plus candidate manifests.
   - Emits a balanced weak-matchup rollout plan CSV and a runnable shell script.
   - Default actor portfolio is `greedy/topk/sample/random + rules:<rule_mode>` with game-level actor scope.
+- `tools/train_bc_population.py`
+  - Adds `--aux-corpus`, `--aux-score-bands`, and `--aux-repeat` pass-through to `bc2_train.py`.
+  - Adds `--init-manifest` to initialize each archetype from the first matching manifest checkpoint.
+  - `--min-decisions 0` now skips slow `.npz` decision counting and is suitable for large-corpus dry-runs.
 
 Local smoke command used:
 
@@ -2385,6 +2389,22 @@ Interpretation as of the pivot:
 - Pure `sample@T` rollout can discover some Marnie vs Ogerpon success games, but Dragapult vs Marnie/Crustle remains nearly barren.
 - If the topk+targeted teacher batch still cannot generate wins for a matchup, that matchup likely needs a stronger hand-authored teacher or simulator-search primitive rather than more replay filtering.
 - Do not train from the generated corpus until `tools/summarize_rollout_bc.py` shows adequate rows/episodes per target and actor modes are not dominated by fallback/random.
+
+Remote dry-run confirmed `train_bc_population.py` can generate aux-distill commands, for example:
+
+```bash
+python3 tools/train_bc_population.py \
+  --corpus data/bc_corpus_banded_v11_0724_0804 \
+  --archetype "Marnie Grimmsnarl" \
+  --score-bands 1200+ 1100-1199 1000-1099 \
+  --min-decisions 0 \
+  --aux-corpus data/generated_rollout_bc_rollout_teacher_v11all_rr_topk_20260806 \
+  --aux-score-bands weak_win_search \
+  --aux-repeat 5 \
+  --init-manifest logs/eval_v11_0724_0804/candidate_manifest_pop_top3_shadow_ge097.csv \
+  --init-partial \
+  --dry-run
+```
 
 ## Next Work
 

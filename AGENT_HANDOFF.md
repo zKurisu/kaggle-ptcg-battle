@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 23:20 Asia/Shanghai.
+Last updated: 2026-08-07 00:12 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -2759,6 +2759,8 @@ logs/eval_deck_sig_specialists_v11all35_20260806/candidate_manifest_w4_random_ge
 logs/eval_deck_sig_specialists_v11all35_20260806/rr_w4_random_ge097_g80.csv
 logs/eval_deck_sig_specialists_v11all35_20260806/rr_w4_random_ge097_g80_summary.txt
 logs/eval_deck_sig_specialists_v11all35_20260806/submit_analysis_w4_0805.txt
+logs/eval_deck_sig_specialists_v11all35_20260806/rr_w4_recovered_mini_g100.csv
+logs/eval_deck_sig_specialists_v11all35_20260806/rr_w4_recovered_mini_g100_summary.txt
 ```
 
 Width 4 random g200:
@@ -2800,6 +2802,36 @@ Interpretation:
      mediocre, but 0805 ladder archetype prior favors Mega Lopunny.
   Avoid w4 Ogerpon for today's first probe because Crustle remains common
   enough and the local Crustle matchup is catastrophic.
+
+After building `ladder_pool_0805_all`, two previously missing w4 signatures
+became evaluable:
+
+- `Mega Starmie sig1 e2f9eb4c`: random g200 `1.000`, but recovered mini RR
+  avg `0.423`, worst `0.130` vs Marnie. Do not submit.
+- `Team Rocket Mewtwo sig2 206a1cf0`: random g200 `1.000`, but recovered mini
+  RR avg `0.230`, worst `0.010` vs Ogerpon 5899. Do not submit.
+
+Recovered mini RR g100 ranking:
+
+```text
+Crustle sig1 3cd5039c: avg=0.634 worst=0.300
+Alakazam sig1 7f9a5389: avg=0.587 worst=0.310
+Marnie sig1 b8f251a4: avg=0.569 worst=0.140
+Ogerpon sig3 5899c772: avg=0.517 worst=0.000
+Mega Lopunny sig3 f1445356: avg=0.516 worst=0.290
+Ogerpon sig1 697a82e5: avg=0.513 worst=0.030
+Mega Starmie sig1 e2f9eb4c: avg=0.423 worst=0.130
+TR Mewtwo sig2 206a1cf0: avg=0.230 worst=0.010
+```
+
+Submission tarballs generated on `ks`:
+
+```text
+submissions/w4_0805_candidates/w4_crustle_sig1_3cd5039c.tar.gz
+submissions/w4_0805_candidates/w4_marnie_sig1_b8f251a4.tar.gz
+submissions/w4_0805_candidates/w4_alakazam_sig1_7f9a5389.tar.gz
+submissions/w4_0805_candidates/w4_mega_lopunny_sig3_f1445356.tar.gz
+```
 
 ## 2026-08-06 Episode 0805 Ladder Read
 

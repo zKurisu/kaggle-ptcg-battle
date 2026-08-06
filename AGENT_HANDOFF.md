@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 09:25 Asia/Shanghai.
+Last updated: 2026-08-06 09:45 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -269,6 +269,96 @@ only the failed train command from its `train_*.log` with `MEM_GB=16` or a
 smaller `BATCH_SIZE`. If a `winner-only` job fails from too few samples, record
 that as evidence that the matchup needs teacher-generated success data rather
 than filtered BC.
+
+Results of the first run:
+
+- All 12 training jobs completed and wrote checkpoints under
+  `checkpoints/strategy_opt_20260806/`.
+- Random g500:
+  - Stable: Marnie filter/winonly `0.998/1.000`; Ogerpon 697 crosssig-name
+    `0.986`; Alakazam Marnie/TRM winonly `0.974/0.972`; Cynthia filter/winonly
+    `0.958/0.948`.
+  - Unstable: Dragapult Marnie filter/winonly `0.800/0.788`; Ogerpon 2a
+    winonly `0.780`; Dragapult Crustle `0.900/0.908` is borderline.
+- Focused baseline-delta g160:
+  - `alakazam_marnie_winonly`: avg delta `+0.029`, but hurts TRM by `-0.031`.
+  - `ogerpon_2a_winonly`: avg delta `+0.025` vs Crustle, but random collapsed
+    to `0.780`, so not deployable.
+  - `drag_crustle_filter`: avg delta `+0.0025`, not meaningful and lost 3/5.
+  - Marnie, Dragapult-Marnie, Cynthia, Ogerpon-697 variants were negative.
+- Interpretation: narrow filtered/winner-only BC can move a local target a few
+  points, but often breaks random or nearby matchups. It is not enough for the
+  structural weak matchups. Use it as a diagnostic, not a submission recipe.
+
+New reusable slice audit tool:
+
+```bash
+python3 tools/audit_matchup_slices.py \
+  --corpus data/bc_corpus_banded_v11_0724_0804 \
+  --archetype "Marnie Grimmsnarl" \
+  --opponent-archetype "Teal Mask Ogerpon" \
+  --score-bands 1200+ 1100-1199 1000-1099 \
+  --group-by archetype deck_sig team_name opponent_archetype opponent_deck_sig opponent_team_name \
+  --min-games 20 \
+  --min-wins 5 \
+  --top 80 \
+  --out-csv logs/strategy_opt_20260806/slices/marnie_vs_ogerpon.csv
+```
+
+Slice audit outputs:
+
+- `logs/strategy_opt_20260806/slices/*.csv`
+- Marnie vs Ogerpon: the top successful slices are all `b8f251a476e7` into
+  Ogerpon `2a5072194fdf`, e.g. Dominic Peel `18/30=0.600` and flg
+  `28/50=0.560`. There is no comparable successful slice for 5899/697.
+- Ogerpon vs Crustle: only two usable slices, both `2a5072194fdf` James Cox &
+  Henry Chao, against `47756cdfd20f` and `7ee600c6f769`.
+- Dragapult vs Crustle and Cynthia vs Crustle had no slice meeting
+  `min_games=20,min_wins=5`.
+- Dragapult vs Marnie had two `cc2e995b5ad0` flg slices with `18/28=0.643`
+  and `18/31=0.581`.
+- Alakazam vs Marnie had several `7f9a538936e3` slices above 0.5; Alakazam vs
+  Team Rocket Mewtwo had only one modest slice `9/22=0.409`.
+
+Wave2 team-slice low-LR run:
+
+```text
+script: /tmp/run_strategy_opt_wave2_20260806.sh
+logs: logs/strategy_opt_wave2_20260806/
+checkpoints: checkpoints/strategy_opt_wave2_20260806/
+```
+
+Wave2 used high-success team/opponent slices, lower LR `6e-6`, 4 epochs, and
+lighter complex weights. All 8 jobs completed.
+
+Wave2 results:
+
+- Random g500:
+  - Marnie Dominic/flg vs Ogerpon 2a slice: `0.998/0.994`.
+  - Alakazam Majkel filter/winonly: both `0.986`.
+  - Dragapult flg filter/winonly: `0.886/0.902`.
+  - Ogerpon 2a filter/winonly: `0.762/0.794`.
+- Focused delta g200:
+  - `marnie_dominic`: avg `+0.0117`; improves Ogerpon 2a `+0.020` and 697
+    `+0.040`, but hurts 5899 `-0.025`.
+  - `marnie_flg`: avg `-0.0067`; not useful.
+  - `alak_majkel_*`: improves pop Marnie by `+0.060` to `+0.070`, but hurts
+    Marnie shadow and TRM, so only a narrow diagnostic.
+  - `drag_flg_*` and `ogerpon_2a_*` are negative; do not continue this recipe.
+
+Updated interpretation:
+
+- Existing replay data contains local successful lines for some slices, but
+  they do not transfer reliably across nearby opponent signatures.
+- The Crustle-wall structural weakness is not solved by filtered BC; Ogerpon
+  and Dragapult either collapse random or lose focused delta. Move these to
+  teacher/rule construction.
+- For Marnie vs Ogerpon, data exists for beating `2a507...`, but not for live
+  hard Ogerpon variants like 5899. Need trace-guided teacher construction or
+  strategy/rule seeds for 5899/697 specifically.
+- For Alakazam vs Marnie, matchup-conditioned specialist training has some
+  promise, but needs a deployment mechanism or broader mixture so it does not
+  hurt Team Rocket Mewtwo.
 
 The seed-card mapping table is deliberately separate from the strategy table.
 Use it to validate that a human guide's named cards are present in the exact

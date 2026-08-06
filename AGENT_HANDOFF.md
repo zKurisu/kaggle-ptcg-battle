@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 17:53 Asia/Shanghai.
+Last updated: 2026-08-06 19:35 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -10,7 +10,7 @@ This file is the first place a new agent should read before touching the project
 - Local branch: `v7-baseline-20260804`
 - Remote training repo: `ks:/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804`
 - Remote original workspace also exists in older notes: `ks:/home/jie/Do/0_PTCG/workspace/ptcg_rl_git`
-- Current remote training data for active BC experiments: `data/bc_corpus_banded_v11_0724_0804`
+- Current remote training data for active BC experiments: `data/bc_corpus_banded_v11_0701_0804`
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
@@ -2543,6 +2543,44 @@ Update at 2026-08-06 17:53:
     - N's Zoroark `115babb20c85`, `7413` decisions.
     - N's Zoroark `085ceaad1b1d`, `7257` decisions.
     - N's Zoroark `6b9dd8aa6a69`, `3894` decisions.
+
+Update at 2026-08-06 19:35:
+
+- Width 2 completed:
+  - Main checkpoints: `35/35` final checkpoints under `checkpoints/deck_sig_specialists_v11all35_20260806/w2`.
+  - Low-data checkpoints: `4/4` final checkpoints under `checkpoints/deck_sig_specialists_v11all35_20260806/w2_lowdata`.
+  - Old OOM errors remain in the first failed `train_w2.runner.log`/`w2/train_alakazam_*.log`; the `w2_resume_bs512_mem7` run completed.
+- Width 3 was started with the safer runner:
+  - Script: `/tmp/run_v11all35_sig_width_train_20260806.sh 3 384 8`
+  - Log dir: `logs/deck_sig_specialists_v11all35_20260806/w3_bs384_mem8/`
+  - Checkpoint dir: `checkpoints/deck_sig_specialists_v11all35_20260806/w3`
+  - Config: `batch-size=384`, `--cuda-memory-gb 8`, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, `--skip-existing`.
+- Width 4 was initially started concurrently with width 3 using:
+  - Script: `/tmp/run_v11all35_sig_width_train_20260806.sh 4 256 8`
+  - Log dir: `logs/deck_sig_specialists_v11all35_20260806/w4_bs256_mem8/`
+  - Checkpoint dir: `checkpoints/deck_sig_specialists_v11all35_20260806/w4`
+  - Config: `batch-size=256`, `--cuda-memory-gb 8`, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, `--skip-existing`.
+- Running width 3 and width 4 together created 8 concurrent large corpus loaders. GPU memory was fine, but one width-3 Alakazam sig3 job was system-`Killed`, likely CPU RAM/process memory pressure rather than CUDA OOM.
+- Width 4 main and width-4 lowdata were stopped. The width-4 main worker process group was `3605371`; it was killed with `kill -TERM -- -3605371` followed by `kill -KILL -- -3605371`.
+- Width-3 lowdata watcher was also stopped to avoid racing the width-3 repair.
+- Current staged controller:
+  - Script: `/tmp/watch_repair_w3_then_w4_20260806.sh`
+  - Controller log: `logs/deck_sig_specialists_v11all35_20260806/controller_w3_then_w4_20260806/controller.log`
+  - Sequence:
+    1. Wait until current width-3 main quiesces.
+    2. Rerun width-3 main via `/tmp/run_v11all35_sig_width_train_20260806.sh 3 384 8`; `--skip-existing` should repair only missing/failed jobs.
+    3. Run width-3 lowdata via `/tmp/run_v11all35_sig_lowdata_width_train_20260806.sh 3 384 8`.
+    4. Run width-4 main via `/tmp/run_v11all35_sig_width_train_20260806.sh 4 256 8`; existing partial final checkpoints will be skipped.
+    5. Run width-4 lowdata via `/tmp/run_v11all35_sig_lowdata_width_train_20260806.sh 4 256 8`.
+- Do not use the old generated `logs/deck_sig_specialists_v11all35_20260806/train_w3.sh` or `train_w4.sh` directly; those still contain the earlier `batch-size=1024`/`--cuda-memory-gb 18` style settings.
+
+Current deck-sig specialist monitor commands:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/deck_sig_specialists_v11all35_20260806/controller_w3_then_w4_20260806/controller.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && echo w3_final=$(find checkpoints/deck_sig_specialists_v11all35_20260806/w3 -maxdepth 1 -name "bc2_*_v11all35_sigpure_top3_w3.npz" 2>/dev/null | grep -v "_ep[0-9]" | wc -l) w4_final=$(find checkpoints/deck_sig_specialists_v11all35_20260806/w4 -maxdepth 1 -name "bc2_*_v11all35_sigpure_top3_w4.npz" 2>/dev/null | grep -v "_ep[0-9]" | wc -l) w3_low=$(find checkpoints/deck_sig_specialists_v11all35_20260806/w3_lowdata -maxdepth 1 -name "bc2_*.npz" 2>/dev/null | grep -v "_ep[0-9]" | wc -l) w4_low=$(find checkpoints/deck_sig_specialists_v11all35_20260806/w4_lowdata -maxdepth 1 -name "bc2_*.npz" 2>/dev/null | grep -v "_ep[0-9]" | wc -l)'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && find logs/deck_sig_specialists_v11all35_20260806/w3_bs384_mem8 logs/deck_sig_specialists_v11all35_20260806/w4_bs256_mem8 logs/deck_sig_specialists_v11all35_20260806/controller_w3_then_w4_20260806 -type f -name "*.log" -print0 | xargs -0 grep -Hn "FAILED\|OutOfMemory\|Traceback\|Killed" | sed -n "1,160p"'
+```
 
 Check progress:
 

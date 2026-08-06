@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 13:25 Asia/Shanghai.
+Last updated: 2026-08-06 16:24 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -2333,6 +2333,9 @@ New code added locally and synced to `ks`:
   - Adds `--aux-corpus`, `--aux-score-bands`, and `--aux-repeat` pass-through to `bc2_train.py`.
   - Adds `--init-manifest` to initialize each archetype from the first matching manifest checkpoint.
   - `--min-decisions 0` now skips slow `.npz` decision counting and is suitable for large-corpus dry-runs.
+- `tools/filter_rollout_corpus.py`
+  - Filters generated rollout `.npz` corpora by `actor_mode`, `opponent_name`, `final_status`, and `won`.
+  - Use this before aux-distill so random/fallback-generated wins do not pollute BC.
 
 Local smoke command used:
 
@@ -2404,6 +2407,38 @@ python3 tools/train_bc_population.py \
   --init-manifest logs/eval_v11_0724_0804/candidate_manifest_pop_top3_shadow_ge097.csv \
   --init-partial \
   --dry-run
+```
+
+Update at 2026-08-06 16:24:
+
+- The earlier topk waiter did not launch the teacher batch. It had no active process and produced `0` `.npz` under `data/generated_rollout_bc_rollout_teacher_v11all_rr_topk_20260806`.
+- A new immediate aggressive rollout batch was started:
+  - Script: `/tmp/run_rollout_teacher_v11all_rr_aggressive_20260806.sh`
+  - Runner log: `logs/rollout_teacher_v11all_rr_aggressive_20260806/runner.log`
+  - Plan: `logs/rollout_teacher_v11all_rr_aggressive_20260806/plan.csv`
+  - Output corpus: `data/generated_rollout_bc_rollout_teacher_v11all_rr_aggressive_20260806`
+  - Config: 48 weak matchups, 720 games each, 12 workers per job, 4 parallel jobs, `max-turns=420`.
+  - Actor portfolio: `greedy/topk@2/topk@3/topk@5/topk@8/sample/random` with `targeted` and `stage2_setup` rules.
+  - At first check: about 52 `generate_rollout_bc` processes, first four jobs launched, `npz=0` because flush had not happened yet.
+- Quick rollout-distill result was mixed/mostly negative:
+  - Marnie quick distill worsened vs Ogerpon 5899/697 and only improved vs Ogerpon 2a.
+  - Ogerpon2a quick distill had random WR only `83.4%`; do not submit or scale.
+  - Cynthia quick distill improved vs Crustle in focused delta and kept random `97.6%`, but needs broad RR before any submission.
+
+When aggressive rollout finishes, first run:
+
+```bash
+python3 tools/summarize_rollout_bc.py \
+  --summary-glob 'logs/rollout_teacher_v11all_rr_aggressive_20260806/*.csv' \
+  --corpus data/generated_rollout_bc_rollout_teacher_v11all_rr_aggressive_20260806 \
+  --out-csv logs/rollout_teacher_v11all_rr_aggressive_20260806/rollout_teacher_summary.csv
+
+python3 tools/filter_rollout_corpus.py \
+  --in-root data/generated_rollout_bc_rollout_teacher_v11all_rr_aggressive_20260806 \
+  --out-root data/generated_rollout_bc_rollout_teacher_v11all_rr_aggressive_20260806_filtered \
+  --score-bands weak_win_search \
+  --actor-exclude-regex 'fallback_random|epsilon_random|^random' \
+  --min-rows 20
 ```
 
 ## Next Work

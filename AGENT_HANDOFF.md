@@ -2534,6 +2534,7 @@ Update at 2026-08-06 17:53:
   - Checkpoint dir remains: `checkpoints/deck_sig_specialists_v11all35_20260806/w2`
   - Config: `batch-size=512`, `--cuda-memory-gb 7`, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, `--skip-existing`.
   - At first check it skipped existing Archaludon and Crustle final checkpoints and was running Alakazam sig1/sig2/sig3 plus Cynthia sig1.
+  - Stability check after about 7 minutes: no actual OOM/Traceback/FAILED in log files, checkpoint count `10`, and GPU memory stayed around `21-27GB` used per card.
 - Low-data follow-up for missing archetypes was restarted:
   - Script: `/tmp/run_v11all35_lowdata_sig_w2_after_main_20260806.sh`
   - Log dir: `logs/deck_sig_specialists_v11all35_20260806/lowdata_w2/`

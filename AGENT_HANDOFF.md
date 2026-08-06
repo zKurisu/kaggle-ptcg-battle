@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 16:24 Asia/Shanghai.
+Last updated: 2026-08-06 16:58 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -2440,6 +2440,100 @@ python3 tools/filter_rollout_corpus.py \
   --actor-exclude-regex 'fallback_random|epsilon_random|^random' \
   --min-rows 20
 ```
+
+Update at 2026-08-06 16:47:
+
+- User asked to pause aggressive rollout and keep enough notes to restart later.
+- Aggressive rollout is stopped:
+  - Parent process count: `0`
+  - `generate_rollout_bc.py` child process count for this run: `0`
+  - Output corpus `.npz` count: `0`
+- It was paused because the first wave of very hard matchups had produced no wins and was slow enough to imply an 18-24 hour run for the full batch.
+- Restart point if needed:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && setsid -f /tmp/run_rollout_teacher_v11all_rr_aggressive_20260806.sh >/tmp/run_rollout_teacher_v11all_rr_aggressive_20260806.nohup.log 2>&1 < /dev/null'
+```
+
+- Existing remote paths remain useful for later restart/analysis:
+  - Script: `/tmp/run_rollout_teacher_v11all_rr_aggressive_20260806.sh`
+  - Plan: `logs/rollout_teacher_v11all_rr_aggressive_20260806/plan.csv`
+  - Generated job script: `logs/rollout_teacher_v11all_rr_aggressive_20260806/run_jobs.sh`
+  - Runner log: `logs/rollout_teacher_v11all_rr_aggressive_20260806/runner.log`
+  - Output corpus: `data/generated_rollout_bc_rollout_teacher_v11all_rr_aggressive_20260806`
+
+## 2026-08-06 Deck-Sig Pure Specialists
+
+Current pivot:
+
+- Stop filtered BC / winner-only BC as the main line for now. Recent experiments showed these are too conservative and can overfit narrow slices without improving broad play.
+- Next main line is pure deck-signature specialist BC:
+  - For each archetype, rank deck signatures by available high-score decisions.
+  - Train separate `sig1`, `sig2`, `sig3` specialists instead of mixing topK signatures into one policy.
+  - Run model-size comparison with width `2`, `3`, and `4`.
+  - Keep labels as clean as possible: filter by `--deck-sig`; do not add `--team-name` unless deliberately testing trajectory specialists.
+
+Code update:
+
+- `tools/plan_deck_specific_bc.py` now supports:
+  - `--top-n-per-archetype N`: emit separate pure deck-signature jobs for top N signatures.
+  - `--cuda-memory-gb`, `--cuda-memory-fraction`, `--init`, `--init-partial`, `--include-empty`, `--load-progress-every`.
+  - `--set-loss-weight`, `--set-loss-min-count`, `--set-loss-negative-weight`.
+  - `--card-weight`, `--opponent-deck-sig-weight`, and `--opponent-archetype-weight`.
+  - Extra archetype slug mappings for `Archaludon`, `Iono Bellibolt`, and `N's Zoroark`.
+
+Full 35-day v11 extraction:
+
+- Remote raw episodes now contain `2026-07-01` through `2026-08-04`, 35 zip files total.
+- New full corpus target: `data/bc_corpus_banded_v11_0701_0804`.
+- Old comparison corpora must be kept:
+  - `data/bc_corpus_banded_v11_0804_only`
+  - `data/bc_corpus_banded_v11_0803_0804`
+  - `data/bc_corpus_banded_v11_0724_0804`
+- Remote extraction/planning job started at 2026-08-06 16:55:
+  - Script: `/tmp/run_v11all35_extract_and_sig_specialist_plan_20260806.sh`
+  - Runner log: `logs/deck_sig_specialists_v11all35_20260806/runner.log`
+  - Extract log: `logs/deck_sig_specialists_v11all35_20260806/extract_v11_0701_0804.log`
+  - Stats dir: `logs/deck_sig_specialists_v11all35_20260806/stats/`
+  - Plans: `logs/deck_sig_specialists_v11all35_20260806/plan_w2.csv`, `plan_w3.csv`, `plan_w4.csv`
+  - Train scripts: `logs/deck_sig_specialists_v11all35_20260806/train_w2.sh`, `train_w3.sh`, `train_w4.sh`
+  - Checkpoints: `checkpoints/deck_sig_specialists_v11all35_20260806/w2`, `/w3`, `/w4`
+  - Started with `TRAIN=0 WORKERS=12`, so extraction/stats/plans run first and training is not launched automatically.
+- Leaderboard download in the script failed once and fell back to `logs/lb_snapshots/leaderboard_20260803_1530.csv` with `6174` teams. This is acceptable for score bands, but note that it is an older snapshot.
+- At 16:56, extraction had started 12 workers and no `.npz` had been written yet.
+
+Check progress:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/deck_sig_specialists_v11all35_20260806/extract_v11_0701_0804.log && tail -n 40 logs/deck_sig_specialists_v11all35_20260806/runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && echo done=$(test -f data/bc_corpus_banded_v11_0701_0804/.extract_done && echo yes || echo no) npz=$(find data/bc_corpus_banded_v11_0701_0804 -name "*.npz" 2>/dev/null | wc -l)'
+```
+
+After the plans are generated, reduce training memory from the current generated default of 18GB to 8GB while LLaMA Factory is active:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && python3 - <<'"'"'PY'"'"'
+from pathlib import Path
+root = Path("logs/deck_sig_specialists_v11all35_20260806")
+for path in [root / "train_w2.sh", root / "train_w3.sh", root / "train_w4.sh"]:
+    if not path.exists():
+        print("missing", path)
+        continue
+    text = path.read_text()
+    text = text.replace("--cuda-memory-gb 18.0", "--cuda-memory-gb 8")
+    text = text.replace("--cuda-memory-gb 18", "--cuda-memory-gb 8")
+    path.write_text(text)
+    print("patched", path)
+PY'
+```
+
+Then start width 2 first:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && setsid -f bash logs/deck_sig_specialists_v11all35_20260806/train_w2.sh > logs/deck_sig_specialists_v11all35_20260806/train_w2.runner.log 2>&1 < /dev/null'
+```
+
+Only start width 3/4 after width 2 has no failed jobs and GPU memory remains stable.
 
 ## Next Work
 

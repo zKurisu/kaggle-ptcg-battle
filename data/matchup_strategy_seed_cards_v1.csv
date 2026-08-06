@@ -9,7 +9,7 @@ marnie_core_engine,Marnie's Grimmsnarl ex,648,primary_attacker,own_deck,Primary 
 marnie_core_engine,Secret Box,1092,search_engine,own_deck,Deck-guide source card; validate exact deck inclusion before using.
 marnie_core_engine,Spikemuth Gym,1259,engine_search,own_deck,Deck-guide source card.
 marnie_froslass_caution,Froslass,104,risk_card,own_deck,Use conditional trace validation rather than global ban.
-marnie_froslass_caution,Munkidori,112,opponent_counter_engine,opponent_deck,Opponent can exploit damage counters.
+marnie_froslass_caution,Munkidori,112,opponent_counter_engine,opponent_deck_optional,Opponent can exploit damage counters; only hard-trigger if present in the exact opponent deck.
 crustle_wall_plan,Dwebble,344,setup_basic,own_deck,DRI Dwebble can Ascension into Crustle.
 crustle_wall_plan,Crustle,345,wall_attacker,own_deck,Mysterious Rock Inn anti-ex wall.
 crustle_resource_pressure,Crustle,345,wall_attacker,own_deck,Keep wall active and attack opportunistically.
@@ -24,5 +24,5 @@ cynthia_vs_crustle_spiritomb,Crustle,345,opponent_wall,opponent_deck,Focused val
 dragapult_setup_vs_marnie_crustle,Dreepy,119,setup_basic,own_deck,Early setup card.
 dragapult_setup_vs_marnie_crustle,Drakloak,120,setup_engine,own_deck,Recon Directive setup/draw engine.
 dragapult_setup_vs_marnie_crustle,Dragapult ex,121,primary_attacker,own_deck,Phantom Dive spread payoff.
-dragapult_setup_vs_marnie_crustle,Marnie's Grimmsnarl ex,648,opponent_primary,opponent_deck,One weakness target.
-dragapult_setup_vs_marnie_crustle,Crustle,345,opponent_wall,opponent_deck,One weakness target.
+dragapult_setup_vs_marnie_crustle,Marnie's Grimmsnarl ex,648,opponent_primary,opponent_deck_optional,One weakness target; only required for Marnie-branch opponents.
+dragapult_setup_vs_marnie_crustle,Crustle,345,opponent_wall,opponent_deck_optional,One weakness target; only required for Crustle-branch opponents.

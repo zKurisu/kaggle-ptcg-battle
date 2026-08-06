@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 01:20 Asia/Shanghai.
+Last updated: 2026-08-06 02:10 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -177,6 +177,7 @@ New files:
 - `docs/11_human_matchup_strategy.md`
 - `data/matchup_strategy_seeds_v1.csv`
 - `data/matchup_strategy_seed_cards_v1.csv`
+- `tools/plan_strategy_seed_jobs.py`
 
 Current seed table has 9 strategy hypotheses:
 
@@ -206,6 +207,64 @@ Kaggle deck before turning the idea into a hard rule or generated-data teacher.
 Basic Energy names may come from the simulator runtime rather than
 `data/EN_Card_Data.csv`, so validate those from traces/deck IDs instead of using
 card DB presence alone.
+
+Seed-driven planner:
+
+```bash
+python3 tools/plan_strategy_seed_jobs.py \
+  --candidate-manifest logs/eval_v11_0724_0804/candidate_manifest_pop_top3_shadow_ge097.csv \
+  --opponent-manifest logs/eval_v11_0724_0804/shadow_pools_20260805/mixed_shadow_popfallback_environment_balanced.csv \
+  --out-dir logs/strategy_seed_jobs_20260806 \
+  --limit-candidates 1 \
+  --limit-opponents 1 \
+  --games 120 \
+  --rule-games 80 \
+  --workers 16 \
+  --progress-every 20
+```
+
+It writes `strategy_seed_tasks.csv`, `strategy_seed_skipped.csv`,
+`teacher_specs.jsonl`, and `run_strategy_seed_traces.sh`. The generated shell
+script runs trace jobs, per-task gap reports, aggregate gap report, and available
+rule probes. It does not implement new teacher policies; `teacher_specs.jsonl`
+is the handoff contract for that next layer.
+
+Local smoke at 2026-08-06:
+
+- `python3 -m py_compile tools/plan_strategy_seed_jobs.py`: passed.
+- Single Marnie-vs-Ogerpon seed dry-run wrote 1 task with
+  `teacher_status=rule_probe_available`.
+- Full seed dry-run against local v11 candidate/environment manifests wrote 24
+  tasks and 1 skipped seed (`marnie_core_engine`, because `ALL` is not expanded
+  unless `--expand-all` is supplied): `rule_probe_available=1`,
+  `needs_teacher_policy=9`, `needs_rule_implementation=12`,
+  `trace_then_matchup_bc=2`.
+- `data/matchup_strategy_seeds_v1.csv` had one malformed Dragapult row because
+  a natural-language field contained commas without CSV quoting. This was fixed,
+  and the planner now hard-fails malformed CSV rows.
+
+Remote job started on `ks` at 2026-08-06 02:10 Asia/Shanghai:
+
+```text
+PID parent: 2795955
+PID runner: 2795956
+repo: /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+out_dir: logs/strategy_seed_jobs_20260806
+log: logs/strategy_seed_jobs_20260806/run_strategy_seed_traces.log
+script: logs/strategy_seed_jobs_20260806/run_strategy_seed_traces.sh
+```
+
+Remote plan generation wrote 24 tasks and 1 skipped seed; all 24 tasks had
+`card_check=ok` against remote deck CSVs. The skipped seed is
+`marnie_core_engine` because `opponent_archetype=ALL` is not expanded unless
+`--expand-all` is supplied.
+
+Initial live result from the first generated task:
+
+- Marnie vs Ogerpon 5899 trace completed.
+- `marnie_setup` rule probe over 80 games: plain Marnie vs Ogerpon `6/80 =
+  0.075`; rule Marnie vs Ogerpon `8/80 = 0.100`. This is only a tiny focused
+  improvement and still indicates a structural weakness.
 
 ## Top-K Deck-Signature Training Axis
 

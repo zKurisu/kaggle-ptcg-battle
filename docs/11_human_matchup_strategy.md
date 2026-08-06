@@ -122,3 +122,47 @@ For each seed, run this sequence:
 Do not submit a rule or specialist solely because focused delta improves. The
 previous complex/card-weight/success-FT experiments often improved supervised
 or narrow metrics while failing broad RR.
+
+## Seed-Driven Job Planner
+
+Use `tools/plan_strategy_seed_jobs.py` to turn the seed tables into concrete
+trace, rule-probe, and teacher-spec tasks:
+
+```bash
+python3 tools/plan_strategy_seed_jobs.py \
+  --candidate-manifest logs/eval_v11_0724_0804/candidate_manifest_pop_top3_shadow_ge097.csv \
+  --opponent-manifest logs/eval_v11_0724_0804/shadow_pools_20260805/mixed_shadow_popfallback_environment_balanced.csv \
+  --out-dir logs/strategy_seed_jobs_20260806 \
+  --limit-candidates 1 \
+  --limit-opponents 1 \
+  --games 120 \
+  --rule-games 80 \
+  --workers 16 \
+  --progress-every 20
+```
+
+The planner writes:
+
+- `strategy_seed_tasks.csv`: one row per concrete candidate-vs-opponent seed
+  task, including exact commands.
+- `strategy_seed_skipped.csv`: seeds or pairs skipped because they cannot be
+  expanded or fail hard card validation.
+- `teacher_specs.jsonl`: structured future teacher-rollout specs.
+- `run_strategy_seed_traces.sh`: runnable trace and available rule-probe shell
+  script.
+
+Run the generated shell script from the repo root on `ks`:
+
+```bash
+bash logs/strategy_seed_jobs_20260806/run_strategy_seed_traces.sh
+```
+
+Planner statuses:
+
+- `rule_probe_available`: an existing `rule_overlay` mode can be tested now.
+- `needs_rule_implementation`: human strategy is a rerank/veto idea, but the
+  narrow rule mode does not exist yet.
+- `needs_teacher_policy`: strategy likely needs successful generated rollouts.
+- `trace_then_matchup_bc`: first verify the trace gap, then build a filtered or
+  weighted matchup BC corpus.
+- `trace_first`: gather evidence before choosing an intervention.

@@ -2477,6 +2477,7 @@ Code update:
 
 - `tools/plan_deck_specific_bc.py` now supports:
   - `--top-n-per-archetype N`: emit separate pure deck-signature jobs for top N signatures.
+  - `--interleave-archetypes`: reorder the generated plan one signature per archetype per pass, avoiding several large signatures from the same archetype loading at once.
   - `--cuda-memory-gb`, `--cuda-memory-fraction`, `--init`, `--init-partial`, `--include-empty`, `--load-progress-every`.
   - `--set-loss-weight`, `--set-loss-min-count`, `--set-loss-negative-weight`.
   - `--card-weight`, `--opponent-deck-sig-weight`, and `--opponent-archetype-weight`.
@@ -2561,16 +2562,22 @@ Update at 2026-08-06 19:35:
   - Checkpoint dir: `checkpoints/deck_sig_specialists_v11all35_20260806/w4`
   - Config: `batch-size=256`, `--cuda-memory-gb 8`, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, `--skip-existing`.
 - Running width 3 and width 4 together created 8 concurrent large corpus loaders. GPU memory was fine, but one width-3 Alakazam sig3 job was system-`Killed`, likely CPU RAM/process memory pressure rather than CUDA OOM.
+- A later check showed width-3 Alakazam sig2 was also killed during the same initial burst. Treat these as initial concurrency failures, not as proof that width 3 cannot train.
 - Width 4 main and width-4 lowdata were stopped. The width-4 main worker process group was `3605371`; it was killed with `kill -TERM -- -3605371` followed by `kill -KILL -- -3605371`.
 - Width-3 lowdata watcher was also stopped to avoid racing the width-3 repair.
+- The normal width runner was updated to pass `--interleave-archetypes`; future width-4 main training should not schedule Alakazam/Marnie signatures in a burst.
+- New serial repair runner:
+  - Script: `/tmp/run_v11all35_sig_width_repair_serial_20260806.sh`
+  - Current repair command inside the controller: `/tmp/run_v11all35_sig_width_repair_serial_20260806.sh 3 256 8 0`
+  - It uses one GPU worker, same checkpoint names, and `--skip-existing`, so it should only fill missing final checkpoints.
 - Current staged controller:
   - Script: `/tmp/watch_repair_w3_then_w4_20260806.sh`
   - Controller log: `logs/deck_sig_specialists_v11all35_20260806/controller_w3_then_w4_20260806/controller.log`
   - Sequence:
     1. Wait until current width-3 main quiesces.
-    2. Rerun width-3 main via `/tmp/run_v11all35_sig_width_train_20260806.sh 3 384 8`; `--skip-existing` should repair only missing/failed jobs.
+    2. Rerun width-3 main serial repair via `/tmp/run_v11all35_sig_width_repair_serial_20260806.sh 3 256 8 0`; `--skip-existing` should repair only missing/failed jobs.
     3. Run width-3 lowdata via `/tmp/run_v11all35_sig_lowdata_width_train_20260806.sh 3 384 8`.
-    4. Run width-4 main via `/tmp/run_v11all35_sig_width_train_20260806.sh 4 256 8`; existing partial final checkpoints will be skipped.
+    4. Run width-4 main via `/tmp/run_v11all35_sig_width_train_20260806.sh 4 256 8`; this now uses interleaved archetype scheduling and existing partial final checkpoints will be skipped.
     5. Run width-4 lowdata via `/tmp/run_v11all35_sig_lowdata_width_train_20260806.sh 4 256 8`.
 - Do not use the old generated `logs/deck_sig_specialists_v11all35_20260806/train_w3.sh` or `train_w4.sh` directly; those still contain the earlier `batch-size=1024`/`--cuda-memory-gb 18` style settings.
 

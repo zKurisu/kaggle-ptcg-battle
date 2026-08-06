@@ -209,6 +209,24 @@ def write_plan(path: str, plan: list[dict]) -> None:
             w.writerow(row)
 
 
+def interleave_archetypes(plan: list[dict]) -> list[dict]:
+    """Keep per-archetype rank order, but avoid scheduling one archetype in a burst."""
+    groups: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for row in plan:
+        arch = row["archetype"]
+        if arch not in groups:
+            groups[arch] = []
+            order.append(arch)
+        groups[arch].append(row)
+    out: list[dict] = []
+    while any(groups.values()):
+        for arch in order:
+            if groups[arch]:
+                out.append(groups[arch].pop(0))
+    return out
+
+
 def train_cmd(args: argparse.Namespace, row: dict) -> str:
     cmd = [
         "python3",
@@ -544,6 +562,8 @@ def main() -> None:
     p.add_argument("--checkpoint-every", type=int, default=1)
     p.add_argument("--skip-existing", action="store_true",
                    help="emitted training script skips jobs whose final checkpoint already exists")
+    p.add_argument("--interleave-archetypes", action="store_true",
+                   help="schedule one row per archetype per pass to avoid loading several large same-archetype specialists at once")
     p.add_argument("--random-games", type=int, default=500)
     p.add_argument("--ladder-games", type=int, default=100)
     p.add_argument("--ladder-top", type=int, default=40)
@@ -553,6 +573,8 @@ def main() -> None:
     args = p.parse_args()
 
     plan = make_plan(args)
+    if args.interleave_archetypes:
+        plan = interleave_archetypes(plan)
     write_plan(args.out, plan)
     write_script(args.script, plan, args)
     if args.eval_script:

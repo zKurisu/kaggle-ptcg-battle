@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 10:07 Asia/Shanghai.
+Last updated: 2026-08-06 12:01 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -539,6 +539,10 @@ New tooling:
 - `tools/summarize_rollout_bc.py`: summarizes rollout worker CSVs and generated
   corpus `.npz` files, including rows, win rate, actor mode distribution,
   opponent distribution, and first action type distribution.
+- `tools/generate_rollout_bc.py` now also supports
+  `--worker-progress-every` and `--flush-every-games`. Use these for large
+  rollout jobs so progress appears before a worker finishes and partial `.npz`
+  chunks survive interruptions.
 
 Remote smoke tests passed:
 
@@ -551,7 +555,7 @@ Remote smoke tests passed:
 - `bc2_train.py --aux-corpus` smoke trained 1 CPU epoch from the generated
   smoke corpus and wrote `/tmp/bc2_smoke_aux_marnie.npz`.
 
-Active remote rollout-search batch started at 2026-08-06 10:00 Asia/Shanghai:
+First remote rollout-search batch started at 2026-08-06 10:00 Asia/Shanghai:
 
 ```text
 runner pid reported: 2915802
@@ -562,6 +566,29 @@ output corpus: data/generated_rollout_bc_rollout_search_20260806/
 games/job: 1600
 workers/job: 8
 jobs: 6, total rollout workers about 48
+```
+
+This first batch used an `mcts` actor. It was stopped at about 11:55 because
+after nearly two hours it had produced zero `.npz` files and no worker
+completion. Treat this as a negative infrastructure result: current
+`NumpyPolicy.select_mcts()` is too slow/sticky for large rollout-data
+generation. Do not include `mcts` in rollout generation batches unless a small
+isolated MCTS smoke test proves completion speed first.
+
+Active replacement rollout batch started at 2026-08-06 12:00 Asia/Shanghai:
+
+```text
+runner pid reported: 3051748
+script: /tmp/run_rollout_search_nomcts_20260806.sh
+repo: /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+logs: logs/rollout_search_nomcts_20260806/
+output corpus: data/generated_rollout_bc_rollout_search_nomcts_20260806/
+games/job: 1200
+workers/job: 8
+max_turns: 500
+progress: --worker-progress-every 25
+flush: --flush-every-games 50
+jobs: same six matchup pools, with high-temperature/sample/random/rule actors and no MCTS
 ```
 
 Jobs:
@@ -579,9 +606,11 @@ Monitor with:
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/rollout_search_20260806/runner.log'
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "generate_rollout_bc.py"'
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && python3 tools/summarize_rollout_bc.py --summary-glob "logs/rollout_search_20260806/*_pool.csv" --corpus data/generated_rollout_bc_rollout_search_20260806 --out-csv logs/rollout_search_20260806/rollout_summary.csv'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/rollout_search_nomcts_20260806/runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && python3 tools/summarize_rollout_bc.py --summary-glob "logs/rollout_search_nomcts_20260806/*_pool.csv" --corpus data/generated_rollout_bc_rollout_search_nomcts_20260806 --out-csv logs/rollout_search_nomcts_20260806/rollout_summary.csv'
 ```
 
-Active PPO pilot batch started at 2026-08-06 10:05 Asia/Shanghai:
+First PPO pilot batch started at 2026-08-06 10:05 Asia/Shanghai:
 
 ```text
 runner pid reported: 2924167
@@ -600,12 +629,15 @@ PPO jobs:
 - `dragapult_cc2_vs_crustle_marnie_ppo`
 - `alakazam7f_vs_marnie_trm_ppo`
 
-At launch, all four PPO processes were alive but logs had not yet printed the
-training header, likely because they were loading/indexing the anchor corpus.
-If they remain silent for several minutes, check memory/IO and consider
-stopping only these PPO PIDs, then rerun with a lighter anchor
-(`1000-1099 900-999` only, smaller `--bc-anchor-batch-size`, or no anchor for
-a very short diagnostic).
+This full-anchor PPO batch was stopped at about 11:55. All four processes had
+run for nearly two hours with zero-byte logs, likely while indexing the full
+`data/bc_corpus_banded_v11_0724_0804` anchor in four concurrent processes.
+Do not rerun this exact configuration. For future PPO pilots, either:
+
+- run without anchor for a very short reward-signal smoke test;
+- use a much lighter anchor band subset and set progress logging; or
+- wait for generated rollout success data and use that as a compact anchor /
+  distillation source.
 
 Important interpretation:
 

@@ -418,13 +418,32 @@ def _worker_run(payload: dict[str, Any]) -> dict[str, Any]:
     out_band = payload["out_band"]
     arch = classify(candidate.deck).replace(" ", "_")
     rows: list[dict[str, Any]] = []
+    written_paths: list[str] = []
+    rows_total = 0
     totals = Counter()
     opponent_counts = Counter()
     actor_counts = Counter()
     actor_wins = Counter()
     t0 = time.time()
+    arch_dir = os.path.join(out_root, arch, out_band.replace(" ", "_"))
+    safe_tag = re.sub(r"[^a-zA-Z0-9_.-]+", "_", payload["tag"]).strip("_") or "rollout"
+    part_i = 0
 
-    for game_i in payload["game_indices"]:
+    def flush_rows(*, final: bool = False) -> None:
+        nonlocal rows, part_i
+        if not rows:
+            return
+        if payload["flush_every_games"] > 0:
+            filename = f"{safe_tag}_w{payload['worker_id']:03d}_p{part_i:03d}.npz"
+        else:
+            filename = f"{safe_tag}_w{payload['worker_id']:03d}.npz"
+        path = os.path.join(arch_dir, filename)
+        _write_npz(path, rows, f"{FEATURE_VERSION}_rollout_search")
+        written_paths.append(path)
+        rows = []
+        part_i += 1
+
+    for local_i, game_i in enumerate(payload["game_indices"], 1):
         game_rows, stats = _play_rollout_game(
             candidate,
             opponents,
@@ -443,6 +462,7 @@ def _worker_run(payload: dict[str, Any]) -> dict[str, Any]:
             opponent_time_budget=payload["opponent_time_budget"],
         )
         rows.extend(game_rows)
+        rows_total += len(game_rows)
         for key in ("games", "wins", "losses", "draws", "errors", "timeouts", "decisions_seen", "decisions_written", "steps"):
             totals[key] += int(stats.get(key, 0))
         opponent_counts[str(stats.get("opponent", ""))] += 1
@@ -450,20 +470,31 @@ def _worker_run(payload: dict[str, Any]) -> dict[str, Any]:
         actor_counts[actor] += 1
         if int(stats.get("wins", 0)):
             actor_wins[actor] += 1
+        if payload["flush_every_games"] > 0 and local_i % int(payload["flush_every_games"]) == 0:
+            flush_rows()
+        if payload["worker_progress_every"] and (
+            local_i == 1
+            or local_i % int(payload["worker_progress_every"]) == 0
+            or local_i == len(payload["game_indices"])
+        ):
+            elapsed = time.time() - t0
+            rate = int(totals["games"]) / max(elapsed, 1e-9)
+            print(
+                f"  {payload['tag']} w{payload['worker_id']:03d}: "
+                f"{local_i}/{len(payload['game_indices'])} games "
+                f"wins={totals['wins']} wr={totals['wins']/max(totals['games'],1):.3f} "
+                f"rows={rows_total} {rate:.2f} games/s",
+                flush=True,
+            )
 
-    chunk_path = ""
-    if rows:
-        out_dir = os.path.join(out_root, arch, out_band.replace(" ", "_"))
-        name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", payload["tag"]).strip("_") or "rollout"
-        chunk_path = os.path.join(out_dir, f"{name}_w{payload['worker_id']:03d}.npz")
-        _write_npz(chunk_path, rows, f"{FEATURE_VERSION}_rollout_search")
+    flush_rows(final=True)
 
-    totals["rows"] = len(rows)
+    totals["rows"] = rows_total
     result = dict(totals)
     result.update(
         {
             "worker_id": payload["worker_id"],
-            "path": chunk_path,
+            "path": ";".join(written_paths),
             "elapsed": time.time() - t0,
             "opponent_counts": dict(opponent_counts),
             "actor_counts": dict(actor_counts),
@@ -531,6 +562,10 @@ def main() -> None:
     parser.add_argument("--summary-csv", default="")
     parser.add_argument("--progress-every", type=int, default=1,
                         help="print worker completions every N finished workers; 0 disables")
+    parser.add_argument("--worker-progress-every", type=int, default=0,
+                        help="print progress inside each worker every N games; 0 disables")
+    parser.add_argument("--flush-every-games", type=int, default=0,
+                        help="write partial NPZ chunks every N games per worker; 0 writes once at worker end")
     args = parser.parse_args()
 
     if not _has_cg_engine():
@@ -583,6 +618,8 @@ def main() -> None:
             "out_root": args.out_root,
             "out_band": args.out_band,
             "tag": tag,
+            "worker_progress_every": args.worker_progress_every,
+            "flush_every_games": args.flush_every_games,
         }
         for wi, chunk in enumerate(chunks)
         if chunk

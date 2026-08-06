@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 09:45 Asia/Shanghai.
+Last updated: 2026-08-06 10:07 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -516,6 +516,109 @@ Required future comparison per archetype:
    ranking entropy/top1-vs-top3 gaps.
 4. Use Kaggle live probes sparingly to calibrate which local metric predicts
    top-k sharpness for that archetype.
+
+## 2026-08-06 Aggressive Search / Teacher Pivot
+
+User explicitly requested stopping filtered BC / winner-only BC as the main
+optimization path. Treat the 2026-08-06 strategy-opt runs as negative evidence:
+small replay filtering, card weights, and broad rule nudges are not enough for
+the structural weak matchups. The new direction is to use compute to generate
+or discover successful behavior, then distill or fine-tune from it.
+
+New tooling:
+
+- `tools/generate_rollout_bc.py`: plays local candidate-vs-opponent games with
+  mixed actor modes and writes candidate-side decisions from selected outcomes
+  as normal BC corpus `.npz` files. Output layout is
+  `<out_root>/<Archetype>/<band>/*.npz`, so `tools/bc2_train.py` can read it.
+  Actor modes include `greedy`, `sample@T`, `random`, `mcts`, and
+  `+rules:<RULE_MODE>`.
+- `tools/bc2_train.py`: added `--aux-corpus`, `--aux-score-bands`,
+  `--aux-archetype`, and `--aux-repeat`. This mixes generated rollout corpus
+  into normal BC training without using `--winner-only`.
+- `tools/summarize_rollout_bc.py`: summarizes rollout worker CSVs and generated
+  corpus `.npz` files, including rows, win rate, actor mode distribution,
+  opponent distribution, and first action type distribution.
+
+Remote smoke tests passed:
+
+- `generate_rollout_bc.py` Marnie vs Ogerpon, `--keep-outcomes win`, 8 games:
+  no wins, no rows, no engine errors. This confirms the known weakness is hard.
+- `generate_rollout_bc.py` Marnie vs Ogerpon, `--keep-outcomes all`, 4 games:
+  wrote 289 decisions under `data/generated_rollout_bc_smoke/...`.
+- Existing `BCCorpus` loaded the smoke corpus successfully:
+  `raw=289 kept=289`, state feature `(80,)`, option feature `(N,64)`.
+- `bc2_train.py --aux-corpus` smoke trained 1 CPU epoch from the generated
+  smoke corpus and wrote `/tmp/bc2_smoke_aux_marnie.npz`.
+
+Active remote rollout-search batch started at 2026-08-06 10:00 Asia/Shanghai:
+
+```text
+runner pid reported: 2915802
+script: /tmp/run_rollout_search_20260806.sh
+repo: /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+logs: logs/rollout_search_20260806/
+output corpus: data/generated_rollout_bc_rollout_search_20260806/
+games/job: 1600
+workers/job: 8
+jobs: 6, total rollout workers about 48
+```
+
+Jobs:
+
+- `marnie_b8f_vs_ogerpon_pool`
+- `ogerpon2a_vs_crustle_pool`
+- `dragapult_cc2_vs_crustle_pool`
+- `dragapult_cc2_vs_marnie_pool`
+- `alakazam7f_vs_marnie_trm_pool`
+- `cynthia52_vs_crustle_pool`
+
+Monitor with:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/rollout_search_20260806/runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "generate_rollout_bc.py"'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && python3 tools/summarize_rollout_bc.py --summary-glob "logs/rollout_search_20260806/*_pool.csv" --corpus data/generated_rollout_bc_rollout_search_20260806 --out-csv logs/rollout_search_20260806/rollout_summary.csv'
+```
+
+Active PPO pilot batch started at 2026-08-06 10:05 Asia/Shanghai:
+
+```text
+runner pid reported: 2924167
+script: /tmp/run_ppo_pilots_20260806.sh
+logs: logs/rl_pilot_20260806/
+checkpoints: checkpoints/rl_pilot_20260806/
+jobs: 4, one per GPU, CUDA memory cap 8GB
+anchor corpus: data/bc_corpus_banded_v11_0724_0804
+anchor bands: 1200+ 1100-1199 1000-1099 900-999
+```
+
+PPO jobs:
+
+- `marnie_b8f_vs_ogerpon_ppo`
+- `ogerpon2a_vs_crustle_ppo`
+- `dragapult_cc2_vs_crustle_marnie_ppo`
+- `alakazam7f_vs_marnie_trm_ppo`
+
+At launch, all four PPO processes were alive but logs had not yet printed the
+training header, likely because they were loading/indexing the anchor corpus.
+If they remain silent for several minutes, check memory/IO and consider
+stopping only these PPO PIDs, then rerun with a lighter anchor
+(`1000-1099 900-999` only, smaller `--bc-anchor-batch-size`, or no anchor for
+a very short diagnostic).
+
+Important interpretation:
+
+- Generated rollout success data is the first-class path now. If a weak matchup
+  produces wins, train with `--aux-corpus data/generated_rollout_bc_rollout_search_20260806 --aux-score-bands win_search --aux-repeat N` from the strong v11
+  init, then validate random, focused delta, and balanced RR.
+- If a weak matchup still produces zero wins after high-temperature/rule/MCTS
+  rollout, the existing BC policy manifold probably lacks the counterplay. Move
+  to a more explicit teacher/search policy or simulator-specific strategic rule
+  construction rather than more replay filtering.
+- Do not submit generated-data or PPO checkpoints without the usual random and
+  RR gates. The purpose of these jobs is to build a better local improvement
+  loop, not immediate leaderboard probing.
 
 ## 2026-08-05 Specialist BC Wave 1
 

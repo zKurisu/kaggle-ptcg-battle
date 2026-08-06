@@ -230,6 +230,14 @@ def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", default="data/bc_corpus_banded_v4")
+    parser.add_argument("--aux-corpus", action="append", default=[],
+                        help="extra corpus root mixed into training, e.g. generated rollout BC; repeatable")
+    parser.add_argument("--aux-score-bands", nargs="+", default=["generated"],
+                        help="score bands to read from each --aux-corpus")
+    parser.add_argument("--aux-archetype", default="",
+                        help="archetype name for --aux-corpus; defaults to --archetype")
+    parser.add_argument("--aux-repeat", type=int, default=1,
+                        help="repeat aux corpus paths N times as a coarse sample multiplier")
     parser.add_argument("--archetype", default="Marnie Grimmsnarl")
     parser.add_argument("--score-bands", nargs="+", default=["1200+", "1100-1199", "1000-1099"])
     parser.add_argument("--deck-sig", action="append", default=[],
@@ -309,6 +317,19 @@ def main() -> None:
         fraction=args.cuda_memory_fraction,
     )
     paths = discover_npz_paths(args.corpus, args.archetype, args.score_bands)
+    base_path_count = len(paths)
+    aux_path_count = 0
+    aux_details: list[tuple[str, int]] = []
+    aux_repeat = max(1, int(args.aux_repeat))
+    for aux_root in args.aux_corpus:
+        aux_paths = discover_npz_paths(
+            aux_root,
+            args.aux_archetype or args.archetype,
+            args.aux_score_bands,
+        )
+        aux_path_count += len(aux_paths)
+        aux_details.append((aux_root, len(aux_paths)))
+        paths.extend(aux_paths * aux_repeat)
     context_weights = _parse_weight_specs(args.context_weight, CONTEXT_IDS, "context")
     type_weights = _parse_weight_specs(args.type_weight, TYPE_IDS, "type")
     card_weights = _parse_weight_specs(args.card_weight, CARD_IDS, "card")
@@ -405,10 +426,15 @@ def main() -> None:
         f"card_weights={card_weights or '{}'} "
         f"multi_select_weight={args.multi_select_weight} "
         f"set_loss={args.set_loss_weight}/{args.set_loss_min_count}/{args.set_loss_negative_weight} "
+        f"aux_corpus={aux_details or 'none'} aux_bands={args.aux_score_bands} aux_repeat={aux_repeat} "
         f"params={params/1e6:.1f}M",
         flush=True,
     )
-    print(f"Corpus: files={len(paths)} stats={corpus.stats}", flush=True)
+    print(
+        f"Corpus: files={len(paths)} base_files={base_path_count} "
+        f"aux_files={aux_path_count} stats={corpus.stats}",
+        flush=True,
+    )
     print(f"Split: train={len(train_idx)} val={len(val_idx)} batch={args.batch_size}", flush=True)
 
     best_val = float("inf")

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 12:01 Asia/Shanghai.
+Last updated: 2026-08-06 12:08 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -575,7 +575,7 @@ completion. Treat this as a negative infrastructure result: current
 generation. Do not include `mcts` in rollout generation batches unless a small
 isolated MCTS smoke test proves completion speed first.
 
-Active replacement rollout batch started at 2026-08-06 12:00 Asia/Shanghai:
+Replacement rollout batch started at 2026-08-06 12:00 Asia/Shanghai:
 
 ```text
 runner pid reported: 3051748
@@ -590,6 +590,31 @@ progress: --worker-progress-every 25
 flush: --flush-every-games 50
 jobs: same six matchup pools, with high-temperature/sample/random/rule actors and no MCTS
 ```
+
+This 1200-game no-MCTS batch was also stopped quickly because early worker
+progress showed slow policy-vs-policy games and no output yet. It was replaced
+by a quick signal batch.
+
+Active quick no-MCTS rollout batch started at 2026-08-06 12:04 Asia/Shanghai:
+
+```text
+runner pid reported: 3059297
+script: /tmp/run_rollout_search_nomcts_quick_20260806.sh
+repo: /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+logs: logs/rollout_search_nomcts_quick_20260806/
+output corpus: data/generated_rollout_bc_rollout_search_nomcts_quick_20260806/
+games/job: 240
+workers/job: 8
+max_turns: 350
+progress: --worker-progress-every 5
+flush: --flush-every-games 10
+jobs: same six matchup pools, with high-temperature/sample/random/rule actors and no MCTS
+```
+
+Initial quick progress showed many workers at `1/30` games with no wins yet and
+rates around `0.01-0.03 games/s` including initialization overhead. Let it reach
+at least `10/30` per worker before judging; the first partial `.npz` can only
+appear after a worker has both a kept win and hits the 10-game flush boundary.
 
 Jobs:
 
@@ -608,6 +633,8 @@ ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgr
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && python3 tools/summarize_rollout_bc.py --summary-glob "logs/rollout_search_20260806/*_pool.csv" --corpus data/generated_rollout_bc_rollout_search_20260806 --out-csv logs/rollout_search_20260806/rollout_summary.csv'
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/rollout_search_nomcts_20260806/runner.log'
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && python3 tools/summarize_rollout_bc.py --summary-glob "logs/rollout_search_nomcts_20260806/*_pool.csv" --corpus data/generated_rollout_bc_rollout_search_nomcts_20260806 --out-csv logs/rollout_search_nomcts_20260806/rollout_summary.csv'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/rollout_search_nomcts_quick_20260806/runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && python3 tools/summarize_rollout_bc.py --summary-glob "logs/rollout_search_nomcts_quick_20260806/*_pool.csv" --corpus data/generated_rollout_bc_rollout_search_nomcts_quick_20260806 --out-csv logs/rollout_search_nomcts_quick_20260806/rollout_summary.csv'
 ```
 
 First PPO pilot batch started at 2026-08-06 10:05 Asia/Shanghai:

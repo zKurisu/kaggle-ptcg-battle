@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 02:45 Asia/Shanghai.
+Last updated: 2026-08-06 09:25 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -10,7 +10,7 @@ This file is the first place a new agent should read before touching the project
 - Local branch: `v7-baseline-20260804`
 - Remote training repo: `ks:/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804`
 - Remote original workspace also exists in older notes: `ks:/home/jie/Do/0_PTCG/workspace/ptcg_rl_git`
-- Current remote training data: `data/bc_corpus_banded_v10_all_0803`
+- Current remote training data for active BC experiments: `data/bc_corpus_banded_v11_0724_0804`
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
@@ -201,6 +201,74 @@ Use these only as hypotheses. Required path for each seed:
 5. Only after focused and broad validation pass, generate teacher-rollout success data and distill into mixed BC.
 
 Do not submit or scale a human-strategy rule solely because the explanation sounds correct. Previous rule/card-weight experiments showed that plausible global nudges can improve narrow metrics while hurting broad play.
+
+## 2026-08-06 Strategy Optimization Run
+
+Conclusion before this run:
+
+- The previous `weakup_v11_20260805` broad matchup weighting was not enough. It gave small broad gains for Alakazam and Cynthia, almost no useful gain for Marnie, and hurt Dragapult/Ogerpon.
+- Seed rule probes were also negative or too weak:
+  - Ogerpon no-futile vs Crustle: rule delta `-0.010` at g200.
+  - Cynthia Spiritomb vs Crustle: rule delta `-0.030` at g200.
+  - Marnie setup vs Ogerpon: only small positive in narrow probe and not broad-safe.
+- Therefore the next test is not another global rule. It is narrow matchup-conditioned BC with stronger complex-scene weighting plus a `winner-only` branch where the corpus has enough success games.
+
+Remote run started on `ks` at 2026-08-06 09:17 Asia/Shanghai:
+
+```text
+script: /tmp/run_strategy_opt_20260806.sh
+repo: /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+runner log: logs/strategy_opt_20260806/runner.log
+train logs: logs/strategy_opt_20260806/train_*.log
+checkpoints: checkpoints/strategy_opt_20260806/
+candidate manifest: logs/strategy_opt_20260806/candidate_manifest_strategy_opt.csv
+random eval: logs/strategy_opt_20260806/strategy_opt_random_g500.csv
+delta summary: logs/strategy_opt_20260806/strategy_opt_delta_summary.csv
+```
+
+The script launches up to 4 training jobs concurrently, one per GPU, with
+`MEM_GB=24`, `TRAIN_EPOCHS=8`, `BATCH_SIZE=1024`, `WORKERS=32`,
+`RANDOM_GAMES=500`, and `EVAL_GAMES=160`.
+
+Experiments in the run:
+
+- `marnie_b8f_vs_ogerpon_filter_complex`
+- `marnie_b8f_vs_ogerpon_winonly_complex`
+- `dragapult_cc2_vs_marnie_filter_complex`
+- `dragapult_cc2_vs_marnie_winonly_complex`
+- `dragapult_cc2_vs_crustle_filter_complex`
+- `dragapult_cc2_vs_crustle_winonly_complex`
+- `cynthia_52f_vs_crustle_filter_complex`
+- `cynthia_52f_vs_crustle_winonly_complex`
+- `ogerpon_2a507_vs_crustle_winonly_complex`
+- `ogerpon_697_vs_crustle_crosssig_winonly_complex`
+- `alakazam_7f_vs_marnie_winonly_complex`
+- `alakazam_7f_vs_trm_winonly_complex`
+
+Common training knobs:
+
+- Init from v11 population checkpoint, partial load, `state=80`, `option=64`.
+- `first_action_weight=1.8`, `option_weight=0.35`.
+- `multi_select_weight=2.0`, `set_loss_weight=0.25`, `set_loss_negative_weight=0.15`.
+- Context upweights: `MAIN=1.15`, `ATTACH_FROM=1.8`, `ATTACH_TO=1.4`,
+  `DAMAGE=1.5`, `SKILL_ORDER=2.0`, `ATTACK=1.35`.
+- `filter_complex` keeps the weak matchup and uses strong win/loss weights.
+- `winonly_complex` keeps only winning games for that weak matchup.
+
+Monitor with:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/strategy_opt_20260806/runner.log'
+ssh ks 'pgrep -af "run_strategy_opt_20260806|bc2_train.py|eval_baseline_delta.py|eval_manifest_random.py"'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/strategy_opt_20260806/strategy_opt_random_g500.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && cat logs/strategy_opt_20260806/strategy_opt_delta_summary.csv'
+```
+
+If a job fails because of memory pressure, do not restart the whole run. Rerun
+only the failed train command from its `train_*.log` with `MEM_GB=16` or a
+smaller `BATCH_SIZE`. If a `winner-only` job fails from too few samples, record
+that as evidence that the matchup needs teacher-generated success data rather
+than filtered BC.
 
 The seed-card mapping table is deliberately separate from the strategy table.
 Use it to validate that a human guide's named cards are present in the exact

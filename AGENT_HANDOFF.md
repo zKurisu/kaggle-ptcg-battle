@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 12:08 Asia/Shanghai.
+Last updated: 2026-08-06 12:39 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -615,6 +615,37 @@ Initial quick progress showed many workers at `1/30` games with no wins yet and
 rates around `0.01-0.03 games/s` including initialization overhead. Let it reach
 at least `10/30` per worker before judging; the first partial `.npz` can only
 appear after a worker has both a kept win and hits the 10-game flush boundary.
+
+Observed quick partial result at about 12:36:
+
+- `npz=8`, then watcher saw `npz=11`.
+- Marnie vs Ogerpon produced several wins by `5/30` worker progress, but all
+  observed Marnie winning episodes in the first flushed chunks were against
+  `ogerpon2a`, not 5899/697. This means generated data may help Ogerpon 2a
+  first, but still may not solve the harder live-style 5899/697 variants.
+- Ogerpon 2a vs Crustle produced wins against at least `crustle_b141` and
+  `crustle477`.
+- Cynthia 52f vs Crustle produced wins against `crustle_b141`, `crustle477`,
+  and `crustle3cd`.
+- Dragapult and Alakazam were still zero-win at `5/30` progress in the checked
+  logs.
+
+Post-rollout watcher started at 2026-08-06 12:37 Asia/Shanghai:
+
+```text
+runner pid reported: 3098447
+script: /tmp/run_rollout_distill_after_quick_20260806.sh
+logs: logs/rollout_distill_20260806/
+checkpoints: checkpoints/rollout_distill_20260806/
+behavior: waits for quick rollout to finish, summarizes generated corpus, then trains/evaluates aux-corpus distill models for Marnie, Ogerpon 2a, and Cynthia if their generated .npz files exist
+```
+
+The watcher intentionally waits before training so it does not read partially
+written `.npz` files. Monitor with:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/rollout_distill_20260806/runner.log'
+```
 
 Jobs:
 

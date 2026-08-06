@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 22:08 Asia/Shanghai.
+Last updated: 2026-08-06 23:20 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -2667,14 +2667,13 @@ checkpoints:
   checkpoints/deck_sig_specialists_v11all35_20260806/w4_lowdata/
 ```
 
-Status checked at `2026-08-06 22:08 Asia/Shanghai`:
+Status checked at `2026-08-06 23:20 Asia/Shanghai`:
 
 - Width 3 main completed: `35/35`.
 - Width 3 lowdata completed: `4/4`, saved under `w3_lowdata/`.
-- Width 4 main is still running: `20/35`.
-- Width 4 lowdata has not started: `0/4`.
-- Active width 4 jobs at the check were Alakazam sig1, Alakazam sig2, Marnie
-  sig1, and Marnie sig2 on GPU 0 with `--cuda-memory-gb 8.0`.
+- Width 4 main completed: `35/35`.
+- Width 4 lowdata completed: `4/4`, saved under `w4_lowdata/`.
+- No BC training jobs from this runner remained active.
 - There were earlier `Killed` events for Alakazam width 3 repairs, but final
   width 3 checkpoints exist and load; treat the killed logs as process/memory
   pressure during repair, not as corrupt completed artifacts.
@@ -2749,8 +2748,121 @@ Interpretation:
   Mewtwo sig1 at `0.062`; do not treat it as ladder-safe without a live probe.
 - Team Rocket Mewtwo sig1 is polarizing: it crushes Alakazam in this RR but
   loses badly to Ogerpon and Mega Lopunny; average only `0.475`.
-- Do not judge width 4 yet. It still needs main completion, lowdata completion,
-  then the same random and RR gate before comparing with width 2/3.
+
+Width 4 random/RR outputs were saved locally and remotely:
+
+```text
+logs/eval_deck_sig_specialists_v11all35_20260806/random_w4_all39_g200.csv
+logs/eval_deck_sig_specialists_v11all35_20260806/random_w4_all39_g200_joined.csv
+logs/eval_deck_sig_specialists_v11all35_20260806/random_w4_all39_summary.txt
+logs/eval_deck_sig_specialists_v11all35_20260806/candidate_manifest_w4_random_ge097.csv
+logs/eval_deck_sig_specialists_v11all35_20260806/rr_w4_random_ge097_g80.csv
+logs/eval_deck_sig_specialists_v11all35_20260806/rr_w4_random_ge097_g80_summary.txt
+logs/eval_deck_sig_specialists_v11all35_20260806/submit_analysis_w4_0805.txt
+```
+
+Width 4 random g200:
+
+- Evaluated `26/39`; same 13 rows are blocked by missing deck CSVs.
+- Mean `0.950`, median `0.988`, min `0.620`, max `1.000`.
+- `>=0.97`: 17 entries; `>=0.95`: 18 entries; `<0.90`: 5 entries.
+- It is the best random-stability width so far, but still weak for
+  Archaludon, Dragapult sig2/sig3, Cynthia sig2, and Ogerpon sig2.
+
+Width 4 RR g80 among 17 random-stable candidates:
+
+```text
+Crustle sig1 3cd5039c: avg=0.630 worst=0.325 losses=6
+Marnie sig1 b8f251a4: avg=0.630 worst=0.175 losses=3
+Alakazam sig1 7f9a5389: avg=0.618 worst=0.113 losses=3
+Ogerpon sig3 5899c772: avg=0.598 worst=0.025 losses=6
+Ogerpon sig1 697a82e5: avg=0.580 worst=0.000 losses=6
+Marnie sig2 2c22fa76: avg=0.567 worst=0.087 losses=3
+Mega Lopunny sig2 276707c0: avg=0.545 worst=0.075 losses=6
+Mega Lopunny sig3 f1445356: avg=0.544 worst=0.113 losses=6
+```
+
+Interpretation:
+
+- Width 4 improves random and keeps the same top local shape: Crustle sig1,
+  Marnie sig1, and Alakazam sig1 are the strongest internal RR rows.
+- Width 4 does not solve structural weaknesses:
+  Ogerpon still loses almost completely to Crustle (`0.025` for 5899 and
+  `0.000` for 697), Marnie still loses hard to Ogerpon (`0.175/0.188`),
+  Alakazam still loses hard to Team Rocket Mewtwo (`0.113`), and Dragapult sig1
+  collapses in RR despite random `0.970`.
+- Submission priority from this width axis:
+  1. `w4 Crustle sig1 3cd5039c` as the strongest local RR probe.
+  2. `w4 Marnie sig1 b8f251a4` as the broad/local co-top probe.
+  3. `w4 Alakazam sig1 7f9a5389` only as a controlled probe; the current 0805
+     environment has many Marnie games and Alakazam is not well positioned.
+  4. `w4 Mega Lopunny sig3/f144` only as a meta-prior probe; local RR is
+     mediocre, but 0805 ladder archetype prior favors Mega Lopunny.
+  Avoid w4 Ogerpon for today's first probe because Crustle remains common
+  enough and the local Crustle matchup is catastrophic.
+
+## 2026-08-06 Episode 0805 Ladder Read
+
+The 0805 episode zip exists on `ks`:
+
+```text
+/home/jie/Do/0_PTCG/workspace/episodes_raw/pokemon-tcg-ai-battle-episodes-2026-08-05.zip
+```
+
+Built and pulled locally:
+
+```text
+logs/ladder_pool_0805_all/
+logs/matchup_notes_20260806/0805_score900/
+```
+
+0805 pool generation processed `4740` episodes and selected `132` deck
+signatures. Current leaderboard scores were available (`leaderboard_teams=6174`).
+The high-score matchup rerun used `4053` games after filtering.
+
+Score>=900 archetype weight shares:
+
+```text
+Marnie Grimmsnarl 30.5%
+Alakazam          15.7%
+Mega Lopunny      13.3%
+Crustle Wall       9.2%
+Teal Mask Ogerpon  8.5%
+Dragapult          7.8%
+Mega Lucario       5.8%
+Festival Lead      2.8%
+Team Rocket Mewtwo 1.6%
+Cynthia Garchomp   1.5%
+```
+
+Important 0805 archetype edges from actual ladder episodes, games>=30:
+
+```text
+Mega Lucario > Mega Lopunny      0.920 over 75 games
+Crustle Wall > Teal Mask Ogerpon 0.883 over 60 games
+Ogerpon > Marnie                 0.825 over 252 games
+Mega Lopunny > Crustle           0.822 over 90 games
+Festival Lead > Marnie           0.689 over 74 games
+Alakazam > Crustle               0.682 over 154 games
+Crustle > Dragapult              0.667 over 57 games
+Mega Lopunny > Ogerpon           0.648 over 108 games
+Alakazam > Ogerpon               0.647 over 153 games
+Mega Lopunny > Marnie            0.634 over 309 games
+Dragapult > Marnie               0.596 over 161 games
+Marnie > Alakazam                0.596 over 527 games
+Mega Lucario > Alakazam          0.586 over 58 games
+```
+
+Current Kaggle score refresh:
+
+- `jie` account refreshed successfully at `2026-08-06T15:16:22+00:00`.
+- Latest two `jie` submissions then were
+  `55294036 shadow_crustle_wall_96d57241_liamk` score `827.6` and
+  `55294007 shadow_mega_lopunny_f1445356_ntumlnoob_w2` score `626.5`.
+  These active slots are weak and worth replacing if submit budget permits.
+- The remote `by` account currently fails Kaggle CLI auth with
+  `Authentication required`; `/root/.kaggle/by` needs refreshed Kaggle auth or
+  an accepted token format before current scores can be checked or monitored.
 
 ## Next Work
 

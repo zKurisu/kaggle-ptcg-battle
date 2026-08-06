@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-06 16:58 Asia/Shanghai.
+Last updated: 2026-08-06 16:59 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -2501,6 +2501,12 @@ Full 35-day v11 extraction:
   - Started with `TRAIN=0 WORKERS=12`, so extraction/stats/plans run first and training is not launched automatically.
 - Leaderboard download in the script failed once and fell back to `logs/lb_snapshots/leaderboard_20260803_1530.csv` with `6174` teams. This is acceptable for score bands, but note that it is an older snapshot.
 - At 16:56, extraction had started 12 workers and no `.npz` had been written yet.
+- A width-2 training watcher was started at 2026-08-06 16:58:
+  - Script: `/tmp/start_v11all35_sig_w2_after_plan_mem8_20260806.sh`
+  - Log: `logs/deck_sig_specialists_v11all35_20260806/w2_mem8_watcher.log`
+  - It waits for `.extract_done` and `train_w2.sh`, patches generated training commands from `--cuda-memory-gb 18`/`18.0` to `--cuda-memory-gb 8`, then launches `train_w2.sh`.
+  - Width 3/4 are intentionally not auto-started.
+  - At 16:58 it was still waiting: `extract_done=no train_script=no`.
 
 Check progress:
 
@@ -2533,7 +2539,7 @@ Then start width 2 first:
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && setsid -f bash logs/deck_sig_specialists_v11all35_20260806/train_w2.sh > logs/deck_sig_specialists_v11all35_20260806/train_w2.runner.log 2>&1 < /dev/null'
 ```
 
-Only start width 3/4 after width 2 has no failed jobs and GPU memory remains stable.
+The watcher above should start width 2 automatically, so run this manually only if the watcher is stopped. Only start width 3/4 after width 2 has no failed jobs and GPU memory remains stable.
 
 ## Next Work
 

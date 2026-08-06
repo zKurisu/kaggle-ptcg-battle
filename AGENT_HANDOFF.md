@@ -630,6 +630,19 @@ Observed quick partial result at about 12:36:
 - Dragapult and Alakazam were still zero-win at `5/30` progress in the checked
   logs.
 
+Updated partial corpus summary at about 12:43:
+
+- Marnie vs Ogerpon: `1802` generated decision rows from `17` winning episodes,
+  all against `ogerpon2a`. Actor mix was mostly
+  `sample@1.7+rules:marnie_setup`, `sample@2.2`, `sample@1.5`, and
+  `sample@3.2`.
+- Cynthia 52f vs Crustle: `659` rows from `6` wins across `crustle477`,
+  `crustle3cd`, and `crustle_b141`.
+- Ogerpon 2a vs Crustle: `205` rows from `2` wins against `crustle_b141` and
+  `crustle477`.
+- Alakazam 7f vs Marnie/TRM: `142` rows from `1` win against `trmf1`.
+- Dragapult still had no generated wins in the checked partial corpus.
+
 Post-rollout watcher started at 2026-08-06 12:37 Asia/Shanghai:
 
 ```text

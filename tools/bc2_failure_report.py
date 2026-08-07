@@ -22,6 +22,8 @@ from ptcg_rl.model import (
     build_policy_model,
     checkpoint_arch,
     checkpoint_feature_dims,
+    checkpoint_hierarchical_plan,
+    checkpoint_plan_dim,
     checkpoint_width,
 )
 from tools.bc2_accuracy import CONTEXT_NAMES, OPT_NAMES, SET_CONTEXTS, first_action_topk
@@ -47,6 +49,8 @@ def _load_model(path: str, width: float, device: torch.device):
         arch = checkpoint_arch(z.files)
         state_feat_dim, opt_feat_dim, option_context, slot_state = checkpoint_feature_dims(z)
         model_width = float(width) if width > 0 else checkpoint_width(z)
+        plan_dim = checkpoint_plan_dim(z)
+        hierarchical_plan = checkpoint_hierarchical_plan(z)
         model = build_policy_model(
             arch,
             width=model_width,
@@ -54,6 +58,8 @@ def _load_model(path: str, width: float, device: torch.device):
             slot_state=slot_state,
             state_feat_dim=state_feat_dim,
             opt_feat_dim=opt_feat_dim,
+            plan_dim=plan_dim,
+            hierarchical_plan=hierarchical_plan,
         ).to(device)
         state = {k: torch.as_tensor(z[k], device=device) for k in z.files}
     current = model.state_dict()

@@ -54,6 +54,13 @@ class NumpyPolicy:
         )
         self._ec = self.w['card_emb.weight'].shape[1]
         self._has_option_context = "context_emb.weight" in self.w
+        self._hierarchical_plan = "plan_condition_fc.weight" in self.w
+        self._plan_dim = int(self.w["plan_fc2.bias"].shape[0]) if "plan_fc2.bias" in self.w else 0
+        self._plan_cond_dim = (
+            int(self.w["plan_condition_fc.bias"].shape[0])
+            if self._hierarchical_plan
+            else 0
+        )
         if self._arch == "cross_attn":
             self._slot_state = True
             self._state_feat_dim = self.w["feat_token_fc.weight"].shape[1]
@@ -185,6 +192,41 @@ class NumpyPolicy:
         v = _relu(_linear(self.w["value_fc1.weight"], self.w["value_fc1.bias"], h))
         return float(np.tanh(_linear(self.w["value_fc2.weight"], self.w["value_fc2.bias"], v)))
 
+    def _plan_context(self, h: np.ndarray) -> np.ndarray:
+        if not self._hierarchical_plan:
+            return np.zeros(0, dtype=np.float32)
+        x = _relu(_linear(self.w["plan_fc1.weight"], self.w["plan_fc1.bias"], h))
+        logits = _linear(self.w["plan_fc2.weight"], self.w["plan_fc2.bias"], x)
+        probs = 1.0 / (1.0 + np.exp(-np.clip(logits, -30.0, 30.0)))
+        return _relu(_linear(
+            self.w["plan_condition_fc.weight"],
+            self.w["plan_condition_fc.bias"],
+            probs,
+        )).astype(np.float32, copy=False)
+
+    def _score_rows(self, h: np.ndarray, rows: np.ndarray, picked_sum: np.ndarray) -> np.ndarray:
+        hx = np.broadcast_to(h, (rows.shape[0], self._hd))
+        px = np.broadcast_to(picked_sum, (rows.shape[0], self._oe))
+        score_x = np.concatenate([hx, rows, px], axis=-1)
+        logits = _linear(
+            self.w["score_fc2.weight"],
+            self.w["score_fc2.bias"],
+            _relu(_linear(self.w["score_fc1.weight"], self.w["score_fc1.bias"], score_x)),
+        ).reshape(-1)
+        if self._hierarchical_plan:
+            pc = self._plan_context(h)
+            plan_x = np.concatenate([
+                rows,
+                px,
+                np.broadcast_to(pc, (rows.shape[0], self._plan_cond_dim)),
+            ], axis=-1)
+            logits = logits + _linear(
+                self.w["plan_score_fc2.weight"],
+                self.w["plan_score_fc2.bias"],
+                _relu(_linear(self.w["plan_score_fc1.weight"], self.w["plan_score_fc1.bias"], plan_x)),
+            ).reshape(-1)
+        return logits
+
     @staticmethod
     def _fit_feat_dim(x: np.ndarray, dim: int) -> np.ndarray:
         if x.shape[-1] == dim:
@@ -251,12 +293,7 @@ class NumpyPolicy:
         while len(picks) < d.max_count:
             avail[n] = len(picks) >= d.min_count
             rows = np.concatenate([opts, self.w["stop_vec"][np.newaxis, :]], axis=0)
-            hx = np.broadcast_to(h, (n + 1, self._hd))
-            px = np.broadcast_to(picked_sum, (n + 1, self._oe))
-            score_x = np.concatenate([hx, rows, px], axis=-1)
-            logits = _linear(self.w["score_fc2.weight"], self.w["score_fc2.bias"],
-                           _relu(_linear(self.w["score_fc1.weight"],
-                                        self.w["score_fc1.bias"], score_x))).reshape(-1)
+            logits = self._score_rows(h, rows, picked_sum)
             logits = np.where(avail, logits, NEG_INF)
             # Apply temperature
             if temperature != 1.0:
@@ -344,14 +381,7 @@ class NumpyPolicy:
         while len(picks) < d.max_count:
             avail[n] = len(picks) >= d.min_count
             rows = np.concatenate([opts, self.w["stop_vec"][np.newaxis, :]], axis=0)
-            hx = np.broadcast_to(h, (n + 1, self._hd))
-            px = np.broadcast_to(picked_sum, (n + 1, self._oe))
-            score_x = np.concatenate([hx, rows, px], axis=-1)
-            logits = _linear(
-                self.w["score_fc2.weight"],
-                self.w["score_fc2.bias"],
-                _relu(_linear(self.w["score_fc1.weight"], self.w["score_fc1.bias"], score_x)),
-            ).reshape(-1)
+            logits = self._score_rows(h, rows, picked_sum)
             logits = np.where(avail, logits, NEG_INF)
             if temperature != 1.0:
                 logits = logits / temperature
@@ -415,15 +445,8 @@ class NumpyPolicy:
         opts = _relu(_linear(self.w["opt_fc.weight"], self.w["opt_fc.bias"], opt_x))
 
         rows = np.concatenate([opts, self.w["stop_vec"][np.newaxis, :]], axis=0)
-        hx = np.broadcast_to(h, (n + 1, self._hd))
         picked = np.zeros(self._oe, dtype=np.float32)
-        px = np.broadcast_to(picked, (n + 1, self._oe))
-        score_x = np.concatenate([hx, rows, px], axis=-1)
-        logits = _linear(
-            self.w["score_fc2.weight"],
-            self.w["score_fc2.bias"],
-            _relu(_linear(self.w["score_fc1.weight"], self.w["score_fc1.bias"], score_x)),
-        ).reshape(-1)
+        logits = self._score_rows(h, rows, picked)
         if temperature != 1.0:
             logits = logits / temperature
         avail = np.ones(n + 1, dtype=bool)
@@ -453,15 +476,8 @@ class NumpyPolicy:
         opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
         opts = self._cross_options(self._option_base(d, opt_feats), tokens, token_mask)
         rows = np.concatenate([opts, self.w["stop_vec"][np.newaxis, :]], axis=0)
-        hx = np.broadcast_to(h, (n + 1, self._hd))
         picked = np.zeros(self._oe, dtype=np.float32)
-        px = np.broadcast_to(picked, (n + 1, self._oe))
-        score_x = np.concatenate([hx, rows, px], axis=-1)
-        logits = _linear(
-            self.w["score_fc2.weight"],
-            self.w["score_fc2.bias"],
-            _relu(_linear(self.w["score_fc1.weight"], self.w["score_fc1.bias"], score_x)),
-        ).reshape(-1)
+        logits = self._score_rows(h, rows, picked)
         if temperature != 1.0:
             logits = logits / temperature
         avail = np.ones(n + 1, dtype=bool)

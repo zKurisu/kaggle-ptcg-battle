@@ -16,7 +16,14 @@ _REPO = _HERE.parent
 sys.path.insert(0, str(_REPO))
 
 from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, greedy_decode
-from ptcg_rl.model import build_policy_model, checkpoint_arch, checkpoint_feature_dims, checkpoint_width
+from ptcg_rl.model import (
+    build_policy_model,
+    checkpoint_arch,
+    checkpoint_feature_dims,
+    checkpoint_hierarchical_plan,
+    checkpoint_plan_dim,
+    checkpoint_width,
+)
 
 CONTEXT_NAMES = {
     0: "MAIN", 1: "SETUP_ACTIVE", 2: "SETUP_BENCH", 3: "SWITCH", 4: "TO_ACTIVE",
@@ -194,6 +201,8 @@ def main() -> None:
         arch = checkpoint_arch(z.files)
         state_feat_dim, opt_feat_dim, option_context, slot_state = checkpoint_feature_dims(z)
         width = float(args.width) if args.width > 0 else checkpoint_width(z)
+        plan_dim = checkpoint_plan_dim(z)
+        hierarchical_plan = checkpoint_hierarchical_plan(z)
         model = build_policy_model(
             arch,
             width=width,
@@ -201,6 +210,8 @@ def main() -> None:
             slot_state=slot_state,
             state_feat_dim=state_feat_dim,
             opt_feat_dim=opt_feat_dim,
+            plan_dim=plan_dim,
+            hierarchical_plan=hierarchical_plan,
         ).to(device)
         state = {k: torch.as_tensor(z[k], device=device) for k in z.files}
     current = model.state_dict()

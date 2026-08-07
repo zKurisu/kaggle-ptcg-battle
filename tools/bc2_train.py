@@ -414,6 +414,11 @@ def main() -> None:
                         help="policy architecture; pointer is the legacy MLP, cross_attn tokenizes board/hand and cross-attends options")
     parser.add_argument("--state-layers", type=int, default=2,
                         help="number of state self-attention layers for --arch cross_attn")
+    parser.add_argument("--hierarchical-plan", action="store_true",
+                        help=(
+                            "condition action logits on predicted --trajectory-target plan signals. "
+                            "Requires at least one --trajectory-target."
+                        ))
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--cuda-memory-gb", type=float, default=0.0,
                         help="cap this process' CUDA allocator to approximately N GiB; 0 disables")
@@ -538,6 +543,8 @@ def main() -> None:
         raise ValueError("--trajectory-target requires at least one --trajectory-csv")
     if args.trajectory_target_loss_weight > 0 and plan_target_dim <= 0:
         raise ValueError("--trajectory-target-loss-weight > 0 requires at least one --trajectory-target")
+    if args.hierarchical_plan and plan_target_dim <= 0:
+        raise ValueError("--hierarchical-plan requires at least one --trajectory-target")
     inferred_from_init = False
     state_feat_dim = int(args.state_feat_dim) if args.state_feat_dim else None
     opt_feat_dim = int(args.opt_feat_dim) if args.opt_feat_dim else None
@@ -597,6 +604,8 @@ def main() -> None:
         model_kwargs["opt_feat_dim"] = opt_feat_dim
     if plan_target_dim:
         model_kwargs["plan_dim"] = plan_target_dim
+    if args.hierarchical_plan:
+        model_kwargs["hierarchical_plan"] = True
     model = build_policy_model(
         args.arch,
         width=args.width,
@@ -625,6 +634,7 @@ def main() -> None:
         f"BC2: {args.archetype} {args.score_bands} device={device} "
         f"{memory_limit_msg + ' ' if memory_limit_msg else ''}"
         f"arch={args.arch} width={args.width} state_layers={args.state_layers} "
+        f"hierarchical_plan={args.hierarchical_plan} "
         f"slot_state={not args.legacy_state_pool} "
         f"state_feat_dim={state_feat_dim or 'default'} opt_feat_dim={opt_feat_dim or 'default'} "
         f"{'feature_dims_from_init ' if inferred_from_init else ''}"

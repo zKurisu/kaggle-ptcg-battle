@@ -22,7 +22,8 @@ ARCH_CROSS_ATTN = "cross_attn"
 class PolicyValueNet(nn.Module):
     def __init__(self, width: float = 1.0, option_context: bool = True,
                  slot_state: bool = True, state_feat_dim: int = STATE_FEAT_DIM,
-                 opt_feat_dim: int = OPT_FEAT_DIM, plan_dim: int = 0):
+                 opt_feat_dim: int = OPT_FEAT_DIM, plan_dim: int = 0,
+                 hierarchical_plan: bool = False):
         """width=1.0→501K, 2.0→4M, 3.0→9M params."""
         super().__init__()
         ec = int(_EC * width); ea = int(_EA * width); eo_t = int(_EO * width)
@@ -34,8 +35,10 @@ class PolicyValueNet(nn.Module):
         self.state_feat_dim = int(state_feat_dim)
         self.opt_feat_dim = int(opt_feat_dim)
         self.plan_dim = int(plan_dim)
+        self.hierarchical_plan = bool(hierarchical_plan and self.plan_dim > 0)
         self._ec=ec; self._ea=ea; self._eo_t=eo_t; self._oe=oe; self._hd=hd
         self._ctx=ctx; self._area=area; self._idx=idx
+        self._plan_cd = sc if self.hierarchical_plan else 0
 
         self.card_emb = nn.Embedding(N_CARDS + 2, ec, padding_idx=0)
         self.attack_emb = nn.Embedding(N_ATTACKS + 1, ea, padding_idx=0)
@@ -61,7 +64,14 @@ class PolicyValueNet(nn.Module):
         if self.plan_dim > 0:
             self.plan_fc1 = nn.Linear(hd, sc)
             self.plan_fc2 = nn.Linear(sc, self.plan_dim)
+            if self.hierarchical_plan:
+                self.plan_condition_fc = nn.Linear(self.plan_dim, self._plan_cd)
+                self.plan_score_fc1 = nn.Linear(oe + oe + self._plan_cd, sc)
+                self.plan_score_fc2 = nn.Linear(sc, 1)
         self._init()
+        if self.hierarchical_plan:
+            nn.init.zeros_(self.plan_score_fc2.weight)
+            nn.init.zeros_(self.plan_score_fc2.bias)
 
     def _init(self):
         for m in self.modules():
@@ -141,6 +151,15 @@ class PolicyValueNet(nn.Module):
         px = picked_sum.unsqueeze(1).expand(B, N + 1, self._oe)
         x = torch.cat([hx, rows, px], dim=-1)
         logits = self.score_fc2(F.relu(self.score_fc1(x))).squeeze(-1)
+        if self.hierarchical_plan:
+            plan_prob = torch.sigmoid(self.plan_logits(h))
+            plan_ctx = F.relu(self.plan_condition_fc(plan_prob))
+            plan_x = torch.cat([
+                rows,
+                px,
+                plan_ctx.unsqueeze(1).expand(B, N + 1, self._plan_cd),
+            ], dim=-1)
+            logits = logits + self.plan_score_fc2(F.relu(self.plan_score_fc1(plan_x))).squeeze(-1)
         return logits.masked_fill(~mask, NEG_INF)
 
     def value(self, h: torch.Tensor) -> torch.Tensor:
@@ -428,6 +447,7 @@ class CrossAttentionPolicyValueNet(nn.Module):
         state_feat_dim: int = STATE_FEAT_DIM,
         opt_feat_dim: int = OPT_FEAT_DIM,
         plan_dim: int = 0,
+        hierarchical_plan: bool = False,
         state_layers: int = 2,
     ):
         super().__init__()
@@ -440,9 +460,11 @@ class CrossAttentionPolicyValueNet(nn.Module):
         self.state_feat_dim = int(state_feat_dim)
         self.opt_feat_dim = int(opt_feat_dim)
         self.plan_dim = int(plan_dim)
+        self.hierarchical_plan = bool(hierarchical_plan and self.plan_dim > 0)
         self.state_layers_n = int(state_layers)
         self._ec=ec; self._ea=ea; self._eo_t=eo_t; self._oe=oe; self._hd=hd
         self._ctx=ctx; self._area=area; self._idx=idx
+        self._plan_cd = sc if self.hierarchical_plan else 0
         self.register_buffer("arch_code", torch.tensor([1], dtype=torch.int32), persistent=True)
 
         self.card_emb = nn.Embedding(N_CARDS + 2, ec, padding_idx=0)
@@ -482,9 +504,16 @@ class CrossAttentionPolicyValueNet(nn.Module):
         if self.plan_dim > 0:
             self.plan_fc1 = nn.Linear(hd, sc)
             self.plan_fc2 = nn.Linear(sc, self.plan_dim)
+            if self.hierarchical_plan:
+                self.plan_condition_fc = nn.Linear(self.plan_dim, self._plan_cd)
+                self.plan_score_fc1 = nn.Linear(oe + oe + self._plan_cd, sc)
+                self.plan_score_fc2 = nn.Linear(sc, 1)
         self._cached_state_tokens: torch.Tensor | None = None
         self._cached_state_mask: torch.Tensor | None = None
         self._init()
+        if self.hierarchical_plan:
+            nn.init.zeros_(self.plan_score_fc2.weight)
+            nn.init.zeros_(self.plan_score_fc2.bias)
 
     def _init(self):
         for m in self.modules():
@@ -591,6 +620,15 @@ class CrossAttentionPolicyValueNet(nn.Module):
         px = picked_sum.unsqueeze(1).expand(B, N + 1, self._oe)
         x = torch.cat([hx, rows, px], dim=-1)
         logits = self.score_fc2(F.relu(self.score_fc1(x))).squeeze(-1)
+        if self.hierarchical_plan:
+            plan_prob = torch.sigmoid(self.plan_logits(h))
+            plan_ctx = F.relu(self.plan_condition_fc(plan_prob))
+            plan_x = torch.cat([
+                rows,
+                px,
+                plan_ctx.unsqueeze(1).expand(B, N + 1, self._plan_cd),
+            ], dim=-1)
+            logits = logits + self.plan_score_fc2(F.relu(self.plan_score_fc1(plan_x))).squeeze(-1)
         return logits.masked_fill(~mask, NEG_INF)
 
     def value(self, h: torch.Tensor) -> torch.Tensor:
@@ -658,3 +696,15 @@ def checkpoint_feature_dims(z) -> tuple[int, int, bool, bool]:
 def checkpoint_width(z) -> float:
     """Infer model width from a checkpoint's embedding dimension."""
     return float(z["card_emb.weight"].shape[1]) / float(_EC)
+
+
+def checkpoint_plan_dim(z) -> int:
+    """Infer auxiliary/hierarchical plan target width from a checkpoint."""
+    if "plan_fc2.weight" not in z:
+        return 0
+    return int(z["plan_fc2.weight"].shape[0])
+
+
+def checkpoint_hierarchical_plan(z) -> bool:
+    """Return whether a checkpoint conditions policy logits on predicted plan."""
+    return "plan_condition_fc.weight" in z

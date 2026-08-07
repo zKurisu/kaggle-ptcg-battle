@@ -21,9 +21,12 @@ from ptcg_rl.deck_plans import get_plan, tag_cards
 from ptcg_rl.model import (
     build_policy_model,
     checkpoint_arch,
+    checkpoint_board_history_dims,
     checkpoint_feature_dims,
     checkpoint_hierarchical_plan,
     checkpoint_history_k,
+    checkpoint_log_history_k,
+    checkpoint_opp_history_k,
     checkpoint_plan_dim,
     checkpoint_width,
 )
@@ -53,6 +56,9 @@ def _load_model(path: str, width: float, device: torch.device):
         plan_dim = checkpoint_plan_dim(z)
         hierarchical_plan = checkpoint_hierarchical_plan(z)
         history_k = checkpoint_history_k(z)
+        opp_history_k = checkpoint_opp_history_k(z)
+        log_history_k = checkpoint_log_history_k(z)
+        board_history_k, board_history_feat_dim = checkpoint_board_history_dims(z)
         model = build_policy_model(
             arch,
             width=model_width,
@@ -63,13 +69,26 @@ def _load_model(path: str, width: float, device: torch.device):
             plan_dim=plan_dim,
             hierarchical_plan=hierarchical_plan,
             history_k=history_k,
+            opp_history_k=opp_history_k,
+            log_history_k=log_history_k,
+            board_history_k=board_history_k,
+            board_history_feat_dim=board_history_feat_dim,
         ).to(device)
         state = {k: torch.as_tensor(z[k], device=device) for k in z.files}
     current = model.state_dict()
     state = {k: v for k, v in state.items() if k in current and tuple(v.shape) == tuple(current[k].shape)}
     model.load_state_dict(state, strict=False)
     model.eval()
-    return model, state_feat_dim, opt_feat_dim, history_k
+    return (
+        model,
+        state_feat_dim,
+        opt_feat_dim,
+        history_k,
+        opp_history_k,
+        log_history_k,
+        board_history_k,
+        board_history_feat_dim,
+    )
 
 
 def _opt_type(batch, row: int, action: list[int]) -> int:
@@ -232,7 +251,16 @@ def main() -> None:
 
     plan = get_plan(args.archetype)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    model, state_feat_dim, opt_feat_dim, history_k = _load_model(args.policy, args.width, device)
+    (
+        model,
+        state_feat_dim,
+        opt_feat_dim,
+        history_k,
+        opp_history_k,
+        log_history_k,
+        board_history_k,
+        board_history_feat_dim,
+    ) = _load_model(args.policy, args.width, device)
     paths = discover_npz_paths(args.corpus, args.archetype, args.score_bands)
     corpus = BCCorpus(
         paths,
@@ -245,6 +273,10 @@ def main() -> None:
         opponent_team_names=args.opponent_team_name,
         winner_only=args.winner_only,
         history_k=history_k,
+        opp_history_k=opp_history_k,
+        log_history_k=log_history_k,
+        board_history_k=board_history_k,
+        board_history_feat_dim=board_history_feat_dim,
         load_progress_every=args.load_progress_every,
     )
     indices = corpus.all_indices()

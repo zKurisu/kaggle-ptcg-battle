@@ -19,9 +19,12 @@ from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, greedy_decode
 from ptcg_rl.model import (
     build_policy_model,
     checkpoint_arch,
+    checkpoint_board_history_dims,
     checkpoint_feature_dims,
     checkpoint_hierarchical_plan,
     checkpoint_history_k,
+    checkpoint_log_history_k,
+    checkpoint_opp_history_k,
     checkpoint_plan_dim,
     checkpoint_width,
 )
@@ -205,6 +208,9 @@ def main() -> None:
         plan_dim = checkpoint_plan_dim(z)
         hierarchical_plan = checkpoint_hierarchical_plan(z)
         history_k = checkpoint_history_k(z)
+        opp_history_k = checkpoint_opp_history_k(z)
+        log_history_k = checkpoint_log_history_k(z)
+        board_history_k, board_history_feat_dim = checkpoint_board_history_dims(z)
         model = build_policy_model(
             arch,
             width=width,
@@ -215,6 +221,10 @@ def main() -> None:
             plan_dim=plan_dim,
             hierarchical_plan=hierarchical_plan,
             history_k=history_k,
+            opp_history_k=opp_history_k,
+            log_history_k=log_history_k,
+            board_history_k=board_history_k,
+            board_history_feat_dim=board_history_feat_dim,
         ).to(device)
         state = {k: torch.as_tensor(z[k], device=device) for k in z.files}
     current = model.state_dict()
@@ -235,6 +245,10 @@ def main() -> None:
         opponent_team_names=args.opponent_team_name,
         winner_only=args.winner_only,
         history_k=history_k,
+        opp_history_k=opp_history_k,
+        log_history_k=log_history_k,
+        board_history_k=board_history_k,
+        board_history_feat_dim=board_history_feat_dim,
         load_progress_every=args.load_progress_every,
     )
     indices = corpus.all_indices()

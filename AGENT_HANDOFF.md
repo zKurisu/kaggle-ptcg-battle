@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 19:45 Asia/Shanghai.
+Last updated: 2026-08-07 23:10 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -10,10 +10,90 @@ This file is the first place a new agent should read before touching the project
 - Local branch: `v7-baseline-20260804`
 - Remote training repo: `ks:/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804`
 - Remote original workspace also exists in older notes: `ks:/home/jie/Do/0_PTCG/workspace/ptcg_rl_git`
-- Current remote training data for active BC experiments: `data/bc_corpus_banded_v11_0701_0804`
+- Current remote training data for active BC experiments:
+  - Completed stable baseline: `data/bc_corpus_banded_v11_0701_0804`
+  - New v12 extraction in progress: `data/bc_corpus_banded_v12_0701_0805_hist32_log128_board12`
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## 2026-08-07 v12 Multi-Stream History Extraction
+
+The user asked for a more complete v12 extraction with aggressive history,
+not another small v11 feature tweak. Current implementation introduces a
+multi-stream history schema:
+
+- Own previous labeled decisions: `own_hist_*`, default length 32.
+- Opponent previous labeled decisions: `opp_hist_*`, default length 32. This is
+  saved for offline diagnostics, trace, and ablation, but should not be enabled
+  by default for Kaggle-submittable models because live inference cannot exactly
+  reconstruct opponent label actions.
+- Public observation logs: `log_hist_*`, default length 128. This is safe for
+  Kaggle inference because it comes from `observation.logs`.
+- Previous board snapshots from the same player perspective:
+  `board_hist_cards`, `board_hist_feats`, `board_hist_mask`, default 12
+  snapshots with 32 scalar features each.
+
+Changed files:
+
+```text
+ptcg_rl/history_features.py
+tools/bc_extract_v2.py
+ptcg_rl/bc2/data.py
+ptcg_rl/model.py
+ptcg_rl/numpy_policy.py
+tools/bc2_train.py
+tools/bc2_accuracy.py
+tools/bc2_failure_report.py
+tools/train_bc_population.py
+tools/build_shadow_pool.py
+```
+
+Smoke tests completed:
+
+- Local `python3 -m py_compile` for all changed files passed.
+- Local synthetic forward passed for both `pointer` and `cross_attn` using
+  `history_k=32`, `opp_history_k=32`, `log_history_k=128`,
+  `board_history_k=12`, `board_history_feat_dim=32`.
+- Remote extraction smoke on `2026-08-05` with 200 episodes passed:
+  `30968` decisions, `bad=0`, `err=0`.
+- Remote smoke schema confirmed:
+  `state=(80,)`, `option=(1,64)`, `own=(32,)`, `opp=(32,)`,
+  `log=(128,)`, `board_cards=(12,12)`, `board_feats=(12,32)`.
+- Remote random untrained v12 `pointer` and `cross_attn` checkpoints both ran
+  through `tools/eval_bc.py` without NumPy inference crashes. Their losses/timeouts
+  are expected for random weights and are not model-quality evidence.
+
+Formal v12 extraction was started on `ks`:
+
+```text
+script: /tmp/run_extract_v12_0701_0805.sh
+repo: /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+raw episodes: /home/jie/Do/0_PTCG/workspace/episodes_raw
+zip_count: 36, dates 2026-07-01 through 2026-08-05
+output: data/bc_corpus_banded_v12_0701_0805_hist32_log128_board12
+log: logs/extract_v12_0701_0805_hist32_log128_board12.log
+workers: 12
+history: action=32, log=128, board=12, board_feat=32
+main script pid at launch: 1411587
+extract parent pid at launch: 1411593
+```
+
+Monitor:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/extract_v12_0701_0805_hist32_log128_board12.log'
+ssh ks 'pgrep -af "run_extract_v12_0701_0805|bc_extract_v2.py" | head -n 20'
+```
+
+Recommended first v12 training inputs after extraction completes:
+
+- Use `--history-k 32 --log-history-k 128 --board-history-k 12
+  --board-history-feat-dim 32`.
+- Keep `--opp-history-k 0` for submittable models unless explicitly doing an
+  offline-only ablation.
+- Compare pointer vs cross-attn, and consider `--hierarchical-plan` only after
+  base v12 history quality is measured.
 
 ## Episode Backfill
 

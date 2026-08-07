@@ -11,6 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .encoder import STATE_FEAT_DIM, OPT_FEAT_DIM, N_CARDS, N_ATTACKS, N_OPT_TYPES, BOARD_SLOTS, MAX_HAND
+from .history_features import BOARD_HISTORY_FEAT_DIM, MAX_LOG_AREA, MAX_LOG_PLAYER, MAX_LOG_TYPE, MAX_SERIAL
 
 NEG_INF = -1e9
 _EC, _EA, _EO, _OE, _HD, _S1, _SC = 64, 32, 16, 128, 256, 512, 128
@@ -23,7 +24,10 @@ class PolicyValueNet(nn.Module):
     def __init__(self, width: float = 1.0, option_context: bool = True,
                  slot_state: bool = True, state_feat_dim: int = STATE_FEAT_DIM,
                  opt_feat_dim: int = OPT_FEAT_DIM, plan_dim: int = 0,
-                 hierarchical_plan: bool = False, history_k: int = 0):
+                 hierarchical_plan: bool = False, history_k: int = 0,
+                 opp_history_k: int = 0, log_history_k: int = 0,
+                 board_history_k: int = 0,
+                 board_history_feat_dim: int = BOARD_HISTORY_FEAT_DIM):
         """width=1.0→501K, 2.0→4M, 3.0→9M params."""
         super().__init__()
         ec = int(_EC * width); ea = int(_EA * width); eo_t = int(_EO * width)
@@ -37,10 +41,16 @@ class PolicyValueNet(nn.Module):
         self.plan_dim = int(plan_dim)
         self.hierarchical_plan = bool(hierarchical_plan and self.plan_dim > 0)
         self.history_k = max(0, int(history_k))
+        self.opp_history_k = max(0, int(opp_history_k))
+        self.log_history_k = max(0, int(log_history_k))
+        self.board_history_k = max(0, int(board_history_k))
+        self.board_history_feat_dim = max(0, int(board_history_feat_dim))
         self._ec=ec; self._ea=ea; self._eo_t=eo_t; self._oe=oe; self._hd=hd
         self._ctx=ctx; self._area=area; self._idx=idx
         self._plan_cd = sc if self.hierarchical_plan else 0
-        self._hist = sc if self.history_k > 0 else 0
+        hist_streams = int(self.history_k > 0) + int(self.opp_history_k > 0)
+        hist_streams += int(self.log_history_k > 0) + int(self.board_history_k > 0)
+        self._hist = sc * hist_streams
 
         self.card_emb = nn.Embedding(N_CARDS + 2, ec, padding_idx=0)
         self.attack_emb = nn.Embedding(N_ATTACKS + 1, ea, padding_idx=0)
@@ -57,15 +67,34 @@ class PolicyValueNet(nn.Module):
         state_in = (5 * ec if slot_state else 3 * ec) + self.state_feat_dim
         self.state_fc1 = nn.Linear(state_in, s1)
         self.state_fc2 = nn.Linear(s1, hd)
-        if self.history_k > 0:
+        if self.history_k > 0 or self.opp_history_k > 0:
             self.history_type_emb = nn.Embedding(N_OPT_TYPES + 2, eo_t, padding_idx=0)
             self.history_context_emb = nn.Embedding(66, ctx, padding_idx=0)
             self.history_select_type_emb = nn.Embedding(18, ctx, padding_idx=0)
-            self.history_pos_emb = nn.Embedding(self.history_k, ctx)
+            if self.history_k > 0:
+                self.history_pos_emb = nn.Embedding(self.history_k, ctx)
+            if self.opp_history_k > 0:
+                self.opp_history_pos_emb = nn.Embedding(self.opp_history_k, ctx)
             hist_in = ec + ec + ea + eo_t + ctx + ctx + ctx + 2
             self.history_token_fc = nn.Linear(hist_in, sc)
             self.history_gru = nn.GRU(sc, sc, batch_first=True)
-            self.history_out_fc = nn.Linear(hd + sc, hd)
+        if self.log_history_k > 0:
+            self.log_history_type_emb = nn.Embedding(MAX_LOG_TYPE + 2, eo_t, padding_idx=0)
+            self.log_history_player_emb = nn.Embedding(MAX_LOG_PLAYER + 1, ctx, padding_idx=0)
+            self.log_history_area_emb = nn.Embedding(MAX_LOG_AREA + 2, area, padding_idx=0)
+            self.log_history_serial_emb = nn.Embedding(MAX_SERIAL + 2, idx, padding_idx=0)
+            self.log_history_pos_emb = nn.Embedding(self.log_history_k, ctx)
+            log_in = eo_t + ctx + ec + ec + ea + idx + idx + area + area + ctx + 2
+            self.log_history_token_fc = nn.Linear(log_in, sc)
+            self.log_history_gru = nn.GRU(sc, sc, batch_first=True)
+        if self.board_history_k > 0:
+            self.board_history_pos_emb = nn.Embedding(self.board_history_k, ctx)
+            self.board_history_feat_fc = nn.Linear(self.board_history_feat_dim, sc)
+            board_in = 4 * ec + sc + ctx + 1
+            self.board_history_token_fc = nn.Linear(board_in, sc)
+            self.board_history_gru = nn.GRU(sc, sc, batch_first=True)
+        if self._hist > 0:
+            self.history_out_fc = nn.Linear(hd + self._hist, hd)
         opt_extra = ctx + ctx + area + idx + area + idx if option_context else 0
         self.opt_fc = nn.Linear(ec + ec + ea + eo_t + opt_extra + self.opt_feat_dim, oe)
         self.score_fc1 = nn.Linear(hd + oe + oe, sc)
@@ -99,39 +128,131 @@ class PolicyValueNet(nn.Module):
 
     # ── state encoder ───────────────────────────────────────────────
 
-    def _encode_history(self, history: dict[str, torch.Tensor] | None, bsz: int,
-                        device: torch.device) -> torch.Tensor:
-        if self.history_k <= 0:
+    def _encode_action_history(self, history: dict[str, torch.Tensor] | None,
+                               bsz: int, device: torch.device, *,
+                               prefix: str, k: int, pos_emb: nn.Embedding) -> torch.Tensor:
+        if k <= 0:
             return torch.zeros(bsz, 0, device=device)
-        if not history or history.get("mask") is None or history["mask"].numel() == 0:
-            return torch.zeros(bsz, self._hist, device=device)
-        mask = history["mask"].to(device=device, dtype=torch.float32)
-        if mask.shape[1] != self.history_k:
-            mask = mask[:, -self.history_k:]
-        k = mask.shape[1]
-        pos = torch.arange(k, device=device).unsqueeze(0).expand(mask.shape[0], -1)
+        mask_key = f"{prefix}mask"
+        if not history or mask_key not in history or history[mask_key].numel() == 0:
+            return torch.zeros(bsz, self.history_gru.hidden_size, device=device)
+        mask = history[mask_key].to(device=device, dtype=torch.float32)
+        if mask.shape[1] != k:
+            mask = mask[:, -k:]
+        seq_k = mask.shape[1]
+        pos = torch.arange(seq_k, device=device).unsqueeze(0).expand(mask.shape[0], -1)
+        def get(name: str) -> torch.Tensor:
+            return history[f"{prefix}{name}"].to(device=device).long()[:, -seq_k:]
         parts = [
-            self.card_emb(history["card"].to(device=device).long()[:, -k:]),
-            self.card_emb(history["card2"].to(device=device).long()[:, -k:]),
-            self.attack_emb(history["attack"].to(device=device).long()[:, -k:]),
-            self.history_type_emb(history["type"].to(device=device).long()[:, -k:].clamp(0, N_OPT_TYPES + 1)),
-            self.history_context_emb(history["context"].to(device=device).long()[:, -k:].clamp(0, 65)),
-            self.history_select_type_emb(history["select_type"].to(device=device).long()[:, -k:].clamp(0, 17)),
-            self.history_pos_emb(pos),
-            history["count"].to(device=device, dtype=torch.float32)[:, -k:].unsqueeze(-1),
+            self.card_emb(get("card").clamp(0, N_CARDS + 1)),
+            self.card_emb(get("card2").clamp(0, N_CARDS + 1)),
+            self.attack_emb(get("attack").clamp(0, N_ATTACKS)),
+            self.history_type_emb(get("type").clamp(0, N_OPT_TYPES + 1)),
+            self.history_context_emb(get("context").clamp(0, 65)),
+            self.history_select_type_emb(get("select_type").clamp(0, 17)),
+            pos_emb(pos),
+            history[f"{prefix}count"].to(device=device, dtype=torch.float32)[:, -seq_k:].unsqueeze(-1),
             mask.unsqueeze(-1),
         ]
         x = torch.cat(parts, dim=-1)
         token = F.relu(self.history_token_fc(x)) * mask.unsqueeze(-1)
-        hidden = torch.zeros(1, mask.shape[0], self._hist, device=device, dtype=token.dtype)
-        for t in range(k):
+        hidden = torch.zeros(1, mask.shape[0], self.history_gru.hidden_size, device=device, dtype=token.dtype)
+        for t in range(seq_k):
             _, next_hidden = self.history_gru(token[:, t:t + 1], hidden)
             valid = mask[:, t].view(1, -1, 1) > 0
             hidden = torch.where(valid, next_hidden, hidden)
         return hidden.squeeze(0)
 
+    def _encode_log_history(self, history: dict[str, torch.Tensor] | None,
+                            bsz: int, device: torch.device) -> torch.Tensor:
+        if self.log_history_k <= 0:
+            return torch.zeros(bsz, 0, device=device)
+        if not history or "log_mask" not in history or history["log_mask"].numel() == 0:
+            return torch.zeros(bsz, self.log_history_gru.hidden_size, device=device)
+        mask = history["log_mask"].to(device=device, dtype=torch.float32)
+        if mask.shape[1] != self.log_history_k:
+            mask = mask[:, -self.log_history_k:]
+        k = mask.shape[1]
+        pos = torch.arange(k, device=device).unsqueeze(0).expand(mask.shape[0], -1)
+        def get(name: str) -> torch.Tensor:
+            return history[f"log_{name}"].to(device=device).long()[:, -k:]
+        parts = [
+            self.log_history_type_emb(get("type").clamp(0, MAX_LOG_TYPE + 1)),
+            self.log_history_player_emb(get("player").clamp(0, MAX_LOG_PLAYER)),
+            self.card_emb(get("card").clamp(0, N_CARDS + 1)),
+            self.card_emb(get("card2").clamp(0, N_CARDS + 1)),
+            self.attack_emb(get("attack").clamp(0, N_ATTACKS)),
+            self.log_history_serial_emb(get("serial").clamp(0, MAX_SERIAL + 1)),
+            self.log_history_serial_emb(get("serial2").clamp(0, MAX_SERIAL + 1)),
+            self.log_history_area_emb(get("from_area").clamp(0, MAX_LOG_AREA + 1)),
+            self.log_history_area_emb(get("to_area").clamp(0, MAX_LOG_AREA + 1)),
+            self.log_history_pos_emb(pos),
+            history["log_value"].to(device=device, dtype=torch.float32)[:, -k:].unsqueeze(-1),
+            mask.unsqueeze(-1),
+        ]
+        token = F.relu(self.log_history_token_fc(torch.cat(parts, dim=-1))) * mask.unsqueeze(-1)
+        hidden = torch.zeros(1, mask.shape[0], self.log_history_gru.hidden_size, device=device, dtype=token.dtype)
+        for t in range(k):
+            _, next_hidden = self.log_history_gru(token[:, t:t + 1], hidden)
+            valid = mask[:, t].view(1, -1, 1) > 0
+            hidden = torch.where(valid, next_hidden, hidden)
+        return hidden.squeeze(0)
+
+    def _encode_board_history(self, history: dict[str, torch.Tensor] | None,
+                              bsz: int, device: torch.device) -> torch.Tensor:
+        if self.board_history_k <= 0:
+            return torch.zeros(bsz, 0, device=device)
+        if not history or "board_mask" not in history or history["board_mask"].numel() == 0:
+            return torch.zeros(bsz, self.board_history_gru.hidden_size, device=device)
+        mask = history["board_mask"].to(device=device, dtype=torch.float32)
+        if mask.shape[1] != self.board_history_k:
+            mask = mask[:, -self.board_history_k:]
+        k = mask.shape[1]
+        cards = history["board_cards"].to(device=device).long()[:, -k:].clamp(0, N_CARDS + 1)
+        feats = self._fit_feat_dim(
+            history["board_feats"].to(device=device, dtype=torch.float32)[:, -k:],
+            self.board_history_feat_dim,
+        )
+        emb = self.card_emb(cards)
+        my_active = emb[:, :, 0]
+        my_bench = self._pool(cards[:, :, 1:6].reshape(-1, 5)).reshape(bsz, k, -1)
+        opp_active = emb[:, :, 6]
+        opp_bench = self._pool(cards[:, :, 7:].reshape(-1, 5)).reshape(bsz, k, -1)
+        feat = F.relu(self.board_history_feat_fc(feats))
+        pos = torch.arange(k, device=device).unsqueeze(0).expand(bsz, -1)
+        x = torch.cat([
+            my_active, my_bench, opp_active, opp_bench, feat,
+            self.board_history_pos_emb(pos), mask.unsqueeze(-1),
+        ], dim=-1)
+        token = F.relu(self.board_history_token_fc(x)) * mask.unsqueeze(-1)
+        hidden = torch.zeros(1, bsz, self.board_history_gru.hidden_size, device=device, dtype=token.dtype)
+        for t in range(k):
+            _, next_hidden = self.board_history_gru(token[:, t:t + 1], hidden)
+            valid = mask[:, t].view(1, -1, 1) > 0
+            hidden = torch.where(valid, next_hidden, hidden)
+        return hidden.squeeze(0)
+
+    def _encode_history(self, history: dict[str, torch.Tensor] | None, bsz: int,
+                        device: torch.device) -> torch.Tensor:
+        if self._hist <= 0:
+            return torch.zeros(bsz, 0, device=device)
+        parts = []
+        if self.history_k > 0:
+            parts.append(self._encode_action_history(
+                history, bsz, device, prefix="", k=self.history_k, pos_emb=self.history_pos_emb,
+            ))
+        if self.opp_history_k > 0:
+            parts.append(self._encode_action_history(
+                history, bsz, device, prefix="opp_", k=self.opp_history_k, pos_emb=self.opp_history_pos_emb,
+            ))
+        if self.log_history_k > 0:
+            parts.append(self._encode_log_history(history, bsz, device))
+        if self.board_history_k > 0:
+            parts.append(self._encode_board_history(history, bsz, device))
+        return torch.cat(parts, dim=-1) if parts else torch.zeros(bsz, 0, device=device)
+
     def _merge_history(self, h: torch.Tensor, history: dict[str, torch.Tensor] | None) -> torch.Tensor:
-        if self.history_k <= 0:
+        if self._hist <= 0:
             return h
         hist = self._encode_history(history, h.shape[0], h.device)
         return F.relu(self.history_out_fc(torch.cat([h, hist], dim=-1)))
@@ -187,6 +308,11 @@ class PolicyValueNet(nn.Module):
         if cur > dim:
             return x[..., :dim]
         return F.pad(x, (0, dim - cur))
+
+    def _pool(self, ids: torch.Tensor) -> torch.Tensor:
+        e = self.card_emb(ids)
+        mask = (ids > 0).float().unsqueeze(-1)
+        return (e * mask).sum(-2) / mask.sum(-2).clamp(min=1.0)
 
     # ── scoring ─────────────────────────────────────────────────────
 
@@ -497,6 +623,10 @@ class CrossAttentionPolicyValueNet(nn.Module):
         plan_dim: int = 0,
         hierarchical_plan: bool = False,
         history_k: int = 0,
+        opp_history_k: int = 0,
+        log_history_k: int = 0,
+        board_history_k: int = 0,
+        board_history_feat_dim: int = BOARD_HISTORY_FEAT_DIM,
         state_layers: int = 2,
     ):
         super().__init__()
@@ -511,11 +641,17 @@ class CrossAttentionPolicyValueNet(nn.Module):
         self.plan_dim = int(plan_dim)
         self.hierarchical_plan = bool(hierarchical_plan and self.plan_dim > 0)
         self.history_k = max(0, int(history_k))
+        self.opp_history_k = max(0, int(opp_history_k))
+        self.log_history_k = max(0, int(log_history_k))
+        self.board_history_k = max(0, int(board_history_k))
+        self.board_history_feat_dim = max(0, int(board_history_feat_dim))
         self.state_layers_n = int(state_layers)
         self._ec=ec; self._ea=ea; self._eo_t=eo_t; self._oe=oe; self._hd=hd
         self._ctx=ctx; self._area=area; self._idx=idx
         self._plan_cd = sc if self.hierarchical_plan else 0
-        self._hist = sc if self.history_k > 0 else 0
+        hist_streams = int(self.history_k > 0) + int(self.opp_history_k > 0)
+        hist_streams += int(self.log_history_k > 0) + int(self.board_history_k > 0)
+        self._hist = sc * hist_streams
         self.register_buffer("arch_code", torch.tensor([1], dtype=torch.int32), persistent=True)
 
         self.card_emb = nn.Embedding(N_CARDS + 2, ec, padding_idx=0)
@@ -540,15 +676,34 @@ class CrossAttentionPolicyValueNet(nn.Module):
         ])
         self.state_pool_fc = nn.Linear(oe, 1)
         self.state_out_fc = nn.Linear(oe, hd)
-        if self.history_k > 0:
+        if self.history_k > 0 or self.opp_history_k > 0:
             self.history_type_emb = nn.Embedding(N_OPT_TYPES + 2, eo_t, padding_idx=0)
             self.history_context_emb = nn.Embedding(66, ctx, padding_idx=0)
             self.history_select_type_emb = nn.Embedding(18, ctx, padding_idx=0)
-            self.history_pos_emb = nn.Embedding(self.history_k, ctx)
+            if self.history_k > 0:
+                self.history_pos_emb = nn.Embedding(self.history_k, ctx)
+            if self.opp_history_k > 0:
+                self.opp_history_pos_emb = nn.Embedding(self.opp_history_k, ctx)
             hist_in = ec + ec + ea + eo_t + ctx + ctx + ctx + 2
             self.history_token_fc = nn.Linear(hist_in, sc)
             self.history_gru = nn.GRU(sc, sc, batch_first=True)
-            self.history_out_fc = nn.Linear(hd + sc, hd)
+        if self.log_history_k > 0:
+            self.log_history_type_emb = nn.Embedding(MAX_LOG_TYPE + 2, eo_t, padding_idx=0)
+            self.log_history_player_emb = nn.Embedding(MAX_LOG_PLAYER + 1, ctx, padding_idx=0)
+            self.log_history_area_emb = nn.Embedding(MAX_LOG_AREA + 2, area, padding_idx=0)
+            self.log_history_serial_emb = nn.Embedding(MAX_SERIAL + 2, idx, padding_idx=0)
+            self.log_history_pos_emb = nn.Embedding(self.log_history_k, ctx)
+            log_in = eo_t + ctx + ec + ec + ea + idx + idx + area + area + ctx + 2
+            self.log_history_token_fc = nn.Linear(log_in, sc)
+            self.log_history_gru = nn.GRU(sc, sc, batch_first=True)
+        if self.board_history_k > 0:
+            self.board_history_pos_emb = nn.Embedding(self.board_history_k, ctx)
+            self.board_history_feat_fc = nn.Linear(self.board_history_feat_dim, sc)
+            board_in = 4 * ec + sc + ctx + 1
+            self.board_history_token_fc = nn.Linear(board_in, sc)
+            self.board_history_gru = nn.GRU(sc, sc, batch_first=True)
+        if self._hist > 0:
+            self.history_out_fc = nn.Linear(hd + self._hist, hd)
 
         opt_extra = ctx + ctx + area + idx + area + idx if option_context else 0
         self.opt_fc = nn.Linear(ec + ec + ea + eo_t + opt_extra + self.opt_feat_dim, oe)
@@ -590,6 +745,11 @@ class CrossAttentionPolicyValueNet(nn.Module):
             return x[..., :dim]
         return F.pad(x, (0, dim - cur))
 
+    def _pool(self, ids: torch.Tensor) -> torch.Tensor:
+        e = self.card_emb(ids)
+        mask = (ids > 0).float().unsqueeze(-1)
+        return (e * mask).sum(-2) / mask.sum(-2).clamp(min=1.0)
+
     def _state_area_index(self, board: torch.Tensor, hand: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         bsz = board.shape[0]
         device = board.device
@@ -625,39 +785,134 @@ class CrossAttentionPolicyValueNet(nn.Module):
             tokens = layer(tokens, mask)
         return tokens, mask
 
-    def _encode_history(self, history: dict[str, torch.Tensor] | None, bsz: int,
-                        device: torch.device) -> torch.Tensor:
-        if self.history_k <= 0:
+    def _encode_action_history(self, history: dict[str, torch.Tensor] | None,
+                               bsz: int, device: torch.device, *,
+                               prefix: str, k: int, pos_emb: nn.Embedding) -> torch.Tensor:
+        if k <= 0:
             return torch.zeros(bsz, 0, device=device)
-        if not history or history.get("mask") is None or history["mask"].numel() == 0:
-            return torch.zeros(bsz, self._hist, device=device)
-        mask = history["mask"].to(device=device, dtype=torch.float32)
-        if mask.shape[1] != self.history_k:
-            mask = mask[:, -self.history_k:]
-        k = mask.shape[1]
-        pos = torch.arange(k, device=device).unsqueeze(0).expand(mask.shape[0], -1)
+        mask_key = f"{prefix}mask"
+        if not history or mask_key not in history or history[mask_key].numel() == 0:
+            return torch.zeros(bsz, self.history_gru.hidden_size, device=device)
+        mask = history[mask_key].to(device=device, dtype=torch.float32)
+        if mask.shape[1] != k:
+            mask = mask[:, -k:]
+        seq_k = mask.shape[1]
+        pos = torch.arange(seq_k, device=device).unsqueeze(0).expand(mask.shape[0], -1)
+
+        def get(name: str) -> torch.Tensor:
+            return history[f"{prefix}{name}"].to(device=device).long()[:, -seq_k:]
+
         parts = [
-            self.card_emb(history["card"].to(device=device).long()[:, -k:]),
-            self.card_emb(history["card2"].to(device=device).long()[:, -k:]),
-            self.attack_emb(history["attack"].to(device=device).long()[:, -k:]),
-            self.history_type_emb(history["type"].to(device=device).long()[:, -k:].clamp(0, N_OPT_TYPES + 1)),
-            self.history_context_emb(history["context"].to(device=device).long()[:, -k:].clamp(0, 65)),
-            self.history_select_type_emb(history["select_type"].to(device=device).long()[:, -k:].clamp(0, 17)),
-            self.history_pos_emb(pos),
-            history["count"].to(device=device, dtype=torch.float32)[:, -k:].unsqueeze(-1),
+            self.card_emb(get("card").clamp(0, N_CARDS + 1)),
+            self.card_emb(get("card2").clamp(0, N_CARDS + 1)),
+            self.attack_emb(get("attack").clamp(0, N_ATTACKS)),
+            self.history_type_emb(get("type").clamp(0, N_OPT_TYPES + 1)),
+            self.history_context_emb(get("context").clamp(0, 65)),
+            self.history_select_type_emb(get("select_type").clamp(0, 17)),
+            pos_emb(pos),
+            history[f"{prefix}count"].to(device=device, dtype=torch.float32)[:, -seq_k:].unsqueeze(-1),
             mask.unsqueeze(-1),
         ]
-        x = torch.cat(parts, dim=-1)
-        token = F.relu(self.history_token_fc(x)) * mask.unsqueeze(-1)
-        hidden = torch.zeros(1, mask.shape[0], self._hist, device=device, dtype=token.dtype)
-        for t in range(k):
+        token = F.relu(self.history_token_fc(torch.cat(parts, dim=-1))) * mask.unsqueeze(-1)
+        hidden = torch.zeros(1, mask.shape[0], self.history_gru.hidden_size, device=device, dtype=token.dtype)
+        for t in range(seq_k):
             _, next_hidden = self.history_gru(token[:, t:t + 1], hidden)
             valid = mask[:, t].view(1, -1, 1) > 0
             hidden = torch.where(valid, next_hidden, hidden)
         return hidden.squeeze(0)
 
+    def _encode_log_history(self, history: dict[str, torch.Tensor] | None,
+                            bsz: int, device: torch.device) -> torch.Tensor:
+        if self.log_history_k <= 0:
+            return torch.zeros(bsz, 0, device=device)
+        if not history or "log_mask" not in history or history["log_mask"].numel() == 0:
+            return torch.zeros(bsz, self.log_history_gru.hidden_size, device=device)
+        mask = history["log_mask"].to(device=device, dtype=torch.float32)
+        if mask.shape[1] != self.log_history_k:
+            mask = mask[:, -self.log_history_k:]
+        k = mask.shape[1]
+        pos = torch.arange(k, device=device).unsqueeze(0).expand(mask.shape[0], -1)
+
+        def get(name: str) -> torch.Tensor:
+            return history[f"log_{name}"].to(device=device).long()[:, -k:]
+
+        parts = [
+            self.log_history_type_emb(get("type").clamp(0, MAX_LOG_TYPE + 1)),
+            self.log_history_player_emb(get("player").clamp(0, MAX_LOG_PLAYER)),
+            self.card_emb(get("card").clamp(0, N_CARDS + 1)),
+            self.card_emb(get("card2").clamp(0, N_CARDS + 1)),
+            self.attack_emb(get("attack").clamp(0, N_ATTACKS)),
+            self.log_history_serial_emb(get("serial").clamp(0, MAX_SERIAL + 1)),
+            self.log_history_serial_emb(get("serial2").clamp(0, MAX_SERIAL + 1)),
+            self.log_history_area_emb(get("from_area").clamp(0, MAX_LOG_AREA + 1)),
+            self.log_history_area_emb(get("to_area").clamp(0, MAX_LOG_AREA + 1)),
+            self.log_history_pos_emb(pos),
+            history["log_value"].to(device=device, dtype=torch.float32)[:, -k:].unsqueeze(-1),
+            mask.unsqueeze(-1),
+        ]
+        token = F.relu(self.log_history_token_fc(torch.cat(parts, dim=-1))) * mask.unsqueeze(-1)
+        hidden = torch.zeros(1, mask.shape[0], self.log_history_gru.hidden_size, device=device, dtype=token.dtype)
+        for t in range(k):
+            _, next_hidden = self.log_history_gru(token[:, t:t + 1], hidden)
+            valid = mask[:, t].view(1, -1, 1) > 0
+            hidden = torch.where(valid, next_hidden, hidden)
+        return hidden.squeeze(0)
+
+    def _encode_board_history(self, history: dict[str, torch.Tensor] | None,
+                              bsz: int, device: torch.device) -> torch.Tensor:
+        if self.board_history_k <= 0:
+            return torch.zeros(bsz, 0, device=device)
+        if not history or "board_mask" not in history or history["board_mask"].numel() == 0:
+            return torch.zeros(bsz, self.board_history_gru.hidden_size, device=device)
+        mask = history["board_mask"].to(device=device, dtype=torch.float32)
+        if mask.shape[1] != self.board_history_k:
+            mask = mask[:, -self.board_history_k:]
+        k = mask.shape[1]
+        cards = history["board_cards"].to(device=device).long()[:, -k:].clamp(0, N_CARDS + 1)
+        feats = self._fit_feat_dim(
+            history["board_feats"].to(device=device, dtype=torch.float32)[:, -k:],
+            self.board_history_feat_dim,
+        )
+        emb = self.card_emb(cards)
+        my_active = emb[:, :, 0]
+        my_bench = self._pool(cards[:, :, 1:6].reshape(-1, 5)).reshape(bsz, k, -1)
+        opp_active = emb[:, :, 6]
+        opp_bench = self._pool(cards[:, :, 7:].reshape(-1, 5)).reshape(bsz, k, -1)
+        feat = F.relu(self.board_history_feat_fc(feats))
+        pos = torch.arange(k, device=device).unsqueeze(0).expand(bsz, -1)
+        x = torch.cat([
+            my_active, my_bench, opp_active, opp_bench, feat,
+            self.board_history_pos_emb(pos), mask.unsqueeze(-1),
+        ], dim=-1)
+        token = F.relu(self.board_history_token_fc(x)) * mask.unsqueeze(-1)
+        hidden = torch.zeros(1, bsz, self.board_history_gru.hidden_size, device=device, dtype=token.dtype)
+        for t in range(k):
+            _, next_hidden = self.board_history_gru(token[:, t:t + 1], hidden)
+            valid = mask[:, t].view(1, -1, 1) > 0
+            hidden = torch.where(valid, next_hidden, hidden)
+        return hidden.squeeze(0)
+
+    def _encode_history(self, history: dict[str, torch.Tensor] | None, bsz: int,
+                        device: torch.device) -> torch.Tensor:
+        if self._hist <= 0:
+            return torch.zeros(bsz, 0, device=device)
+        parts = []
+        if self.history_k > 0:
+            parts.append(self._encode_action_history(
+                history, bsz, device, prefix="", k=self.history_k, pos_emb=self.history_pos_emb,
+            ))
+        if self.opp_history_k > 0:
+            parts.append(self._encode_action_history(
+                history, bsz, device, prefix="opp_", k=self.opp_history_k, pos_emb=self.opp_history_pos_emb,
+            ))
+        if self.log_history_k > 0:
+            parts.append(self._encode_log_history(history, bsz, device))
+        if self.board_history_k > 0:
+            parts.append(self._encode_board_history(history, bsz, device))
+        return torch.cat(parts, dim=-1) if parts else torch.zeros(bsz, 0, device=device)
+
     def _merge_history(self, h: torch.Tensor, history: dict[str, torch.Tensor] | None) -> torch.Tensor:
-        if self.history_k <= 0:
+        if self._hist <= 0:
             return h
         hist = self._encode_history(history, h.shape[0], h.device)
         return F.relu(self.history_out_fc(torch.cat([h, hist], dim=-1)))
@@ -812,3 +1067,29 @@ def checkpoint_history_k(z) -> int:
     if "history_pos_emb.weight" not in z:
         return 0
     return int(z["history_pos_emb.weight"].shape[0])
+
+
+def checkpoint_opp_history_k(z) -> int:
+    """Infer opponent past-decision history length from a checkpoint."""
+    if "opp_history_pos_emb.weight" not in z:
+        return 0
+    return int(z["opp_history_pos_emb.weight"].shape[0])
+
+
+def checkpoint_log_history_k(z) -> int:
+    """Infer public log history length from a checkpoint."""
+    if "log_history_pos_emb.weight" not in z:
+        return 0
+    return int(z["log_history_pos_emb.weight"].shape[0])
+
+
+def checkpoint_board_history_dims(z) -> tuple[int, int]:
+    """Infer board snapshot history length and feature width from a checkpoint."""
+    if "board_history_pos_emb.weight" not in z:
+        return 0, BOARD_HISTORY_FEAT_DIM
+    feat_dim = (
+        int(z["board_history_feat_fc.weight"].shape[1])
+        if "board_history_feat_fc.weight" in z
+        else BOARD_HISTORY_FEAT_DIM
+    )
+    return int(z["board_history_pos_emb.weight"].shape[0]), feat_dim

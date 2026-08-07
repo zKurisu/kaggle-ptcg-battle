@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from ptcg_rl.encoder import OPT_FEAT_DIM, STATE_FEAT_DIM
+from ptcg_rl.history_features import BOARD_HISTORY_FEAT_DIM
 
 
 @dataclass
@@ -146,6 +147,10 @@ class BCCorpus:
         trajectory_targets: dict[str, np.ndarray] | None = None,
         trajectory_target_dim: int = 0,
         history_k: int = 0,
+        opp_history_k: int = 0,
+        log_history_k: int = 0,
+        board_history_k: int = 0,
+        board_history_feat_dim: int = BOARD_HISTORY_FEAT_DIM,
         split_by_game: bool = False,
         load_progress_every: int = 0,
     ):
@@ -191,7 +196,17 @@ class BCCorpus:
             first = next(iter(self.trajectory_targets.values()))
             self.trajectory_target_dim = int(first.shape[-1])
         self.history_k = max(0, int(history_k))
-        self.split_by_game = bool(split_by_game or self.history_k > 0)
+        self.opp_history_k = max(0, int(opp_history_k))
+        self.log_history_k = max(0, int(log_history_k))
+        self.board_history_k = max(0, int(board_history_k))
+        self.board_history_feat_dim = max(0, int(board_history_feat_dim))
+        self.split_by_game = bool(
+            split_by_game
+            or self.history_k > 0
+            or self.opp_history_k > 0
+            or self.log_history_k > 0
+            or self.board_history_k > 0
+        )
         self.npz_data: list[dict[str, np.ndarray]] = []
         self.history_prev: list[np.ndarray] = []
         self.groups: list[list[tuple[int, int]]] = []
@@ -390,10 +405,62 @@ class BCCorpus:
         history_select_type = np.zeros((bsz, self.history_k), dtype=np.int64)
         history_count = np.zeros((bsz, self.history_k), dtype=np.float32)
         history_mask = np.zeros((bsz, self.history_k), dtype=np.float32)
+        opp_history_type = np.zeros((bsz, self.opp_history_k), dtype=np.int64)
+        opp_history_card = np.zeros((bsz, self.opp_history_k), dtype=np.int64)
+        opp_history_card2 = np.zeros((bsz, self.opp_history_k), dtype=np.int64)
+        opp_history_attack = np.zeros((bsz, self.opp_history_k), dtype=np.int64)
+        opp_history_context = np.zeros((bsz, self.opp_history_k), dtype=np.int64)
+        opp_history_select_type = np.zeros((bsz, self.opp_history_k), dtype=np.int64)
+        opp_history_count = np.zeros((bsz, self.opp_history_k), dtype=np.float32)
+        opp_history_mask = np.zeros((bsz, self.opp_history_k), dtype=np.float32)
+        log_history_type = np.zeros((bsz, self.log_history_k), dtype=np.int64)
+        log_history_player = np.zeros((bsz, self.log_history_k), dtype=np.int64)
+        log_history_card = np.zeros((bsz, self.log_history_k), dtype=np.int64)
+        log_history_card2 = np.zeros((bsz, self.log_history_k), dtype=np.int64)
+        log_history_attack = np.zeros((bsz, self.log_history_k), dtype=np.int64)
+        log_history_serial = np.zeros((bsz, self.log_history_k), dtype=np.int64)
+        log_history_serial2 = np.zeros((bsz, self.log_history_k), dtype=np.int64)
+        log_history_from_area = np.zeros((bsz, self.log_history_k), dtype=np.int64)
+        log_history_to_area = np.zeros((bsz, self.log_history_k), dtype=np.int64)
+        log_history_value = np.zeros((bsz, self.log_history_k), dtype=np.float32)
+        log_history_mask = np.zeros((bsz, self.log_history_k), dtype=np.float32)
+        board_history_cards = np.zeros((bsz, self.board_history_k, 12), dtype=np.int64)
+        board_history_feats = np.zeros(
+            (bsz, self.board_history_k, self.board_history_feat_dim),
+            dtype=np.float32,
+        )
+        board_history_mask = np.zeros((bsz, self.board_history_k), dtype=np.float32)
         actions: list[list[int]] = []
         contexts: list[int] = []
         true_first_types: list[int] = []
         true_first_cards: list[int] = []
+
+        def _copy_1d(data: dict[str, np.ndarray], key: str, si: int,
+                     dest: np.ndarray, bi: int, *, dtype=np.float32) -> bool:
+            if key not in data or dest.shape[1] <= 0:
+                return False
+            arr = np.asarray(data[key][si], dtype=dtype).reshape(-1)
+            n = min(arr.shape[0], dest.shape[1])
+            if n:
+                dest[bi, -n:] = arr[-n:]
+            return True
+
+        def _copy_action_prefix(data: dict[str, np.ndarray], prefix: str, si: int, bi: int,
+                                type_dst: np.ndarray, card_dst: np.ndarray,
+                                card2_dst: np.ndarray, attack_dst: np.ndarray,
+                                context_dst: np.ndarray, select_dst: np.ndarray,
+                                count_dst: np.ndarray, mask_dst: np.ndarray) -> bool:
+            if type_dst.shape[1] <= 0 or f"{prefix}_type" not in data:
+                return False
+            _copy_1d(data, f"{prefix}_type", si, type_dst, bi, dtype=np.int64)
+            _copy_1d(data, f"{prefix}_card", si, card_dst, bi, dtype=np.int64)
+            _copy_1d(data, f"{prefix}_card2", si, card2_dst, bi, dtype=np.int64)
+            _copy_1d(data, f"{prefix}_attack", si, attack_dst, bi, dtype=np.int64)
+            _copy_1d(data, f"{prefix}_context", si, context_dst, bi, dtype=np.int64)
+            _copy_1d(data, f"{prefix}_select_type", si, select_dst, bi, dtype=np.int64)
+            _copy_1d(data, f"{prefix}_count", si, count_dst, bi, dtype=np.float32)
+            _copy_1d(data, f"{prefix}_mask", si, mask_dst, bi, dtype=np.float32)
+            return True
 
         for bi, (di, si) in enumerate(indices):
             data = self.npz_data[di]
@@ -452,19 +519,60 @@ class BCCorpus:
                     trajectory_target[bi, :n_target] = target[:n_target]
                     trajectory_mask[bi, :n_target] = 1.0
             if self.history_k > 0:
-                for hi, prev_si in enumerate(self.history_prev[di][si]):
-                    if prev_si < 0:
-                        continue
-                    (
-                        history_type[bi, hi],
-                        history_card[bi, hi],
-                        history_card2[bi, hi],
-                        history_attack[bi, hi],
-                        history_context[bi, hi],
-                        history_select_type[bi, hi],
-                        history_count[bi, hi],
-                    ) = _history_event(data, int(prev_si))
-                    history_mask[bi, hi] = 1.0
+                copied = _copy_action_prefix(
+                    data, "own_hist", si, bi,
+                    history_type, history_card, history_card2, history_attack,
+                    history_context, history_select_type, history_count, history_mask,
+                )
+                if not copied:
+                    for hi, prev_si in enumerate(self.history_prev[di][si]):
+                        if prev_si < 0:
+                            continue
+                        (
+                            history_type[bi, hi],
+                            history_card[bi, hi],
+                            history_card2[bi, hi],
+                            history_attack[bi, hi],
+                            history_context[bi, hi],
+                            history_select_type[bi, hi],
+                            history_count[bi, hi],
+                        ) = _history_event(data, int(prev_si))
+                        history_mask[bi, hi] = 1.0
+            if self.opp_history_k > 0:
+                _copy_action_prefix(
+                    data, "opp_hist", si, bi,
+                    opp_history_type, opp_history_card, opp_history_card2, opp_history_attack,
+                    opp_history_context, opp_history_select_type, opp_history_count, opp_history_mask,
+                )
+            if self.log_history_k > 0:
+                _copy_1d(data, "log_hist_type", si, log_history_type, bi, dtype=np.int64)
+                _copy_1d(data, "log_hist_player", si, log_history_player, bi, dtype=np.int64)
+                _copy_1d(data, "log_hist_card", si, log_history_card, bi, dtype=np.int64)
+                _copy_1d(data, "log_hist_card2", si, log_history_card2, bi, dtype=np.int64)
+                _copy_1d(data, "log_hist_attack", si, log_history_attack, bi, dtype=np.int64)
+                _copy_1d(data, "log_hist_serial", si, log_history_serial, bi, dtype=np.int64)
+                _copy_1d(data, "log_hist_serial2", si, log_history_serial2, bi, dtype=np.int64)
+                _copy_1d(data, "log_hist_from_area", si, log_history_from_area, bi, dtype=np.int64)
+                _copy_1d(data, "log_hist_to_area", si, log_history_to_area, bi, dtype=np.int64)
+                _copy_1d(data, "log_hist_value", si, log_history_value, bi, dtype=np.float32)
+                _copy_1d(data, "log_hist_mask", si, log_history_mask, bi, dtype=np.float32)
+            if self.board_history_k > 0:
+                if "board_hist_cards" in data:
+                    arr = np.asarray(data["board_hist_cards"][si], dtype=np.int64)
+                    if arr.ndim == 2:
+                        n0 = min(arr.shape[0], self.board_history_k)
+                        n1 = min(arr.shape[1], 12)
+                        if n0 and n1:
+                            board_history_cards[bi, -n0:, :n1] = arr[-n0:, :n1]
+                if "board_hist_feats" in data:
+                    arr = np.asarray(data["board_hist_feats"][si], dtype=np.float32)
+                    if arr.ndim == 2:
+                        n0 = min(arr.shape[0], self.board_history_k)
+                        n1 = min(arr.shape[1], self.board_history_feat_dim)
+                        if n0 and n1:
+                            board_history_feats[bi, -n0:, :n1] = arr[-n0:, :n1]
+                if "board_hist_mask" in data:
+                    _copy_1d(data, "board_hist_mask", si, board_history_mask, bi, dtype=np.float32)
 
         max_steps = max(len(a) for a in actions) + 1
         targets = np.full((bsz, max_steps), -1, dtype=np.int64)
@@ -501,6 +609,28 @@ class BCCorpus:
                 "select_type": torch.as_tensor(history_select_type, device=device),
                 "count": torch.as_tensor(history_count, device=device),
                 "mask": torch.as_tensor(history_mask, device=device),
+                "opp_type": torch.as_tensor(opp_history_type, device=device),
+                "opp_card": torch.as_tensor(opp_history_card, device=device),
+                "opp_card2": torch.as_tensor(opp_history_card2, device=device),
+                "opp_attack": torch.as_tensor(opp_history_attack, device=device),
+                "opp_context": torch.as_tensor(opp_history_context, device=device),
+                "opp_select_type": torch.as_tensor(opp_history_select_type, device=device),
+                "opp_count": torch.as_tensor(opp_history_count, device=device),
+                "opp_mask": torch.as_tensor(opp_history_mask, device=device),
+                "log_type": torch.as_tensor(log_history_type, device=device),
+                "log_player": torch.as_tensor(log_history_player, device=device),
+                "log_card": torch.as_tensor(log_history_card, device=device),
+                "log_card2": torch.as_tensor(log_history_card2, device=device),
+                "log_attack": torch.as_tensor(log_history_attack, device=device),
+                "log_serial": torch.as_tensor(log_history_serial, device=device),
+                "log_serial2": torch.as_tensor(log_history_serial2, device=device),
+                "log_from_area": torch.as_tensor(log_history_from_area, device=device),
+                "log_to_area": torch.as_tensor(log_history_to_area, device=device),
+                "log_value": torch.as_tensor(log_history_value, device=device),
+                "log_mask": torch.as_tensor(log_history_mask, device=device),
+                "board_cards": torch.as_tensor(board_history_cards, device=device),
+                "board_feats": torch.as_tensor(board_history_feats, device=device),
+                "board_mask": torch.as_tensor(board_history_mask, device=device),
             },
             actions=actions,
             n_options=n_options,

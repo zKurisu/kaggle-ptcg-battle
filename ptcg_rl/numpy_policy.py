@@ -16,6 +16,14 @@ import time
 import numpy as np
 
 from .encoder import FastEncoder, MAX_HAND
+from .history_features import (
+    BOARD_HISTORY_FEAT_DIM,
+    action_event_from_encoded,
+    board_snapshot_from_encoded,
+    pack_action_history,
+    pack_board_history,
+    pack_log_history_from_obs,
+)
 
 NEG_INF = -1e9
 
@@ -62,7 +70,28 @@ class NumpyPolicy:
             else 0
         )
         self._history_k = int(self.w["history_pos_emb.weight"].shape[0]) if "history_pos_emb.weight" in self.w else 0
+        self._opp_history_k = (
+            int(self.w["opp_history_pos_emb.weight"].shape[0])
+            if "opp_history_pos_emb.weight" in self.w
+            else 0
+        )
+        self._log_history_k = (
+            int(self.w["log_history_pos_emb.weight"].shape[0])
+            if "log_history_pos_emb.weight" in self.w
+            else 0
+        )
+        self._board_history_k = (
+            int(self.w["board_history_pos_emb.weight"].shape[0])
+            if "board_history_pos_emb.weight" in self.w
+            else 0
+        )
+        self._board_history_feat_dim = (
+            int(self.w["board_history_feat_fc.weight"].shape[1])
+            if "board_history_feat_fc.weight" in self.w
+            else BOARD_HISTORY_FEAT_DIM
+        )
         self._history: list[dict[str, float | int]] = []
+        self._board_history: list[dict[str, np.ndarray]] = []
         if self._arch == "cross_attn":
             self._slot_state = True
             self._state_feat_dim = self.w["feat_token_fc.weight"].shape[1]
@@ -94,65 +123,51 @@ class NumpyPolicy:
 
     def reset_history(self) -> None:
         self._history.clear()
+        self._board_history.clear()
 
-    def _history_arrays(self) -> dict[str, np.ndarray] | None:
-        if self._history_k <= 0:
+    def _history_arrays(self, obs_dict: dict | None = None) -> dict[str, np.ndarray] | None:
+        if (
+            self._history_k <= 0
+            and self._opp_history_k <= 0
+            and self._log_history_k <= 0
+            and self._board_history_k <= 0
+        ):
             return None
-        out = {
-            "type": np.zeros(self._history_k, dtype=np.int64),
-            "card": np.zeros(self._history_k, dtype=np.int64),
-            "card2": np.zeros(self._history_k, dtype=np.int64),
-            "attack": np.zeros(self._history_k, dtype=np.int64),
-            "context": np.zeros(self._history_k, dtype=np.int64),
-            "select_type": np.zeros(self._history_k, dtype=np.int64),
-            "count": np.zeros(self._history_k, dtype=np.float32),
-            "mask": np.zeros(self._history_k, dtype=np.float32),
-        }
-        events = self._history[-self._history_k:]
-        start = self._history_k - len(events)
-        for i, event in enumerate(events, start):
-            for key in ("type", "card", "card2", "attack", "context", "select_type"):
-                out[key][i] = int(event.get(key, 0))
-            out["count"][i] = float(event.get("count", 0.0))
-            out["mask"][i] = 1.0
+        out: dict[str, np.ndarray] = {}
+        if self._history_k > 0:
+            own = pack_action_history(self._history, self._history_k)
+            out.update({k: np.asarray(v) for k, v in own.items()})
+        if self._opp_history_k > 0:
+            # Offline extraction can save opponent label history, but live Kaggle
+            # inference only has public logs. Keep this stream zero-filled unless
+            # a future caller provides a reproducible opponent-action tracker.
+            opp = pack_action_history([], self._opp_history_k)
+            out.update({f"opp_{k}": np.asarray(v) for k, v in opp.items()})
+        if self._log_history_k > 0:
+            logs = pack_log_history_from_obs(obs_dict or {}, self._log_history_k)
+            out.update({f"log_{k}": np.asarray(v) for k, v in logs.items()})
+        if self._board_history_k > 0:
+            boards = pack_board_history(
+                self._board_history,
+                self._board_history_k,
+                self._board_history_feat_dim,
+            )
+            out["board_cards"] = np.asarray(boards["cards"])
+            out["board_feats"] = np.asarray(boards["feats"])
+            out["board_mask"] = np.asarray(boards["mask"])
         return out
 
     def _remember_decision(self, d, picks: list[int]) -> None:
-        if self._history_k <= 0:
-            return
-        if picks:
-            idx = int(picks[0])
-            if 0 <= idx < len(d.opt_type):
-                opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
-                ctx = int(np.rint(opt_feats[idx, 3] * 64.0)) if opt_feats.shape[1] > 3 else 0
-                sel_type = int(np.rint(opt_feats[idx, 4] * 16.0)) if opt_feats.shape[1] > 4 else 0
-                event = {
-                    "type": int(d.opt_type[idx]) + 1,
-                    "card": int(d.opt_card[idx]),
-                    "card2": int(d.opt_card2[idx]),
-                    "attack": int(d.opt_attack[idx]),
-                    "context": max(0, min(ctx, 64)) + 1,
-                    "select_type": max(0, min(sel_type, 16)) + 1,
-                    "count": min(len(picks), max(int(d.max_count), 1)) / float(max(int(d.max_count), 1)),
-                }
-            else:
-                event = None
-        else:
-            ctx = int(np.rint(d.state_feats[17] * 64.0)) if len(d.state_feats) > 17 else 0
-            event = {
-                "type": 15,
-                "card": 0,
-                "card2": 0,
-                "attack": 0,
-                "context": max(0, min(ctx, 64)) + 1,
-                "select_type": 1,
-                "count": 0.0,
-            }
-        if event is None:
-            return
-        self._history.append(event)
-        if len(self._history) > self._history_k:
-            del self._history[:-self._history_k]
+        if self._history_k > 0:
+            event = action_event_from_encoded(d, picks)
+            if event is not None:
+                self._history.append(event)
+                if len(self._history) > self._history_k:
+                    del self._history[:-self._history_k]
+        if self._board_history_k > 0:
+            self._board_history.append(board_snapshot_from_encoded(d, self._board_history_feat_dim))
+            if len(self._board_history) > self._board_history_k:
+                del self._board_history[:-self._board_history_k]
 
     @classmethod
     def load(cls, path: str) -> "NumpyPolicy":
@@ -166,47 +181,14 @@ class NumpyPolicy:
         mask = (ids > 0).astype(np.float32)[:, None]
         return (e * mask).sum(axis=0) / (mask.sum() + 1e-8)
 
-    def _encode_history(self, history: dict[str, np.ndarray] | None) -> np.ndarray:
-        if self._history_k <= 0:
-            return np.zeros(0, dtype=np.float32)
-        hidden_dim = self.w["history_gru.weight_hh_l0"].shape[1]
-        if not history:
-            return np.zeros(hidden_dim, dtype=np.float32)
-        mask = np.asarray(history.get("mask", np.zeros(self._history_k)), dtype=np.float32)[-self._history_k:]
-        if mask.shape[0] < self._history_k:
-            mask = np.pad(mask, (self._history_k - mask.shape[0], 0))
-        def arr(name: str, dtype=np.int64):
-            x = np.asarray(history.get(name, np.zeros(self._history_k)), dtype=dtype)[-self._history_k:]
-            if x.shape[0] < self._history_k:
-                x = np.pad(x, (self._history_k - x.shape[0], 0))
-            return x
-        typ = arr("type").clip(0, self.w["history_type_emb.weight"].shape[0] - 1)
-        card = arr("card").clip(0, self.w["card_emb.weight"].shape[0] - 1)
-        card2 = arr("card2").clip(0, self.w["card_emb.weight"].shape[0] - 1)
-        attack = arr("attack").clip(0, self.w["attack_emb.weight"].shape[0] - 1)
-        ctx = arr("context").clip(0, self.w["history_context_emb.weight"].shape[0] - 1)
-        sel_type = arr("select_type").clip(0, self.w["history_select_type_emb.weight"].shape[0] - 1)
-        count = arr("count", dtype=np.float32).astype(np.float32)
-        pos = np.arange(self._history_k, dtype=np.int64)
-        x = np.concatenate([
-            self.w["card_emb.weight"][card],
-            self.w["card_emb.weight"][card2],
-            self.w["attack_emb.weight"][attack],
-            self.w["history_type_emb.weight"][typ],
-            self.w["history_context_emb.weight"][ctx],
-            self.w["history_select_type_emb.weight"][sel_type],
-            self.w["history_pos_emb.weight"][pos],
-            count[:, None],
-            mask[:, None],
-        ], axis=-1)
-        token = _relu(_linear(self.w["history_token_fc.weight"], self.w["history_token_fc.bias"], x))
-        token *= mask[:, None]
-        w_ih = self.w["history_gru.weight_ih_l0"]
-        w_hh = self.w["history_gru.weight_hh_l0"]
-        b_ih = self.w["history_gru.bias_ih_l0"]
-        b_hh = self.w["history_gru.bias_hh_l0"]
+    def _gru_sequence(self, prefix: str, token: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        hidden_dim = self.w[f"{prefix}.weight_hh_l0"].shape[1]
+        w_ih = self.w[f"{prefix}.weight_ih_l0"]
+        w_hh = self.w[f"{prefix}.weight_hh_l0"]
+        b_ih = self.w[f"{prefix}.bias_ih_l0"]
+        b_hh = self.w[f"{prefix}.bias_hh_l0"]
         h = np.zeros(hidden_dim, dtype=np.float32)
-        for t in range(self._history_k):
+        for t in range(mask.shape[0]):
             if mask[t] <= 0:
                 continue
             gi = token[t] @ w_ih.T + b_ih
@@ -219,8 +201,156 @@ class NumpyPolicy:
             h = (1.0 - z) * n + z * h
         return h.astype(np.float32, copy=False)
 
+    def _fixed_1d(self, history: dict[str, np.ndarray], name: str, k: int,
+                  dtype=np.int64) -> np.ndarray:
+        x = np.asarray(history.get(name, np.zeros(k)), dtype=dtype).reshape(-1)[-k:]
+        if x.shape[0] < k:
+            x = np.pad(x, (k - x.shape[0], 0))
+        return x
+
+    def _encode_action_history(self, history: dict[str, np.ndarray] | None,
+                               *, prefix: str, k: int, pos_key: str) -> np.ndarray:
+        if k <= 0:
+            return np.zeros(0, dtype=np.float32)
+        hidden_dim = self.w["history_gru.weight_hh_l0"].shape[1]
+        if not history:
+            return np.zeros(hidden_dim, dtype=np.float32)
+        mask = self._fixed_1d(history, f"{prefix}mask", k, dtype=np.float32).astype(np.float32)
+        typ = self._fixed_1d(history, f"{prefix}type", k).clip(0, self.w["history_type_emb.weight"].shape[0] - 1)
+        card = self._fixed_1d(history, f"{prefix}card", k).clip(0, self.w["card_emb.weight"].shape[0] - 1)
+        card2 = self._fixed_1d(history, f"{prefix}card2", k).clip(0, self.w["card_emb.weight"].shape[0] - 1)
+        attack = self._fixed_1d(history, f"{prefix}attack", k).clip(0, self.w["attack_emb.weight"].shape[0] - 1)
+        ctx = self._fixed_1d(history, f"{prefix}context", k).clip(0, self.w["history_context_emb.weight"].shape[0] - 1)
+        sel_type = self._fixed_1d(history, f"{prefix}select_type", k).clip(0, self.w["history_select_type_emb.weight"].shape[0] - 1)
+        count = self._fixed_1d(history, f"{prefix}count", k, dtype=np.float32).astype(np.float32)
+        pos = np.arange(k, dtype=np.int64)
+        x = np.concatenate([
+            self.w["card_emb.weight"][card],
+            self.w["card_emb.weight"][card2],
+            self.w["attack_emb.weight"][attack],
+            self.w["history_type_emb.weight"][typ],
+            self.w["history_context_emb.weight"][ctx],
+            self.w["history_select_type_emb.weight"][sel_type],
+            self.w[pos_key][pos],
+            count[:, None],
+            mask[:, None],
+        ], axis=-1)
+        token = _relu(_linear(self.w["history_token_fc.weight"], self.w["history_token_fc.bias"], x))
+        token *= mask[:, None]
+        return self._gru_sequence("history_gru", token, mask)
+
+    def _encode_log_history(self, history: dict[str, np.ndarray] | None) -> np.ndarray:
+        if self._log_history_k <= 0:
+            return np.zeros(0, dtype=np.float32)
+        hidden_dim = self.w["log_history_gru.weight_hh_l0"].shape[1]
+        if not history:
+            return np.zeros(hidden_dim, dtype=np.float32)
+        k = self._log_history_k
+        mask = self._fixed_1d(history, "log_mask", k, dtype=np.float32).astype(np.float32)
+        typ = self._fixed_1d(history, "log_type", k).clip(0, self.w["log_history_type_emb.weight"].shape[0] - 1)
+        player = self._fixed_1d(history, "log_player", k).clip(0, self.w["log_history_player_emb.weight"].shape[0] - 1)
+        card = self._fixed_1d(history, "log_card", k).clip(0, self.w["card_emb.weight"].shape[0] - 1)
+        card2 = self._fixed_1d(history, "log_card2", k).clip(0, self.w["card_emb.weight"].shape[0] - 1)
+        attack = self._fixed_1d(history, "log_attack", k).clip(0, self.w["attack_emb.weight"].shape[0] - 1)
+        serial = self._fixed_1d(history, "log_serial", k).clip(0, self.w["log_history_serial_emb.weight"].shape[0] - 1)
+        serial2 = self._fixed_1d(history, "log_serial2", k).clip(0, self.w["log_history_serial_emb.weight"].shape[0] - 1)
+        from_area = self._fixed_1d(history, "log_from_area", k).clip(0, self.w["log_history_area_emb.weight"].shape[0] - 1)
+        to_area = self._fixed_1d(history, "log_to_area", k).clip(0, self.w["log_history_area_emb.weight"].shape[0] - 1)
+        value = self._fixed_1d(history, "log_value", k, dtype=np.float32).astype(np.float32)
+        pos = np.arange(k, dtype=np.int64)
+        x = np.concatenate([
+            self.w["log_history_type_emb.weight"][typ],
+            self.w["log_history_player_emb.weight"][player],
+            self.w["card_emb.weight"][card],
+            self.w["card_emb.weight"][card2],
+            self.w["attack_emb.weight"][attack],
+            self.w["log_history_serial_emb.weight"][serial],
+            self.w["log_history_serial_emb.weight"][serial2],
+            self.w["log_history_area_emb.weight"][from_area],
+            self.w["log_history_area_emb.weight"][to_area],
+            self.w["log_history_pos_emb.weight"][pos],
+            value[:, None],
+            mask[:, None],
+        ], axis=-1)
+        token = _relu(_linear(self.w["log_history_token_fc.weight"], self.w["log_history_token_fc.bias"], x))
+        token *= mask[:, None]
+        return self._gru_sequence("log_history_gru", token, mask)
+
+    def _pool_rows(self, ids: np.ndarray) -> np.ndarray:
+        ids = np.asarray(ids, dtype=np.int64).clip(0, self.w["card_emb.weight"].shape[0] - 1)
+        e = self.w["card_emb.weight"][ids]
+        mask = (ids > 0).astype(np.float32)[..., None]
+        return (e * mask).sum(axis=1) / np.maximum(mask.sum(axis=1), 1e-8)
+
+    def _encode_board_history(self, history: dict[str, np.ndarray] | None) -> np.ndarray:
+        if self._board_history_k <= 0:
+            return np.zeros(0, dtype=np.float32)
+        hidden_dim = self.w["board_history_gru.weight_hh_l0"].shape[1]
+        if not history:
+            return np.zeros(hidden_dim, dtype=np.float32)
+        k = self._board_history_k
+        mask = self._fixed_1d(history, "board_mask", k, dtype=np.float32).astype(np.float32)
+        cards = np.asarray(history.get("board_cards", np.zeros((k, 12))), dtype=np.int64)
+        cards = cards.reshape(-1, 12)[-k:]
+        if cards.shape[0] < k:
+            cards = np.pad(cards, ((k - cards.shape[0], 0), (0, 0)))
+        cards = cards.clip(0, self.w["card_emb.weight"].shape[0] - 1)
+        feats = np.asarray(
+            history.get("board_feats", np.zeros((k, self._board_history_feat_dim))),
+            dtype=np.float32,
+        ).reshape(-1, self._board_history_feat_dim)[-k:]
+        if feats.shape[0] < k:
+            feats = np.pad(feats, ((k - feats.shape[0], 0), (0, 0)))
+        emb = self.w["card_emb.weight"]
+        my_active = emb[cards[:, 0]]
+        my_bench = self._pool_rows(cards[:, 1:6])
+        opp_active = emb[cards[:, 6]]
+        opp_bench = self._pool_rows(cards[:, 7:])
+        feat = _relu(_linear(
+            self.w["board_history_feat_fc.weight"],
+            self.w["board_history_feat_fc.bias"],
+            self._fit_feat_dim(feats, self._board_history_feat_dim),
+        ))
+        pos = np.arange(k, dtype=np.int64)
+        x = np.concatenate([
+            my_active,
+            my_bench,
+            opp_active,
+            opp_bench,
+            feat,
+            self.w["board_history_pos_emb.weight"][pos],
+            mask[:, None],
+        ], axis=-1)
+        token = _relu(_linear(self.w["board_history_token_fc.weight"], self.w["board_history_token_fc.bias"], x))
+        token *= mask[:, None]
+        return self._gru_sequence("board_history_gru", token, mask)
+
+    def _encode_history(self, history: dict[str, np.ndarray] | None) -> np.ndarray:
+        if "history_out_fc.weight" not in self.w:
+            return np.zeros(0, dtype=np.float32)
+        parts = []
+        if self._history_k > 0:
+            parts.append(self._encode_action_history(
+                history,
+                prefix="",
+                k=self._history_k,
+                pos_key="history_pos_emb.weight",
+            ))
+        if self._opp_history_k > 0:
+            parts.append(self._encode_action_history(
+                history,
+                prefix="opp_",
+                k=self._opp_history_k,
+                pos_key="opp_history_pos_emb.weight",
+            ))
+        if self._log_history_k > 0:
+            parts.append(self._encode_log_history(history))
+        if self._board_history_k > 0:
+            parts.append(self._encode_board_history(history))
+        return np.concatenate(parts).astype(np.float32, copy=False) if parts else np.zeros(0, dtype=np.float32)
+
     def _merge_history(self, h: np.ndarray, history: dict[str, np.ndarray] | None) -> np.ndarray:
-        if self._history_k <= 0:
+        if "history_out_fc.weight" not in self.w:
             return h
         hist = self._encode_history(history)
         return _relu(_linear(
@@ -375,7 +505,7 @@ class NumpyPolicy:
         """V(s) from a raw observation dict. Higher = better for current player."""
         try:
             d = self.encoder.encode(obs_dict)
-            h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats, self._history_arrays())
+            h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats, self._history_arrays(obs_dict))
             return self.value(h)
         except Exception:
             return 0.0
@@ -399,7 +529,7 @@ class NumpyPolicy:
 
         d = self.encoder.encode(obs_dict)
         n = len(d.opt_type)
-        h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats, self._history_arrays())
+        h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats, self._history_arrays(obs_dict))
         opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
 
         parts = [
@@ -518,7 +648,7 @@ class NumpyPolicy:
             d.board_cards,
             d.hand_cards,
             d.state_feats,
-            self._history_arrays(),
+            self._history_arrays(obs_dict),
         )
         opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
         opts = self._cross_options(self._option_base(d, opt_feats), tokens, token_mask)
@@ -567,7 +697,7 @@ class NumpyPolicy:
 
         d = self.encoder.encode(obs_dict)
         n = len(d.opt_type)
-        h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats, self._history_arrays())
+        h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats, self._history_arrays(obs_dict))
         opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
 
         parts = [
@@ -627,7 +757,7 @@ class NumpyPolicy:
             d.board_cards,
             d.hand_cards,
             d.state_feats,
-            self._history_arrays(),
+            self._history_arrays(obs_dict),
         )
         opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
         opts = self._cross_options(self._option_base(d, opt_feats), tokens, token_mask)

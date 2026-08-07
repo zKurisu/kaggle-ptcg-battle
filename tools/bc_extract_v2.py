@@ -20,8 +20,21 @@ sys.path.insert(0, str(_REPO)); sys.path.insert(0, str(_WS))
 
 from ptcg_rl.deck_registry import deck_signature
 from ptcg_rl.encoder import OPT_FEAT_DIM, STATE_FEAT_DIM
+from ptcg_rl.history_features import (
+    BOARD_HISTORY_FEAT_DIM,
+    DEFAULT_ACTION_HISTORY_K,
+    DEFAULT_BOARD_HISTORY_K,
+    DEFAULT_LOG_HISTORY_K,
+    ACTION_FIELDS,
+    LOG_FIELDS,
+    action_event_from_encoded,
+    board_snapshot_from_encoded,
+    pack_action_history,
+    pack_board_history,
+    pack_log_history_from_obs,
+)
 
-FEATURE_VERSION = "v11_matchup_mechanic"
+FEATURE_VERSION = "v12_multistream_history"
 
 ARCHETYPES = {
     "Marnie Grimmsnarl": [648], "Alakazam": [743, 245, 741, 742],
@@ -126,7 +139,9 @@ def _append_decision(all_data, encoder, obs: dict, action: list,
                      opponent_score_band: str = "",
                      episode_id: str = "", player_index: int = -1,
                      reward: float = 0.0, won: int = 0, draw: int = 0,
-                     final_status: str = "", game_steps: int = 0) -> bool:
+                     final_status: str = "", game_steps: int = 0,
+                     step_index: int = -1, decision_index: int = -1,
+                     encoded=None, history: dict | None = None) -> bool:
     sel = obs.get('select')
     if sel is None or len(sel.get('option', [])) == 0:
         return False
@@ -135,8 +150,8 @@ def _append_decision(all_data, encoder, obs: dict, action: list,
     arch = classify(deck)
     opponent_archetype = classify(opponent_deck or []) if opponent_deck else "Other"
     key = f"{arch}|{band}"
-    ed = encoder.encode(obs)
-    all_data[key].append({
+    ed = encoded if encoded is not None else encoder.encode(obs)
+    row = {
         'board': ed.board_cards.astype(np.int16),
         'hand': ed.hand_cards.astype(np.int16),
         'feats': ed.state_feats.astype(np.float16),
@@ -162,16 +177,38 @@ def _append_decision(all_data, encoder, obs: dict, action: list,
         'draw': int(draw),
         'final_status': final_status,
         'game_steps': int(game_steps),
-    })
+        'step_index': int(step_index),
+        'decision_index': int(decision_index),
+    }
+    if history:
+        for prefix in ("own_hist", "opp_hist"):
+            hist = history.get(prefix) or {}
+            for field in ACTION_FIELDS:
+                row[f"{prefix}_{field}"] = hist.get(field)
+        log_hist = history.get("log_hist") or {}
+        for field in LOG_FIELDS:
+            row[f"log_hist_{field}"] = log_hist.get(field)
+        board_hist = history.get("board_hist") or {}
+        row["board_hist_cards"] = board_hist.get("cards")
+        row["board_hist_feats"] = board_hist.get("feats")
+        row["board_hist_mask"] = board_hist.get("mask")
+    all_data[key].append(row)
     return True
 
 
-def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 500):
+def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 500,
+                action_history_k: int = DEFAULT_ACTION_HISTORY_K,
+                log_history_k: int = DEFAULT_LOG_HISTORY_K,
+                board_history_k: int = DEFAULT_BOARD_HISTORY_K,
+                board_history_feat_dim: int = BOARD_HISTORY_FEAT_DIM,
+                max_episodes: int = 0):
     from ptcg_rl.encoder import FastEncoder
     encoder = FastEncoder()
 
     with zipfile.ZipFile(str(zip_path)) as zf:
         fnames = [n for n in zf.namelist() if n.endswith('.json')]
+        if max_episodes > 0:
+            fnames = fnames[:max_episodes]
         print(f"{zip_path.name}: {len(fnames)} eps")
         t0 = time.time()
 
@@ -205,14 +242,19 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
                 # Kaggle episode rows store the action that answered the
                 # previous ACTIVE observation for that player.
                 pending = [None, None]
-                for step in steps[1:]:
+                action_history = [[], []]
+                board_history = [[], []]
+                decision_count = [0, 0]
+                for step_index, step in enumerate(steps[1:], 1):
                     for pi, pd in enumerate(step[:2]):
                         if not isinstance(pd, dict):
                             continue
                         has_action = 'action' in pd
                         action = pd.get('action')
                         if pending[pi] is not None and has_action and isinstance(action, list) and len(action) != 60:
-                            obs_prev = pending[pi]
+                            pend = pending[pi]
+                            obs_prev = pend["obs"]
+                            ed_prev = pend.get("encoded")
                             band = bands[pi] if pi < len(bands) else "unknown"
                             try:
                                 ok = _append_decision(
@@ -232,8 +274,18 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
                                     draw=draws[pi],
                                     final_status=statuses[pi],
                                     game_steps=len(steps),
+                                    step_index=pend.get("step_index", -1),
+                                    decision_index=pend.get("decision_index", -1),
+                                    encoded=ed_prev,
+                                    history=pend.get("history"),
                                 )
                                 bad_actions += 0 if ok else 1
+                                if ok:
+                                    event = action_event_from_encoded(ed_prev, action)
+                                    if event is not None:
+                                        action_history[pi].append(event)
+                                        if len(action_history[pi]) > max(action_history_k, 1) * 4:
+                                            del action_history[pi][:-max(action_history_k, 1) * 4]
                             except Exception:
                                 errors += 1
                             pending[pi] = None
@@ -243,7 +295,34 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
                         sel = obs.get('select') if obs else None
                         if (pd.get('status') == 'ACTIVE' and sel is not None
                                 and len(sel.get('option', [])) > 0):
-                            pending[pi] = obs
+                            try:
+                                ed = encoder.encode(obs)
+                                hist = {
+                                    "own_hist": pack_action_history(action_history[pi], action_history_k),
+                                    "opp_hist": pack_action_history(action_history[1 - pi], action_history_k),
+                                    "log_hist": pack_log_history_from_obs(obs, log_history_k),
+                                    "board_hist": pack_board_history(
+                                        board_history[pi],
+                                        board_history_k,
+                                        board_history_feat_dim,
+                                    ),
+                                }
+                                pending[pi] = {
+                                    "obs": obs,
+                                    "encoded": ed,
+                                    "history": hist,
+                                    "step_index": step_index,
+                                    "decision_index": decision_count[pi],
+                                }
+                                decision_count[pi] += 1
+                                board_history[pi].append(
+                                    board_snapshot_from_encoded(ed, board_history_feat_dim)
+                                )
+                                if len(board_history[pi]) > max(board_history_k, 1) * 4:
+                                    del board_history[pi][:-max(board_history_k, 1) * 4]
+                            except Exception:
+                                errors += 1
+                                pending[pi] = None
             except Exception:
                 errors += 1
 
@@ -268,6 +347,8 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
         arch_dir = os.path.join(out_dir, arch.replace(' ', '_'), band.replace(' ', '_'))
         os.makedirs(arch_dir, exist_ok=True)
         fbase = zip_path.name.replace('.zip', '')
+        def stack(name, dtype):
+            return np.stack([np.asarray(d[name]) for d in decs]).astype(dtype)
         np.savez_compressed(
             os.path.join(arch_dir, f'{fbase}.npz'),
             board=np.array([d['board'] for d in decs], dtype=object),
@@ -296,9 +377,45 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
             draw=np.array([d['draw'] for d in decs], dtype=np.int8),
             final_status=np.array([d['final_status'] for d in decs], dtype=object),
             game_steps=np.array([d['game_steps'] for d in decs], dtype=np.int16),
+            step_index=np.array([d['step_index'] for d in decs], dtype=np.int16),
+            decision_index=np.array([d['decision_index'] for d in decs], dtype=np.int16),
+            own_hist_type=stack('own_hist_type', np.int16),
+            own_hist_card=stack('own_hist_card', np.int16),
+            own_hist_card2=stack('own_hist_card2', np.int16),
+            own_hist_attack=stack('own_hist_attack', np.int16),
+            own_hist_context=stack('own_hist_context', np.int16),
+            own_hist_select_type=stack('own_hist_select_type', np.int16),
+            own_hist_count=stack('own_hist_count', np.float16),
+            own_hist_mask=stack('own_hist_mask', np.float16),
+            opp_hist_type=stack('opp_hist_type', np.int16),
+            opp_hist_card=stack('opp_hist_card', np.int16),
+            opp_hist_card2=stack('opp_hist_card2', np.int16),
+            opp_hist_attack=stack('opp_hist_attack', np.int16),
+            opp_hist_context=stack('opp_hist_context', np.int16),
+            opp_hist_select_type=stack('opp_hist_select_type', np.int16),
+            opp_hist_count=stack('opp_hist_count', np.float16),
+            opp_hist_mask=stack('opp_hist_mask', np.float16),
+            log_hist_type=stack('log_hist_type', np.int16),
+            log_hist_player=stack('log_hist_player', np.int8),
+            log_hist_card=stack('log_hist_card', np.int16),
+            log_hist_card2=stack('log_hist_card2', np.int16),
+            log_hist_attack=stack('log_hist_attack', np.int16),
+            log_hist_serial=stack('log_hist_serial', np.int16),
+            log_hist_serial2=stack('log_hist_serial2', np.int16),
+            log_hist_from_area=stack('log_hist_from_area', np.int8),
+            log_hist_to_area=stack('log_hist_to_area', np.int8),
+            log_hist_value=stack('log_hist_value', np.float16),
+            log_hist_mask=stack('log_hist_mask', np.float16),
+            board_hist_cards=stack('board_hist_cards', np.int16),
+            board_hist_feats=stack('board_hist_feats', np.float16),
+            board_hist_mask=stack('board_hist_mask', np.float16),
             feature_version=np.array(FEATURE_VERSION, dtype=object),
             state_feat_dim=np.array(STATE_FEAT_DIM, dtype=np.int16),
             opt_feat_dim=np.array(OPT_FEAT_DIM, dtype=np.int16),
+            action_history_k=np.array(action_history_k, dtype=np.int16),
+            log_history_k=np.array(log_history_k, dtype=np.int16),
+            board_history_k=np.array(board_history_k, dtype=np.int16),
+            board_history_feat_dim=np.array(board_history_feat_dim, dtype=np.int16),
         )
         mb = os.path.getsize(os.path.join(arch_dir, f'{fbase}.npz')) / 1024**2
         print(f"  {key}: {n} decs, {mb:.0f}MB")
@@ -317,6 +434,16 @@ def main():
                    help="number of episode zip files to process concurrently")
     p.add_argument("--progress-every", type=int, default=500,
                    help="print progress every N episodes per zip; 0 disables progress")
+    p.add_argument("--action-history-k", type=int, default=DEFAULT_ACTION_HISTORY_K,
+                   help="save this many previous own/opponent labeled action events per decision")
+    p.add_argument("--log-history-k", type=int, default=DEFAULT_LOG_HISTORY_K,
+                   help="save this many recent public observation log events per decision")
+    p.add_argument("--board-history-k", type=int, default=DEFAULT_BOARD_HISTORY_K,
+                   help="save this many previous board snapshots from the same player perspective")
+    p.add_argument("--board-history-feat-dim", type=int, default=BOARD_HISTORY_FEAT_DIM,
+                   help="number of scalar state features saved per board-history snapshot")
+    p.add_argument("--max-episodes", type=int, default=0,
+                   help="debug/smoke-test limit per zip; 0 processes all episodes")
     args = p.parse_args()
 
     name_to_score = load_leaderboard_scores(args.lb_csv)
@@ -327,12 +454,36 @@ def main():
     zips = sorted(Path(args.episodes_dir).glob("*.zip"))
     if args.workers <= 1:
         for zf in zips:
-            process_zip(zf, args.out, name_to_score, args.progress_every)
+            process_zip(
+                zf,
+                args.out,
+                name_to_score,
+                args.progress_every,
+                args.action_history_k,
+                args.log_history_k,
+                args.board_history_k,
+                args.board_history_feat_dim,
+                args.max_episodes,
+            )
     else:
         workers = min(args.workers, len(zips))
         print(f"Processing {len(zips)} zips with {workers} workers\n", flush=True)
         with ProcessPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(process_zip, zf, args.out, name_to_score, args.progress_every) for zf in zips]
+            futs = [
+                ex.submit(
+                    process_zip,
+                    zf,
+                    args.out,
+                    name_to_score,
+                    args.progress_every,
+                    args.action_history_k,
+                    args.log_history_k,
+                    args.board_history_k,
+                    args.board_history_feat_dim,
+                    args.max_episodes,
+                )
+                for zf in zips
+            ]
             done = 0
             t0 = time.time()
             for fut in as_completed(futs):

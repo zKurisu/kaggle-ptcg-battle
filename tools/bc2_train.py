@@ -17,7 +17,15 @@ sys.path.insert(0, str(_REPO))
 
 from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, sequence_nll
 from ptcg_rl.deck_plans import CARD_NAMES
-from ptcg_rl.model import build_policy_model, checkpoint_feature_dims, checkpoint_history_k
+from ptcg_rl.history_features import BOARD_HISTORY_FEAT_DIM
+from ptcg_rl.model import (
+    build_policy_model,
+    checkpoint_board_history_dims,
+    checkpoint_feature_dims,
+    checkpoint_history_k,
+    checkpoint_log_history_k,
+    checkpoint_opp_history_k,
+)
 
 
 CONTEXT_IDS = {
@@ -348,6 +356,18 @@ def _checkpoint_history_k(path: str) -> int:
         return checkpoint_history_k(z)
 
 
+def _checkpoint_history_dims(path: str) -> tuple[int, int, int, int, int]:
+    with np.load(path) as z:
+        board_k, board_feat_dim = checkpoint_board_history_dims(z)
+        return (
+            checkpoint_history_k(z),
+            checkpoint_opp_history_k(z),
+            checkpoint_log_history_k(z),
+            board_k,
+            board_feat_dim,
+        )
+
+
 def _configure_cuda_memory_limit(device: torch.device, *, gb: float = 0.0, fraction: float = 0.0) -> str:
     if device.type != "cuda":
         return ""
@@ -439,6 +459,17 @@ def main() -> None:
                         ))
     parser.add_argument("--history-k", type=int, default=0,
                         help="condition the policy on this many previous own decisions from the same game; 0 disables")
+    parser.add_argument("--opp-history-k", type=int, default=0,
+                        help=(
+                            "condition on previous opponent labeled decisions saved by v12 extraction. "
+                            "Use mainly for offline diagnostics; public Kaggle inference cannot exactly reproduce it."
+                        ))
+    parser.add_argument("--log-history-k", type=int, default=0,
+                        help="condition on this many recent public observation log events saved by v12 extraction")
+    parser.add_argument("--board-history-k", type=int, default=0,
+                        help="condition on this many previous board snapshots saved by v12 extraction")
+    parser.add_argument("--board-history-feat-dim", type=int, default=BOARD_HISTORY_FEAT_DIM,
+                        help="feature width for board history snapshots")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--cuda-memory-gb", type=float, default=0.0,
                         help="cap this process' CUDA allocator to approximately N GiB; 0 disables")
@@ -570,8 +601,22 @@ def main() -> None:
     if args.hierarchical_plan and plan_target_dim <= 0:
         raise ValueError("--hierarchical-plan requires at least one --trajectory-target")
     history_k = max(0, int(args.history_k))
-    if args.init and history_k <= 0:
-        history_k = _checkpoint_history_k(args.init)
+    opp_history_k = max(0, int(args.opp_history_k))
+    log_history_k = max(0, int(args.log_history_k))
+    board_history_k = max(0, int(args.board_history_k))
+    board_history_feat_dim = max(0, int(args.board_history_feat_dim))
+    if args.init:
+        init_hist, init_opp_hist, init_log_hist, init_board_hist, init_board_feat = _checkpoint_history_dims(args.init)
+        if history_k <= 0:
+            history_k = init_hist
+        if opp_history_k <= 0:
+            opp_history_k = init_opp_hist
+        if log_history_k <= 0:
+            log_history_k = init_log_hist
+        if board_history_k <= 0:
+            board_history_k = init_board_hist
+        if board_history_k > 0 and (not args.board_history_feat_dim or args.board_history_feat_dim == BOARD_HISTORY_FEAT_DIM):
+            board_history_feat_dim = init_board_feat
     inferred_from_init = False
     state_feat_dim = int(args.state_feat_dim) if args.state_feat_dim else None
     opt_feat_dim = int(args.opt_feat_dim) if args.opt_feat_dim else None
@@ -610,7 +655,19 @@ def main() -> None:
         trajectory_targets=trajectory_targets,
         trajectory_target_dim=plan_target_dim,
         history_k=history_k,
-        split_by_game=args.split_by_game or bool(trajectory_weights) or bool(trajectory_targets) or history_k > 0,
+        opp_history_k=opp_history_k,
+        log_history_k=log_history_k,
+        board_history_k=board_history_k,
+        board_history_feat_dim=board_history_feat_dim,
+        split_by_game=(
+            args.split_by_game
+            or bool(trajectory_weights)
+            or bool(trajectory_targets)
+            or history_k > 0
+            or opp_history_k > 0
+            or log_history_k > 0
+            or board_history_k > 0
+        ),
         load_progress_every=args.load_progress_every,
     )
     if corpus.stats["kept"] <= 0:
@@ -636,6 +693,13 @@ def main() -> None:
         model_kwargs["hierarchical_plan"] = True
     if history_k > 0:
         model_kwargs["history_k"] = history_k
+    if opp_history_k > 0:
+        model_kwargs["opp_history_k"] = opp_history_k
+    if log_history_k > 0:
+        model_kwargs["log_history_k"] = log_history_k
+    if board_history_k > 0:
+        model_kwargs["board_history_k"] = board_history_k
+        model_kwargs["board_history_feat_dim"] = board_history_feat_dim
     model = build_policy_model(
         args.arch,
         width=args.width,
@@ -647,7 +711,15 @@ def main() -> None:
         skip_prefixes = list(args.init_skip_prefix)
         if args.reset_scorer:
             skip_prefixes.extend(["score_fc", "stop_vec"])
-        partial_init = args.init_partial or bool(plan_target_dim) or bool(skip_prefixes) or history_k > 0
+        partial_init = (
+            args.init_partial
+            or bool(plan_target_dim)
+            or bool(skip_prefixes)
+            or history_k > 0
+            or opp_history_k > 0
+            or log_history_k > 0
+            or board_history_k > 0
+        )
         loaded, skipped = _load_npz_init(
             model,
             args.init,
@@ -676,7 +748,9 @@ def main() -> None:
         f"{memory_limit_msg + ' ' if memory_limit_msg else ''}"
         f"arch={args.arch} width={args.width} state_layers={args.state_layers} "
         f"hierarchical_plan={args.hierarchical_plan} "
-        f"history_k={history_k} "
+        f"history_k={history_k} opp_history_k={opp_history_k} "
+        f"log_history_k={log_history_k} board_history_k={board_history_k} "
+        f"board_history_feat_dim={board_history_feat_dim} "
         f"slot_state={not args.legacy_state_pool} "
         f"state_feat_dim={state_feat_dim or 'default'} opt_feat_dim={opt_feat_dim or 'default'} "
         f"{'feature_dims_from_init ' if inferred_from_init else ''}"
@@ -698,7 +772,7 @@ def main() -> None:
         f"trajectory_base/cap/missing={args.trajectory_base_weight}/{args.trajectory_weight_cap}/"
         f"{args.trajectory_missing_weight}:{args.trajectory_missing_policy} "
         f"reset_scorer={args.reset_scorer} init_skip_prefix={args.init_skip_prefix or 'none'} "
-        f"split_by_game={args.split_by_game or bool(trajectory_weights) or bool(trajectory_targets) or history_k > 0} "
+        f"split_by_game={corpus.split_by_game} "
         f"set_loss={args.set_loss_weight}/{args.set_loss_min_count}/{args.set_loss_negative_weight} "
         f"aux_corpus={aux_details or 'none'} aux_bands={args.aux_score_bands} aux_repeat={aux_repeat} "
         f"params={params/1e6:.1f}M",

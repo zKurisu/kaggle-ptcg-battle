@@ -293,6 +293,17 @@ def train_cmd(row: dict, args: argparse.Namespace, checkpoint_path: str) -> str:
         cmd.extend(["--state-feat-dim", str(args.state_feat_dim)])
     if args.opt_feat_dim:
         cmd.extend(["--opt-feat-dim", str(args.opt_feat_dim)])
+    if args.history_k:
+        cmd.extend(["--history-k", str(args.history_k)])
+    if args.opp_history_k:
+        cmd.extend(["--opp-history-k", str(args.opp_history_k)])
+    if args.log_history_k:
+        cmd.extend(["--log-history-k", str(args.log_history_k)])
+    if args.board_history_k:
+        cmd.extend([
+            "--board-history-k", str(args.board_history_k),
+            "--board-history-feat-dim", str(args.board_history_feat_dim),
+        ])
     for value in args.opponent_deck_sig:
         cmd.extend(["--opponent-deck-sig", value])
     for value in args.opponent_archetype:
@@ -444,6 +455,16 @@ def main() -> None:
                    help="override state feature width in emitted train commands")
     p.add_argument("--opt-feat-dim", type=int, default=0,
                    help="override per-option feature width in emitted train commands")
+    p.add_argument("--history-k", type=int, default=0,
+                   help="emit own-decision history length in train commands")
+    p.add_argument("--opp-history-k", type=int, default=0,
+                   help="emit opponent-decision history length in train commands; offline only by default")
+    p.add_argument("--log-history-k", type=int, default=0,
+                   help="emit public log history length in train commands")
+    p.add_argument("--board-history-k", type=int, default=0,
+                   help="emit board snapshot history length in train commands")
+    p.add_argument("--board-history-feat-dim", type=int, default=32,
+                   help="emit board snapshot feature width in train commands")
     p.add_argument("--opponent-deck-sig", action="append", default=[],
                    help="append opponent deck-signature filters to emitted train commands")
     p.add_argument("--opponent-archetype", action="append", default=[],

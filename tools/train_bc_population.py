@@ -107,6 +107,17 @@ def build_train_cmd(args: argparse.Namespace, job: Job) -> list[str]:
         cmd.extend(["--state-feat-dim", str(args.state_feat_dim)])
     if args.opt_feat_dim:
         cmd.extend(["--opt-feat-dim", str(args.opt_feat_dim)])
+    if args.history_k:
+        cmd.extend(["--history-k", str(args.history_k)])
+    if args.opp_history_k:
+        cmd.extend(["--opp-history-k", str(args.opp_history_k)])
+    if args.log_history_k:
+        cmd.extend(["--log-history-k", str(args.log_history_k)])
+    if args.board_history_k:
+        cmd.extend([
+            "--board-history-k", str(args.board_history_k),
+            "--board-history-feat-dim", str(args.board_history_feat_dim),
+        ])
     if job.init:
         cmd.extend(["--init", job.init])
     if job.init and args.init_partial:
@@ -358,6 +369,16 @@ def main() -> None:
                    help="override state feature width; 0 uses current encoder default")
     p.add_argument("--opt-feat-dim", type=int, default=0,
                    help="override per-option feature width; 0 uses current encoder default")
+    p.add_argument("--history-k", type=int, default=0,
+                   help="pass own-decision history length through to bc2_train.py")
+    p.add_argument("--opp-history-k", type=int, default=0,
+                   help="pass opponent-decision history length through to bc2_train.py; offline only by default")
+    p.add_argument("--log-history-k", type=int, default=0,
+                   help="pass public log history length through to bc2_train.py")
+    p.add_argument("--board-history-k", type=int, default=0,
+                   help="pass board snapshot history length through to bc2_train.py")
+    p.add_argument("--board-history-feat-dim", type=int, default=32,
+                   help="pass board snapshot feature width through to bc2_train.py")
     p.add_argument("--opponent-deck-sig", action="append", default=[],
                    help="pass opponent deck-signature filters through to train/accuracy commands")
     p.add_argument("--opponent-archetype", action="append", default=[],

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 17:33 Asia/Shanghai.
+Last updated: 2026-08-07 17:55 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -3601,6 +3601,28 @@ Mega Lucario 43d b2048:
   fixed accuracy exact=0.674 first=0.691 top3=0.925 set_f1=0.776
   random g500 = 496/500 = 99.2%
 ```
+
+Completed full-date cross-attn quality conclusion:
+
+- Ogerpon5899 full32 is better than the two-day cross-attn wave on offline
+  imitation metrics, but worse than the old w4 specialist in paired local
+  evaluation. Against the 17-entry w4 candidate pool at 80 games each:
+  `avg_delta=-0.024`, candidate mean `0.574`, baseline mean `0.599`,
+  lost `11/17`; worst gap was Alakazam sig3 at `-0.162`.
+- Ogerpon697 full32 is also better than the two-day cross-attn wave on offline
+  imitation/random, but worse than the old w4 specialist in paired local
+  evaluation. Against the same pool:
+  `avg_delta=-0.028`, candidate mean `0.553`, baseline mean `0.581`,
+  lost `12/17`; worst gap was Alakazam sig3 at `-0.175`.
+- Mega Lucario 43d cross-full b2048 is only slightly better than earlier
+  cross-attn scratch on offline/random, but worse than the existing
+  `strategy_tempo` candidate in the local objective. `strategy_tempo` beat
+  cross-full `197-102-1` over 300 games, and cross-full vs Marnie w4 was only
+  `35-265-0`, win rate `11.7%`. The previous `strategy_tempo` vs Marnie w4
+  was `42-258-0`, win rate `14.0%`.
+- Therefore completed cross-attn full-date models should not be treated as
+  submission candidates yet. They prove the architecture can fit BC labels and
+  beat random, but they do not fix the local strong-pool/weak-matchup objective.
 
 Monitor:
 

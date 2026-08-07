@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 12:13 Asia/Shanghai.
+Last updated: 2026-08-07 16:36 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -3455,13 +3455,80 @@ Interpretation:
 
 Recommended next architecture work:
 
-1. Run cross-attn w4 scratch and init variants on Marnie b8f, Ogerpon 697/5899,
-   Crustle b141/3cd, and Dragapult cc2.
-2. Add `--set-loss-weight 0.05/0.10` ablation for cross-attn, because set F1
-   improved and multi-select remains important.
-3. Only after cross-attn population results are understood, implement real
-   history input from observation game logs or agent-maintained recent action
-   tokens. That is the next step toward continuous plan execution.
+1. Do not replace the current w4 pointer specialists with the first cross-attn
+   wave. The architecture works in code and improved Lucario random stability,
+   but the first multi-deck wave lost to old w4 specialists in paired delta.
+2. If continuing cross-attn, train it on the full `v11_0701_0804` corpus or
+   with teacher/distillation from the current w4 specialists. The first wave2
+   used only `v11_0803_0804`, which is a likely reason it lost global quality.
+3. Keep `--set-loss-weight 0` as the default for cross-attn until there is a
+   stronger counterexample. `0.05` did not improve Marnie, Ogerpon5899,
+   Crustle b141, Crustle3cd, or Dragapult in this wave.
+4. Only after cross-attn has a baseline that does not regress against w4, add
+   real history input from observation game logs or agent-maintained recent
+   action tokens. Otherwise history-vs-attention effects will be mixed.
+
+Cross-attn wave2 core results:
+
+- Script: `/tmp/run_cross_attn_wave2_core.sh`
+- Corpus: `data/bc_corpus_banded_v11_0803_0804`
+- Output: `checkpoints/arch_cross_attn_wave2_20260807/`
+- Logs: `logs/arch_cross_attn_wave2_20260807/`
+- Trained w4 `cross_attn` set000 and set050 for:
+  Marnie b8f, Ogerpon697, Ogerpon5899, Crustle b141, Crustle3cd, Dragapult cc2.
+
+Offline accuracy summary:
+
+```text
+name                                      exact first top3 set_f1
+crustle_3cd_cross_w4_set000              0.564 0.573 0.889 0.683
+crustle_3cd_cross_w4_set050              0.553 0.560 0.885 0.686
+crustle_b141_cross_w4_set000             0.651 0.658 0.914 0.794
+crustle_b141_cross_w4_set050             0.640 0.647 0.911 0.792
+dragapult_cc2_cross_w4_set000            0.665 0.675 0.919 0.759
+dragapult_cc2_cross_w4_set050            0.646 0.656 0.914 0.740
+marnie_b8f_cross_w4_set000               0.746 0.760 0.957 0.777
+marnie_b8f_cross_w4_set050               0.744 0.758 0.957 0.775
+ogerpon_5899_cross_w4_set000             0.874 0.879 0.985 0.958
+ogerpon_5899_cross_w4_set050             0.873 0.877 0.986 0.956
+ogerpon_697_cross_w4_set000              0.674 0.682 0.903 0.824
+ogerpon_697_cross_w4_set050              0.675 0.684 0.906 0.822
+```
+
+Random g500 for set000:
+
+```text
+marnie_b8f_cross_w4_set000     99.6% 498/500
+ogerpon_697_cross_w4_set000    98.2% 491/500
+ogerpon_5899_cross_w4_set000   99.8% 499/500
+crustle_b141_cross_w4_set000   75.4% 377/500
+crustle_3cd_cross_w4_set000    79.2% 396/500
+dragapult_cc2_cross_w4_set000  65.6% 328/500
+```
+
+Paired baseline-delta versus the existing w4 specialist for the same deck,
+using `candidate_manifest_w4_random_ge097.csv`, 17 opponents, 80 games each:
+
+```text
+marnie_cross:
+  avg_delta=-0.076 candidate=0.535 baseline=0.611
+  worst=marnie_grimmsnarl_sig1_b8f251a4:-0.163 lost=14/17
+ogerpon5899_cross:
+  avg_delta=-0.027 candidate=0.596 baseline=0.624
+  worst=alakazam_sig3_91f48d8e:-0.275 lost=11/17
+ogerpon697_cross:
+  avg_delta=-0.039 candidate=0.520 baseline=0.559
+  worst=alakazam_sig3_91f48d8e:-0.225 lost=10/17
+```
+
+Interpretation:
+
+- Cross-attn code path is usable, and Lucario showed a real local improvement.
+- The 0803-0804 wave2 cross-attn models are not submission candidates.
+- Cross-attn gave some local gains, especially Ogerpon vs Marnie and some
+  Festival/Lopunny cases, but lost too much global quality against the w4 pool.
+- Crustle and Dragapult cross-attn set000 failed random stability and should
+  not be used as shadow or submission candidates from this wave.
 
 ## Next Work
 

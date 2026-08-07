@@ -3017,6 +3017,41 @@ Conclusion for pipeline:
 - Add a soft-disadvantage option (`prior_wr <= 0.50`) for near-even but
   practically difficult pairs, especially Mega Lucario vs Marnie.
 
+Additional seed files generated locally and synced back to `ks`:
+
+```text
+logs/high_score_disadvantage_20260807/0805/success_disadvantage_seeds.csv
+logs/high_score_disadvantage_20260807/0805/success_disadvantage_summary_1000plus.csv
+logs/high_score_disadvantage_20260807/0805/success_disadvantage_summary_1100plus.csv
+logs/high_score_disadvantage_20260807/0805/success_disadvantage_summary_1200plus.csv
+```
+
+Counts:
+
+```text
+success_disadvantage_seeds.csv rows=470
+success_disadvantage_summary_1000plus.csv rows=123
+success_disadvantage_summary_1100plus.csv rows=31
+success_disadvantage_summary_1200plus.csv rows=2
+```
+
+Recommended first trace/teacher-mining queue from 1100+ successful hard
+disadvantage seeds:
+
+```text
+Raihan Ramadistra Marnie b8f251a476e7 vs Mega Lopunny: 20/38 wins
+flg Dragapult cc2e995b5ad0 vs Mega Lopunny: 11/17 wins
+flg Alakazam 791e3c4c20f4 vs Marnie: 11/21 wins
+RtoABC Dragapult 46ceec8cc5ae vs Crustle: 7/9 wins
+Raihan Ramadistra Marnie b8f251a476e7 vs Dragapult: 7/12 wins
+Sixth Sense Marnie b8f251a476e7 vs Mega Lopunny: 7/12 wins
+Raihan Ramadistra Marnie b8f251a476e7 vs Ogerpon: 6/14 wins
+```
+
+The 1200+ success seed file only has two useful Ogerpon successes
+(`Ogerpon<=Alakazam` and `Ogerpon<=Dragapult`), so it should be used as
+reference material, not as a training pool.
+
 ## 2026-08-06 Episode 0805 Ladder Read
 
 The 0805 episode zip exists on `ks`:

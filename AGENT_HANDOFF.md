@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 00:12 Asia/Shanghai.
+Last updated: 2026-08-07 08:50 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -2832,6 +2832,59 @@ submissions/w4_0805_candidates/w4_marnie_sig1_b8f251a4.tar.gz
 submissions/w4_0805_candidates/w4_alakazam_sig1_7f9a5389.tar.gz
 submissions/w4_0805_candidates/w4_mega_lopunny_sig3_f1445356.tar.gz
 ```
+
+Kaggle w4 submissions:
+
+```text
+55302986 bc: w4_0805_candidates/w4_marnie_sig1_b8f251a4.tar.gz score=976.8
+55303028 bc: w4_0805_candidates/w4_crustle_sig1_3cd5039c score=915.0
+```
+
+Replay analysis saved locally and remotely:
+
+```text
+logs/kaggle_replay_w4_submit_20260807/
+logs/kaggle_replay_w4_submit_20260807/w4_kaggle_vs_local_summary.txt
+```
+
+Only `60` Marnie and `57` Crustle replay episodes were exposed by Kaggle at
+the 2026-08-07 morning pull; one same-team episode per submission was skipped by
+team-name matching. Deck-only matching loses same-deck mirrors, so use the
+team-name rows as the main result.
+
+Replay vs local RR:
+
+- Marnie `55302986`: `36/59 = 0.610` in replay, while w4 local RR avg was
+  `0.630`. Overall direction is close, matching the 976.8 score.
+- Marnie first/second split: first `20/29 = 0.690`, second `16/30 = 0.533`.
+- Marnie online mismatch:
+  - vs Alakazam overall `8/16 = 0.500`; vs 7f sig `4/9 = 0.444`.
+    Local RR expected Marnie vs Alakazam 7f around `0.700`; 0805 episode prior
+    was `0.632` for b8f vs 7f. Local validation overestimated this matchup.
+  - vs Mega Lopunny `1/5 = 0.200`; vs f144 sig `0/3`.
+    Local RR expected Marnie vs f144 around `0.625`; 0805 episode prior also
+    showed Mega Lopunny beating Marnie. This is the main reason Marnie did not
+    go higher despite a good score.
+  - vs Crustle `6/7 = 0.857`, better than local and 0805 prior.
+- Crustle `55303028`: `37/56 = 0.661` in replay, while w4 local RR avg was
+  `0.630`. The online win rate is consistent or slightly better than local, but
+  the score is lower because opponent/rating mix matters.
+- Crustle first/second split: first `19/30 = 0.633`, second `18/26 = 0.692`.
+- Crustle online matchup:
+  - vs Marnie overall `13/20 = 0.650`; vs b8f sig `8/15 = 0.533`.
+    Local RR expected Crustle vs Marnie b8f only `0.325`, so local RR
+    underestimated Crustle here.
+  - vs Alakazam `6/8 = 0.750`; vs 7f sig `4/6 = 0.667`.
+    Local RR expected `0.713`, consistent.
+  - vs Ogerpon `2/2 = 1.000`, consistent with the known Crustle > Ogerpon edge.
+  - vs Mega Lucario `2/6 = 0.333`; this is the important live weakness not
+    covered by the 17-entry w4 RR pool.
+
+Interpretation: local RR correctly ranked Marnie/Crustle as the best w4 probes,
+but it is not matchup-calibrated enough. It overestimated Marnie into
+Alakazam/Mega Lopunny, underestimated Crustle into Marnie, and missed live Mega
+Lucario pressure. Add Mega Lucario signatures such as `ab089ccfad1a` to the
+local environment pool before using RR as a Kaggle score predictor.
 
 ## 2026-08-06 Episode 0805 Ladder Read
 

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 16:53 Asia/Shanghai.
+Last updated: 2026-08-07 17:05 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -3553,17 +3553,31 @@ Cross-attn full-date retrain started:
 - The first attempt used `--cuda-memory-gb 24` under
   `logs/arch_cross_attn_full_20260807/` and failed on Lucario with CUDA OOM
   after the first batch. It was stopped and superseded by the `full32` run.
-- Status at 2026-08-07 16:53 Asia/Shanghai:
-  - Lucario entered training and saved at least epoch 2.
-  - Ogerpon5899 entered training and saved at least epoch 1.
-  - Ogerpon697 entered training and reached epoch 1 step 25/33.
-  - Marnie was still loading the 112 full-date files, with about 0.9M kept rows
-    by file 63/112; expected final kept count is around 3.6M.
+- The full32 attempt showed that `batch-size 4096` is still unsafe for
+  cross-attn on high-option batches:
+  - Lucario failed after saving early epochs, with a 32 GiB allocator cap.
+  - Marnie failed after loading all full-date data and starting epoch 1, also
+    with a 32 GiB allocator cap.
+  - Do not use the failed unsuffixed Lucario/Marnie checkpoints as final
+    candidates from this run.
+- Batch-2048 recovery jobs were started:
+  - `/tmp/run_lucario_full_cross_b2048.sh`, PID observed at start `958536`,
+    checkpoint `bc2_mega_lucario_43d6_cross_full_w4_b2048.npz`, GPU0,
+    `--batch-size 2048 --cuda-memory-gb 24`.
+  - `/tmp/run_marnie_full_cross_b2048.sh`, PID observed at start `962439`,
+    checkpoint `bc2_marnie_b8f_cross_full_w4_b2048.npz`, GPU1,
+    `--batch-size 2048 --cuda-memory-gb 24`.
+- Status at 2026-08-07 17:05 Asia/Shanghai:
+  - Lucario b2048 was training and had saved at least epoch 3.
+  - Marnie b2048 had started and was loading the full-date corpus.
+  - Ogerpon5899 full32 finished training; best val observed `0.4208`.
+  - Ogerpon697 full32 was still training and had reached at least epoch 8.
 
 Monitor:
 
 ```bash
 ssh ks 'pgrep -af "run_cross_attn_full_dates_core|checkpoints/arch_cross_attn_full32_20260807"'
+ssh ks 'pgrep -af "run_lucario_full_cross_b2048|run_marnie_full_cross_b2048"'
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/arch_cross_attn_full32_20260807/full_runner.log'
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && for f in logs/arch_cross_attn_full32_20260807/*.train.log; do echo ===$f===; tail -25 "$f"; done'
 ```

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 23:10 Asia/Shanghai.
+Last updated: 2026-08-07 23:30 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -469,10 +469,8 @@ the old scorer is anchoring too hard.
 Current active remote job at 2026-08-07 19:11:
 
 ```text
-Marnie b8f hier-init training is still running on GPU0.
-Last seen: epoch 04/08 around step 825/1589.
-Runner will then run accuracy/random for Marnie init, followed by reset-scorer
-and scratch waves for Marnie/Ogerpon/Lucario.
+This older hierarchical-plan run has been superseded by the history-k and v12
+experiments below. Re-check logs before reusing any hier-plan checkpoint.
 ```
 
 Monitor with:
@@ -559,6 +557,76 @@ python3 tools/bc2_train.py \
 Evaluation commands do not need a new flag; they infer history automatically
 from checkpoint weights. Always keep the `PYTHONPATH` prefix in non-interactive
 remote runs.
+
+### History-K Compare Results
+
+The first incomplete sequential-memory experiment finished on `ks`:
+
+```text
+runner: logs/history_k_20260807.runner.log
+train logs: logs/history_k_20260807/train/
+accuracy logs: logs/history_k_20260807/accuracy/
+random logs: logs/history_k_20260807/random/
+checkpoints: checkpoints/history_k_20260807/
+script: /tmp/run_history_k_compare_20260807.sh
+```
+
+Training setup:
+
+```text
+corpus=data/bc_corpus_banded_v11_0701_0804
+score bands=1200+ 1100-1199 1000-1099 900-999
+width=4, pointer, history_k=8, epochs=8, batch=2048, lr=5e-5
+win/loss/draw=1.5/0.4/0.8
+```
+
+Results:
+
+```text
+lucario_43d_hist8_init:
+  init=checkpoints/lucario43d_20260807/bc2_mega_lucario_43d6_strategy_tempo_w4.npz
+  best_val=0.9656, exact=0.686, first=0.700, top3=0.929
+  random_g300=285/300 = 95.0%
+
+lucario_43d_hist8_scratch:
+  best_val=1.1238, exact=0.614, first=0.629, top3=0.891
+  random_g300=268/300 = 89.3%
+
+marnie_b8f_hist8_init:
+  init=checkpoints/deck_sig_specialists_v11all35_20260806/w4/bc2_marnie_grimmsnarl_sig1_b8f251a4_v11all35_sigpure_top3_w4.npz
+  best_val=0.5471, exact=0.870, first=0.874, top3=0.983
+  random_g300=297/300 = 99.0%
+
+marnie_b8f_hist8_scratch:
+  best_val=0.5933, exact=0.858, first=0.863, top3=0.983
+  random_g300=299/300 = 99.7%
+
+ogerpon_5899_hist8_init:
+  init=checkpoints/deck_sig_specialists_v11all35_20260806/w4/bc2_teal_mask_ogerpon_sig3_5899c772_v11all35_sigpure_top3_w4.npz
+  best_val=0.4087, exact=0.893, first=0.895, top3=0.989
+  random_g300=300/300 = 100.0%
+
+ogerpon_5899_hist8_scratch:
+  best_val=0.5465, exact=0.843, first=0.846, top3=0.978
+  random_g300=299/300 = 99.7%
+```
+
+Interpretation:
+
+- Init clearly helps history-k convergence versus scratch for all three
+  archetypes. Scratch is not a good default for this architecture.
+- The old specialist w4 random references were already high:
+  Marnie b8f `200/200`, Ogerpon 5899 `200/200`, Mega Lucario 43d sigpure
+  `185/200`; Lucario strategy_tempo was `475/500`.
+- History-k init did not clearly improve random quality over its init sources.
+  Lucario is roughly tied with strategy_tempo, while Marnie/Ogerpon are slightly
+  below their old perfect random audits.
+- No RR/shadow baseline-delta was run for `history_k_20260807`. Do not treat
+  these as submission candidates without a paired RR against current candidates
+  and weakness pools.
+- This result supports the v12 direction: single own-decision history is
+  mechanically safe but too weak/incomplete. Use public log history and board
+  deltas in v12 before drawing conclusions about sequence modeling.
 
 ## 2026-08-05 Search/Rules/Community Diagnostics
 

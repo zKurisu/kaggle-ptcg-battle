@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 11:00 Asia/Shanghai.
+Last updated: 2026-08-07 12:13 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -229,6 +229,60 @@ Important usage notes:
   not destroyed.
 - `--trajectory-missing-policy drop` is closest to the previous strategy subset
   pilot; `default` is safer for initial full-corpus training.
+
+### Trajectory BC Training Results So Far
+
+Remote logs/checkpoints:
+
+```text
+logs/lucario43d_20260807/traj_init_eval/
+logs/strategy_trajectories_20260807/lucario43d_vs_marnie_v11_0701_0804_traj_init/
+checkpoints/lucario43d_20260807/bc2_mega_lucario_43d6_traj_init_w4_b3072.npz
+checkpoints/lucario43d_20260807/bc2_mega_lucario_43d6_traj_weight_only_w4_b3072.npz
+checkpoints/lucario43d_20260807/bc2_mega_lucario_43d6_traj_plan_only_w4_b3072.npz
+
+logs/weak_matchup_traj_pilots_20260807/
+checkpoints/weak_matchup_traj_pilots_20260807/
+```
+
+Lucario 43d vs Marnie trajectory-initial training:
+
+```text
+traj_combined random g500: 91.8%, vs Marnie shadow g300: 53/300 = 17.7%
+traj_weight   random g500: 90.8%, vs Marnie shadow g300: 36/300 = 12.0%
+traj_plan     random g500: 93.0%, vs Marnie shadow g300: 47/300 = 15.7%
+strategy_tempo random g500: 94.2%, vs Marnie shadow g300: 55/300 = 18.3%
+pure_refit random g500: 91.8%, vs Marnie shadow g300: 26/300 = 8.7%
+```
+
+Interpretation:
+
+- The training-time plan head is safe mechanically, but did not beat the earlier
+  `strategy_tempo` subset pilot in this matchup.
+- Weight-only was the worst Lucario variant. Avoid using trajectory weights
+  alone as the main technique.
+- Combined trajectory weight + plan head was close to `strategy_tempo`, but
+  still not better. It remains useful as a representation experiment, not a
+  submit candidate.
+
+Weak-matchup-only pilots were also run:
+
+```text
+marnie_b8f_vs_ogerpon     random 85.3%; vs og5899 6.3% vs base 8.7%; vs og697 10.7% vs base 20.0%
+ogerpon697_vs_crustle     random 98.7%; vs crustle3 1.3% vs base 6.7%; vs crustleB 4.0% vs base 10.3%
+dragapult_cc2_vs_crustle  random 58.7%; vs crustle3 3.7% vs base 5.3%; vs crustleB 2.3% vs base 5.0%
+dragapult_cc2_vs_marnie   random 45.3%; vs marnie 7.7% vs base 9.0%
+```
+
+Conclusion:
+
+- Do not continue pure weak-matchup-filtered BC as a standalone policy. It
+  damages random stability and did not improve the focused matchup.
+- The next direction should be mixed training: keep the full strong base
+  distribution, then add weak-matchup successful trajectories as either
+  downsampled aux corpus or small trajectory target loss. For very large decks
+  like Marnie b8f, first build a balanced subset instead of scanning/training
+  all 5M+ decisions every run.
 
 ## 2026-08-05 Search/Rules/Community Diagnostics
 

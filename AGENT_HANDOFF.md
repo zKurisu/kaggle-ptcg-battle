@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 18:17 Asia/Shanghai.
+Last updated: 2026-08-07 18:27 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -3645,6 +3645,11 @@ Implemented and committed:
     `mine_strategy_trajectories.py` and writes columns such as `attack_by_4`,
     `primary_board_by_4`, `evolve_count`, `ability_count`, and
     `early_end_count`.
+- `6b0e460 Allow resetting BC scorer during init`
+  - `tools/bc2_train.py`: adds `--init-skip-prefix` and `--reset-scorer`.
+    `--reset-scorer` loads encoder/state/option weights from `--init` but skips
+    `score_fc*` and `stop_vec`, allowing a "good representation, fresh action
+    head" baseline.
 
 Remote validation:
 
@@ -3657,7 +3662,7 @@ Remote validation:
   scripts that instantiate `NumpyPolicy` should use that `PYTHONPATH` prefix
   unless running from an environment that already provides `cg`.
 
-Active remote hierarchical pilot:
+Remote hierarchical pilot history:
 
 - Heavy first attempt:
   `/tmp/run_hier_plan_pilots_20260807.sh`, output
@@ -3668,36 +3673,56 @@ Active remote hierarchical pilot:
 - Replacement runner:
   `/tmp/run_hier_plan_pilots_fast_20260807.sh`, output
   `logs/hier_plan_fast_20260807.runner.log`.
-  It uses `tools/build_trajectory_targets.py`, then trains three pointer
-  hierarchical pilots:
+  It successfully built lightweight target CSVs but the training wave used
+  `batch-size 4096 --cuda-memory-gb 24` and all three jobs OOMed. Do not use
+  its partial training outputs as candidates.
+
+Active remote hierarchical comparison:
+
+- Runner:
+  `/tmp/run_hier_plan_compare_20260807.sh`, output
+  `logs/hier_plan_compare_20260807.runner.log`.
+- It reuses target CSVs from `logs/hier_plan_fast_20260807/trajectory/` and
+  runs three waves:
+  - `init`: existing w4/tempo init + hierarchical plan residual.
+  - `reset`: same init but `--reset-scorer`, keeping encoders while re-learning
+    action scorer.
+  - `scratch`: no init, full random start.
+- It uses `batch-size 2048`, `--cuda-memory-gb 32`, and
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
+- Wave layout:
   - `marnie_b8f`: init
     `checkpoints/deck_sig_specialists_v11all35_20260806/w4/bc2_marnie_grimmsnarl_sig1_b8f251a4_v11all35_sigpure_top3_w4.npz`,
-    GPU2, batch 4096, 8 epochs.
+    GPU0, 8 epochs.
   - `ogerpon_5899`: init
     `checkpoints/deck_sig_specialists_v11all35_20260806/w4/bc2_teal_mask_ogerpon_sig3_5899c772_v11all35_sigpure_top3_w4.npz`,
-    GPU3, batch 4096, 8 epochs.
+    GPU2, 8 epochs.
   - `lucario_43d`: init
     `checkpoints/lucario43d_20260807/bc2_mega_lucario_43d6_strategy_tempo_w4.npz`,
-    GPU0, batch 4096, 8 epochs.
+    GPU3, 8 epochs.
 - Shared trajectory targets:
   `attack_by_4`, `attack_by_6`, `primary_board_by_2`,
   `primary_board_by_4`, `primary_board_by_6`, `primary_active_by_4`,
   `evolve_count>=1`, `ability_count>=2`, `attach_count>=2`,
   `early_end_count==0`.
 - Training output:
-  `checkpoints/hier_plan_fast_20260807/`
+  `checkpoints/hier_plan_compare_20260807/`
 - Logs:
-  - `logs/hier_plan_fast_20260807/trajectory/*.trajectory.log`
-  - `logs/hier_plan_fast_20260807/train/*.train.log`
-  - `logs/hier_plan_fast_20260807/accuracy/*.accuracy.log`
-  - `logs/hier_plan_fast_20260807/random/*.random_g300.log`
+  - `logs/hier_plan_compare_20260807/train/*.train.log`
+  - `logs/hier_plan_compare_20260807/accuracy/*.accuracy.log`
+  - `logs/hier_plan_compare_20260807/random/*.random_g300.log`
+- Status at 2026-08-07 18:27 Asia/Shanghai:
+  - `init` wave is running.
+  - `ogerpon_5899_init` and `lucario_43d_init` reached epoch 1 and saved best
+    checkpoints, so the 2048/32GB config is viable.
+  - `marnie_b8f_init` was still loading its much larger 112-file corpus.
 
 Monitor:
 
 ```bash
-ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/hier_plan_fast_20260807.runner.log'
-ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "run_hier_plan_pilots_fast|build_trajectory_targets|bc2_train.py.*hierarchical-plan"'
-ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && for f in logs/hier_plan_fast_20260807/train/*.train.log; do echo ===$f===; tail -20 "$f"; done'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/hier_plan_compare_20260807.runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "run_hier_plan_compare|bc2_train.py.*hierarchical-plan|tools/eval_bc.py.*hier_plan_compare"'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && for f in logs/hier_plan_compare_20260807/train/*.train.log; do echo ===$f===; tail -20 "$f"; done'
 ```
 
 Evaluation rule:

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 23:30 Asia/Shanghai.
+Last updated: 2026-08-07 23:47 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -94,6 +94,49 @@ Recommended first v12 training inputs after extraction completes:
   offline-only ablation.
 - Compare pointer vs cross-attn, and consider `--hierarchical-plan` only after
   base v12 history quality is measured.
+
+Active status at 2026-08-07 23:43 Asia/Shanghai:
+
+- v12 extraction is still running and healthy. It reached `24/36` zip files
+  completed, with `bad=0` and `err=0` in the latest checked log.
+- The next training runner has been uploaded and started:
+  `/tmp/run_v12_history_pilots_20260807.sh`.
+- Runner log:
+  `logs/v12_history_pilots_20260807.runner.log`.
+- Runner process observed:
+  `bash /tmp/run_v12_history_pilots_20260807.sh`.
+- The runner waits for both `/tmp/run_extract_v12_0701_0805.sh` and
+  `tools/bc_extract_v2.py ... bc_corpus_banded_v12_0701_0805_hist32_log128_board12`
+  to exit before training.
+- It intentionally uses no `--opp-history-k`, so the resulting history models
+  remain Kaggle-submittable if their evaluations are good.
+- First v12 pilot wave after extraction:
+  `marnie_b8f_v12hist_pointer_init`,
+  `lucario_43d_v12hist_pointer_init`,
+  `ogerpon_5899_v12hist_pointer_init`,
+  `lucario_43d_v12nohist_pointer_refit`.
+- Second wave:
+  `marnie_b8f_v12nohist_pointer_refit`,
+  `ogerpon_5899_v12nohist_pointer_refit`,
+  `lucario_43d_v12hist_cross_init`,
+  `marnie_b8f_v12hist_cross_init`.
+
+Monitor the active v12 work with:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/v12_history_pilots_20260807.runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "run_v12_history_pilots|bc2_train.py.*v12_history_pilots|bc2_accuracy.py.*v12_history_pilots|eval_bc.py.*v12_history_pilots" | head -n 40'
+```
+
+Ablation packages prepared on `ks`:
+
+- `submissions/historyk_lucario_43d_hist8_init_w4.tar.gz`
+- `submissions/historyk_marnie_b8f_hist8_init_w4.tar.gz`
+
+Both are about `42M` and were validated to contain `cg/`, `deck.csv`,
+`main.py`, `policy.npz`, and `ptcg_rl/`. The checkpoints use the previous
+incomplete own-history-k implementation with `history_k=8`, so treat these as
+ablation submissions, not final v12 candidates.
 
 ## Episode Backfill
 

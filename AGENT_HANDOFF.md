@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 18:27 Asia/Shanghai.
+Last updated: 2026-08-07 19:11 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -283,6 +283,124 @@ Conclusion:
   downsampled aux corpus or small trajectory target loss. For very large decks
   like Marnie b8f, first build a balanced subset instead of scanning/training
   all 5M+ decisions every run.
+
+## 2026-08-07 Architecture Experiments: Cross-Attn and Hierarchical Plan
+
+Implemented and committed:
+
+- `ptcg_rl/model.py`: pointer/cross-attn policies can now use
+  `hierarchical_plan=True`. The plan path is a residual scorer conditioned on
+  auxiliary trajectory targets, so old base scorer shapes remain loadable.
+- `ptcg_rl/numpy_policy.py`: NumPy inference detects `plan_condition_fc.*` and
+  applies the plan residual, so eval/submission uses hierarchical checkpoints.
+- `tools/bc2_train.py`: added `--hierarchical-plan`, `--init-skip-prefix`, and
+  `--reset-scorer`.
+- `tools/build_trajectory_targets.py`: fast per-game trajectory-target builder.
+
+Commits:
+
+```text
+df8f983 Add hierarchical plan-conditioned BC policy
+0236922 Add lightweight trajectory target builder
+6b0e460 Allow resetting BC scorer during init
+8a9f8b4 Record hierarchical comparison runner
+```
+
+Remote validation:
+
+```text
+py_compile passed for model/numpy_policy/train/accuracy/failure.
+NumPy smoke passed with:
+PYTHONPATH=/home/jie/Do/0_PTCG/workspace:$PYTHONPATH
+```
+
+Important: non-interactive `ssh ks` often needs the `PYTHONPATH` above for
+eval/submission scripts that instantiate `NumpyPolicy`.
+
+Cross-attn full-date results:
+
+```text
+Ogerpon 5899 cross-full vs old w4 pool g80:
+  avg_delta=-0.024, lost 11/17
+Ogerpon 697 cross-full vs old w4 pool g80:
+  avg_delta=-0.028, lost 12/17
+Lucario 43d cross-full:
+  random improved slightly, but strategy_tempo beat it 197-102-1.
+  vs Marnie w4: 35/300 = 11.7%, worse than strategy_tempo 47/300 = 15.7%.
+Marnie b8f cross-full:
+  random 500/500, set F1 about 0.867.
+  paired vs old Marnie w4 pool g80: avg_delta=-0.013, candidate=0.618,
+  baseline=0.631, lost 8/17.
+  It improved Ogerpon weak points only slightly:
+  vs Ogerpon 5899 22.5% vs old 15.0%; vs Ogerpon 697 17.5% vs old 12.5%.
+  The cost was broad regression, worst Cynthia -13.8pp, Marnie sig2 -8.8pp,
+  Lopunny sig1 -8.8pp.
+```
+
+Conclusion: do not submit the cross-attn full-date checkpoints. The architecture
+change is mechanically valid but did not improve broad ladder-pool strength.
+
+Hierarchical plan comparison runner:
+
+```text
+script: /tmp/run_hier_plan_compare_20260807.sh
+runner log: logs/hier_plan_compare_20260807.runner.log
+checkpoints: checkpoints/hier_plan_compare_20260807/
+targets: logs/hier_plan_fast_20260807/trajectory/
+```
+
+The first heavy trajectory miner attempt used `mine_strategy_trajectories.py`
+and was stopped because Marnie b8f full-date mining consumed about 29GB RSS and
+still had not written the trajectory CSV. Use `tools/build_trajectory_targets.py`
+for these broad full-date target builds.
+
+The first fast hierarchical run with `batch-size=4096` and
+`--cuda-memory-gb 24` OOMed for all three pilot jobs. The active comparison
+runner uses `batch-size=2048`, `--cuda-memory-gb 32`, and
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
+
+Completed hierarchical init results:
+
+```text
+Ogerpon 5899 hier-init:
+  accuracy exact about 0.915, set F1 0.985
+  random g300: 299/300 = 99.7%
+  paired vs old 5899 w4 pool g80:
+    avg_delta=-0.002, weighted_delta=-0.002,
+    candidate=0.597, baseline=0.599, lost 8/17
+    worst: Festival sig3 -22.5pp, Alakazam sig1 -13.8pp
+    gains: Lopunny sig3 +12.5pp, Festival sig1 +10.0pp, TR Mewtwo +7.5pp
+
+Lucario 43d hier-init:
+  accuracy exact about 0.704, set F1 0.792
+  random g300: 286/300 = 95.3%
+  RR g300:
+    hier-init vs old strategy_tempo: 154-145-1 = 51.3%
+    hier-init vs Marnie w4: 35/300 = 11.7%
+    old strategy_tempo vs Marnie w4: 47/300 = 15.7%
+```
+
+Conclusion so far: hierarchical residual is also not a submit candidate yet.
+Ogerpon is basically flat; Lucario wins the same-deck comparison by a small
+amount but worsens the actual weak matchup. Keep the runner active to finish
+Marnie init plus reset/scratch controls, because those controls answer whether
+the old scorer is anchoring too hard.
+
+Current active remote job at 2026-08-07 19:11:
+
+```text
+Marnie b8f hier-init training is still running on GPU0.
+Last seen: epoch 04/08 around step 825/1589.
+Runner will then run accuracy/random for Marnie init, followed by reset-scorer
+and scratch waves for Marnie/Ogerpon/Lucario.
+```
+
+Monitor with:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -80 logs/hier_plan_compare_20260807.runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "run_hier_plan_compare|bc2_train.py.*hierarchical-plan|bc2_accuracy.py.*hier_plan_compare|eval_bc.py.*hier_plan_compare"'
+```
 
 ## 2026-08-05 Search/Rules/Community Diagnostics
 

@@ -285,13 +285,23 @@ def _save_npz(model: torch.nn.Module, path: str) -> None:
     np.savez_compressed(path, **{k: v.detach().cpu().numpy() for k, v in model.state_dict().items()})
 
 
-def _load_npz_init(model: torch.nn.Module, path: str, device: torch.device, *, partial: bool = False) -> tuple[int, list[str]]:
+def _load_npz_init(
+    model: torch.nn.Module,
+    path: str,
+    device: torch.device,
+    *,
+    partial: bool = False,
+    skip_prefixes: tuple[str, ...] = (),
+) -> tuple[int, list[str]]:
     with np.load(path) as z:
         checkpoint = {
             k: torch.as_tensor(z[k], device=device)
             for k in z.files
         }
+    skip_prefixes = tuple(x for x in skip_prefixes if x)
     if not partial:
+        if skip_prefixes:
+            raise ValueError("init skip prefixes require partial init")
         current = model.state_dict()
         extra = [k for k in checkpoint if k not in current]
         missing = [k for k in current if k not in checkpoint]
@@ -310,6 +320,9 @@ def _load_npz_init(model: torch.nn.Module, path: str, device: torch.device, *, p
     loaded = {}
     skipped: list[str] = []
     for key, tensor in checkpoint.items():
+        if skip_prefixes and any(key.startswith(prefix) for prefix in skip_prefixes):
+            skipped.append(f"{key}: skipped by prefix")
+            continue
         if key not in current:
             skipped.append(f"{key}: unexpected")
             continue
@@ -429,6 +442,10 @@ def main() -> None:
                         help="optional .npz checkpoint used to initialize the model before training")
     parser.add_argument("--init-partial", action="store_true",
                         help="load only matching tensors from --init; default requires an exact architecture match")
+    parser.add_argument("--init-skip-prefix", action="append", default=[],
+                        help="with partial init, skip checkpoint tensors whose name starts with this prefix; repeatable")
+    parser.add_argument("--reset-scorer", action="store_true",
+                        help="when using --init, keep encoders but reinitialize action scorer tensors: score_fc* and stop_vec")
     parser.add_argument("--val-fraction", type=float, default=0.1)
     parser.add_argument("--include-empty", action="store_true")
     parser.add_argument("--load-progress-every", type=int, default=200000,
@@ -614,11 +631,22 @@ def main() -> None:
         **model_kwargs,
     ).to(device)
     if args.init:
-        partial_init = args.init_partial or bool(plan_target_dim)
-        loaded, skipped = _load_npz_init(model, args.init, device, partial=partial_init)
+        skip_prefixes = list(args.init_skip_prefix)
+        if args.reset_scorer:
+            skip_prefixes.extend(["score_fc", "stop_vec"])
+        partial_init = args.init_partial or bool(plan_target_dim) or bool(skip_prefixes)
+        loaded, skipped = _load_npz_init(
+            model,
+            args.init,
+            device,
+            partial=partial_init,
+            skip_prefixes=tuple(skip_prefixes),
+        )
         msg = f"Init: loaded={loaded} path={args.init}"
         if partial_init and not args.init_partial:
             msg += " partial_init_for_plan_head=True"
+        if skip_prefixes:
+            msg += f" skip_prefixes={skip_prefixes}"
         if skipped:
             msg += f" skipped={len(skipped)}"
         print(msg, flush=True)
@@ -655,6 +683,7 @@ def main() -> None:
         f"trajectory_target_loss_weight={args.trajectory_target_loss_weight} "
         f"trajectory_base/cap/missing={args.trajectory_base_weight}/{args.trajectory_weight_cap}/"
         f"{args.trajectory_missing_weight}:{args.trajectory_missing_policy} "
+        f"reset_scorer={args.reset_scorer} init_skip_prefix={args.init_skip_prefix or 'none'} "
         f"split_by_game={args.split_by_game or bool(trajectory_weights) or bool(trajectory_targets)} "
         f"set_loss={args.set_loss_weight}/{args.set_loss_min_count}/{args.set_loss_negative_weight} "
         f"aux_corpus={aux_details or 'none'} aux_bands={args.aux_score_bands} aux_repeat={aux_repeat} "

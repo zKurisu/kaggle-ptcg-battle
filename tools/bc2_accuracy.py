@@ -16,7 +16,7 @@ _REPO = _HERE.parent
 sys.path.insert(0, str(_REPO))
 
 from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, greedy_decode
-from ptcg_rl.model import build_policy_model, checkpoint_arch, checkpoint_feature_dims
+from ptcg_rl.model import build_policy_model, checkpoint_arch, checkpoint_feature_dims, checkpoint_width
 
 CONTEXT_NAMES = {
     0: "MAIN", 1: "SETUP_ACTIVE", 2: "SETUP_BENCH", 3: "SWITCH", 4: "TO_ACTIVE",
@@ -174,7 +174,8 @@ def main() -> None:
                         help="filter to decisions from games against one or more opponent archetypes")
     parser.add_argument("--opponent-team-name", action="append", default=[],
                         help="filter to decisions from games against one or more exact opponent team names")
-    parser.add_argument("--width", type=float, default=2.0)
+    parser.add_argument("--width", type=float, default=0.0,
+                        help="model width; 0 infers from checkpoint")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--max-samples", type=int, default=20000)
     parser.add_argument("--batch-size", type=int, default=2048)
@@ -192,9 +193,10 @@ def main() -> None:
     with np.load(args.policy) as z:
         arch = checkpoint_arch(z.files)
         state_feat_dim, opt_feat_dim, option_context, slot_state = checkpoint_feature_dims(z)
+        width = float(args.width) if args.width > 0 else checkpoint_width(z)
         model = build_policy_model(
             arch,
-            width=args.width,
+            width=width,
             option_context=option_context,
             slot_state=slot_state,
             state_feat_dim=state_feat_dim,

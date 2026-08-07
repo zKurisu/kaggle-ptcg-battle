@@ -22,6 +22,7 @@ from ptcg_rl.model import (
     build_policy_model,
     checkpoint_arch,
     checkpoint_feature_dims,
+    checkpoint_width,
 )
 from tools.bc2_accuracy import CONTEXT_NAMES, OPT_NAMES, SET_CONTEXTS, first_action_topk
 
@@ -45,9 +46,10 @@ def _load_model(path: str, width: float, device: torch.device):
     with np.load(path) as z:
         arch = checkpoint_arch(z.files)
         state_feat_dim, opt_feat_dim, option_context, slot_state = checkpoint_feature_dims(z)
+        model_width = float(width) if width > 0 else checkpoint_width(z)
         model = build_policy_model(
             arch,
-            width=width,
+            width=model_width,
             option_context=option_context,
             slot_state=slot_state,
             state_feat_dim=state_feat_dim,
@@ -207,7 +209,8 @@ def main() -> None:
     p.add_argument("--opponent-team-name", action="append", default=[],
                    help="filter to decisions from games against one or more exact opponent team names")
     p.add_argument("--winner-only", action="store_true")
-    p.add_argument("--width", type=float, default=2.0)
+    p.add_argument("--width", type=float, default=0.0,
+                   help="model width; 0 infers from checkpoint")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--max-samples", type=int, default=50000)
     p.add_argument("--batch-size", type=int, default=4096)

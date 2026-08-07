@@ -653,3 +653,8 @@ def checkpoint_feature_dims(z) -> tuple[int, int, bool, bool]:
         + opt_extra
     )
     return int(state_feat_dim), int(opt_feat_dim), bool(option_context), bool(slot_state)
+
+
+def checkpoint_width(z) -> float:
+    """Infer model width from a checkpoint's embedding dimension."""
+    return float(z["card_emb.weight"].shape[1]) / float(_EC)

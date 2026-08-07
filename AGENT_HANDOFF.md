@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 17:05 Asia/Shanghai.
+Last updated: 2026-08-07 17:33 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -3572,6 +3572,35 @@ Cross-attn full-date retrain started:
   - Marnie b2048 had started and was loading the full-date corpus.
   - Ogerpon5899 full32 finished training; best val observed `0.4208`.
   - Ogerpon697 full32 was still training and had reached at least epoch 8.
+- Status at 2026-08-07 17:33 Asia/Shanghai:
+  - Only Marnie b2048 was still running, around epoch 4/8. Each epoch is about
+    12 minutes because this deck sig has about 3.6M decisions.
+  - Ogerpon5899, Ogerpon697, and Lucario b2048 finished training and random g500.
+  - `bc2_accuracy.py` had a bug for w4 checkpoints: it defaulted to width 2 and
+    silently loaded only matching tensors, producing false low accuracy around
+    0.25-0.27. This was fixed by adding `checkpoint_width()` and auto-inferring
+    width in `bc2_accuracy.py` and `bc2_failure_report.py`; remote files were
+    synced while Marnie was still training, so Marnie's automatic post-train
+    accuracy should be valid.
+
+Fixed accuracy/random for completed full-date cross-attn models:
+
+```text
+Ogerpon5899 full32:
+  best val 0.4208
+  fixed accuracy exact=0.918 first=0.920 top3=0.994 set_f1=0.992
+  random g500 = 497/500 = 99.4%
+
+Ogerpon697 full32:
+  best val 0.6908
+  fixed accuracy exact=0.719 first=0.730 top3=0.938 set_f1=0.857
+  random g500 = 496/500 = 99.2%
+
+Mega Lucario 43d b2048:
+  best val 1.0600
+  fixed accuracy exact=0.674 first=0.691 top3=0.925 set_f1=0.776
+  random g500 = 496/500 = 99.2%
+```
 
 Monitor:
 

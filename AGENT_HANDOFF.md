@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 17:55 Asia/Shanghai.
+Last updated: 2026-08-07 18:17 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -3623,6 +3623,90 @@ Completed full-date cross-attn quality conclusion:
 - Therefore completed cross-attn full-date models should not be treated as
   submission candidates yet. They prove the architecture can fit BC labels and
   beat random, but they do not fix the local strong-pool/weak-matchup objective.
+
+## 2026-08-07 Hierarchical Plan Policy
+
+Implemented and committed:
+
+- `df8f983 Add hierarchical plan-conditioned BC policy`
+  - `ptcg_rl/model.py`: pointer and cross-attn models support
+    `hierarchical_plan=True`. The design preserves the old base scorer shape
+    and adds a zero-initialized plan residual scorer, so w4 checkpoints can
+    keep their learned `score_fc1/score_fc2` weights when used as init.
+  - `ptcg_rl/numpy_policy.py`: submission/eval inference auto-detects
+    `plan_condition_fc.*` and applies the plan residual scorer.
+  - `tools/bc2_train.py`: new `--hierarchical-plan`; requires
+    `--trajectory-target`.
+  - `tools/bc2_accuracy.py` and `tools/bc2_failure_report.py`: infer
+    `plan_dim` and hierarchical mode from checkpoint before loading.
+- `0236922 Add lightweight trajectory target builder`
+  - `tools/build_trajectory_targets.py`: streaming per-game target CSV builder
+    for hierarchical BC. It avoids the heavy event/ngram gap work in
+    `mine_strategy_trajectories.py` and writes columns such as `attack_by_4`,
+    `primary_board_by_4`, `evolve_count`, `ability_count`, and
+    `early_end_count`.
+
+Remote validation:
+
+- Remote py_compile passed for model, NumPy policy, train, accuracy, and failure
+  scripts.
+- Remote NumPy smoke passed with explicit
+  `PYTHONPATH=/home/jie/Do/0_PTCG/workspace:$PYTHONPATH`:
+  `ok pointer True 4 (4,)`.
+- Non-interactive ssh does not automatically include the `cg` engine path; eval
+  scripts that instantiate `NumpyPolicy` should use that `PYTHONPATH` prefix
+  unless running from an environment that already provides `cg`.
+
+Active remote hierarchical pilot:
+
+- Heavy first attempt:
+  `/tmp/run_hier_plan_pilots_20260807.sh`, output
+  `logs/hier_plan_20260807.runner.log`.
+  It was stopped because `mine_strategy_trajectories.py` was too expensive for
+  Marnie b8f full-date data: after scanning 112 files it held about 29GB RSS
+  and still had not written `game_trajectories.csv`.
+- Replacement runner:
+  `/tmp/run_hier_plan_pilots_fast_20260807.sh`, output
+  `logs/hier_plan_fast_20260807.runner.log`.
+  It uses `tools/build_trajectory_targets.py`, then trains three pointer
+  hierarchical pilots:
+  - `marnie_b8f`: init
+    `checkpoints/deck_sig_specialists_v11all35_20260806/w4/bc2_marnie_grimmsnarl_sig1_b8f251a4_v11all35_sigpure_top3_w4.npz`,
+    GPU2, batch 4096, 8 epochs.
+  - `ogerpon_5899`: init
+    `checkpoints/deck_sig_specialists_v11all35_20260806/w4/bc2_teal_mask_ogerpon_sig3_5899c772_v11all35_sigpure_top3_w4.npz`,
+    GPU3, batch 4096, 8 epochs.
+  - `lucario_43d`: init
+    `checkpoints/lucario43d_20260807/bc2_mega_lucario_43d6_strategy_tempo_w4.npz`,
+    GPU0, batch 4096, 8 epochs.
+- Shared trajectory targets:
+  `attack_by_4`, `attack_by_6`, `primary_board_by_2`,
+  `primary_board_by_4`, `primary_board_by_6`, `primary_active_by_4`,
+  `evolve_count>=1`, `ability_count>=2`, `attach_count>=2`,
+  `early_end_count==0`.
+- Training output:
+  `checkpoints/hier_plan_fast_20260807/`
+- Logs:
+  - `logs/hier_plan_fast_20260807/trajectory/*.trajectory.log`
+  - `logs/hier_plan_fast_20260807/train/*.train.log`
+  - `logs/hier_plan_fast_20260807/accuracy/*.accuracy.log`
+  - `logs/hier_plan_fast_20260807/random/*.random_g300.log`
+
+Monitor:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/hier_plan_fast_20260807.runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "run_hier_plan_pilots_fast|build_trajectory_targets|bc2_train.py.*hierarchical-plan"'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && for f in logs/hier_plan_fast_20260807/train/*.train.log; do echo ===$f===; tail -20 "$f"; done'
+```
+
+Evaluation rule:
+
+- Random/accuracy alone is not enough. After the three pilots finish, compare
+  each against its init/baseline with paired RR or baseline-delta.
+- Treat a pilot as "better" only if paired local evaluation improves. If offline
+  accuracy improves but paired pool delta is negative, record it as worse, same
+  as the completed full-date cross-attn wave.
 
 Monitor:
 

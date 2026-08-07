@@ -18,7 +18,11 @@ sys.path.insert(0, str(_REPO))
 
 from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, greedy_decode
 from ptcg_rl.deck_plans import get_plan, tag_cards
-from ptcg_rl.model import PolicyValueNet
+from ptcg_rl.model import (
+    build_policy_model,
+    checkpoint_arch,
+    checkpoint_feature_dims,
+)
 from tools.bc2_accuracy import CONTEXT_NAMES, OPT_NAMES, SET_CONTEXTS, first_action_topk
 
 
@@ -37,32 +41,12 @@ def _bucket(n: int) -> str:
     return "11+"
 
 
-def _load_model(path: str, width: float, device: torch.device) -> tuple[PolicyValueNet, int, int]:
+def _load_model(path: str, width: float, device: torch.device):
     with np.load(path) as z:
-        option_context = "context_emb.weight" in z.files
-        ec = z["card_emb.weight"].shape[1]
-        state_in = z["state_fc1.weight"].shape[1]
-        slot_feat_dim = state_in - 5 * ec
-        legacy_feat_dim = state_in - 3 * ec
-        slot_state = 8 <= slot_feat_dim <= 256
-        state_feat_dim = slot_feat_dim if slot_state else legacy_feat_dim
-        opt_extra = 0
-        if option_context:
-            opt_extra = (
-                z["context_emb.weight"].shape[1]
-                + z["select_type_emb.weight"].shape[1]
-                + z["area_emb.weight"].shape[1]
-                + z["index_emb.weight"].shape[1]
-                + z["inplay_area_emb.weight"].shape[1]
-                + z["inplay_index_emb.weight"].shape[1]
-            )
-        opt_feat_dim = z["opt_fc.weight"].shape[1] - (
-            2 * ec
-            + z["attack_emb.weight"].shape[1]
-            + z["opt_type_emb.weight"].shape[1]
-            + opt_extra
-        )
-        model = PolicyValueNet(
+        arch = checkpoint_arch(z.files)
+        state_feat_dim, opt_feat_dim, option_context, slot_state = checkpoint_feature_dims(z)
+        model = build_policy_model(
+            arch,
             width=width,
             option_context=option_context,
             slot_state=slot_state,

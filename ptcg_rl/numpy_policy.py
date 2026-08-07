@@ -32,22 +32,40 @@ def _linear(w: np.ndarray, b: np.ndarray, x: np.ndarray) -> np.ndarray:
     return x @ w.T + b
 
 
+def _softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
+    shifted = x - np.max(x, axis=axis, keepdims=True)
+    e = np.exp(shifted)
+    return e / np.maximum(e.sum(axis=axis, keepdims=True), 1e-12)
+
+
 class NumpyPolicy:
     """NumPy PolicyValueNet + optional MCTS search."""
 
     def __init__(self, weights: dict[str, np.ndarray]):
         self.w = {k: np.asarray(v, dtype=np.float32) for k, v in weights.items()}
         self.encoder = FastEncoder()
+        self._arch = "cross_attn" if "state_token_fc.weight" in self.w else "pointer"
         # Auto-detect dimensions from weights
         self._oe = self.w['stop_vec'].shape[0]
-        self._hd = self.w['state_fc2.bias'].shape[0]
+        self._hd = (
+            self.w["state_out_fc.bias"].shape[0]
+            if self._arch == "cross_attn"
+            else self.w["state_fc2.bias"].shape[0]
+        )
         self._ec = self.w['card_emb.weight'].shape[1]
         self._has_option_context = "context_emb.weight" in self.w
-        state_in = self.w["state_fc1.weight"].shape[1]
-        slot_feat_dim = state_in - 5 * self._ec
-        legacy_feat_dim = state_in - 3 * self._ec
-        self._slot_state = 8 <= slot_feat_dim <= 256
-        self._state_feat_dim = slot_feat_dim if self._slot_state else legacy_feat_dim
+        if self._arch == "cross_attn":
+            self._slot_state = True
+            self._state_feat_dim = self.w["feat_token_fc.weight"].shape[1]
+            self._state_layer_count = 0
+            while f"state_layers.{self._state_layer_count}.q.weight" in self.w:
+                self._state_layer_count += 1
+        else:
+            state_in = self.w["state_fc1.weight"].shape[1]
+            slot_feat_dim = state_in - 5 * self._ec
+            legacy_feat_dim = state_in - 3 * self._ec
+            self._slot_state = 8 <= slot_feat_dim <= 256
+            self._state_feat_dim = slot_feat_dim if self._slot_state else legacy_feat_dim
         opt_extra = 0
         if self._has_option_context:
             opt_extra = (
@@ -79,6 +97,11 @@ class NumpyPolicy:
 
     def encode_state(self, board: np.ndarray, hand: np.ndarray,
                      feats: np.ndarray) -> np.ndarray:
+        if self._arch == "cross_attn":
+            h, tokens, mask = self._encode_state_cross(board, hand, feats)
+            self._cached_state_tokens = tokens
+            self._cached_state_mask = mask
+            return h
         feats = self._fit_feat_dim(feats, self._state_feat_dim)
         if self._slot_state:
             emb = self.w["card_emb.weight"]
@@ -96,6 +119,67 @@ class NumpyPolicy:
         x = np.concatenate([my, opp, hnd, feats])
         x = _relu(_linear(self.w["state_fc1.weight"], self.w["state_fc1.bias"], x))
         return _relu(_linear(self.w["state_fc2.weight"], self.w["state_fc2.bias"], x))
+
+    def _encode_state_cross(
+        self,
+        board: np.ndarray,
+        hand: np.ndarray,
+        feats: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        feats = self._fit_feat_dim(feats, self._state_feat_dim)
+        ids = np.concatenate([board.astype(np.int64), hand.astype(np.int64)])
+        board_area = np.asarray([1, 2, 2, 2, 2, 2, 3, 4, 4, 4, 4, 4], dtype=np.int64)
+        board_index = np.asarray([0, 0, 1, 2, 3, 4, 0, 0, 1, 2, 3, 4], dtype=np.int64)
+        hand_area = np.full(hand.shape[0], 5, dtype=np.int64)
+        hand_index = np.arange(hand.shape[0], dtype=np.int64).clip(0, 64)
+        area = np.concatenate([board_area, hand_area])
+        index = np.concatenate([board_index, hand_index])
+        token_in = np.concatenate([
+            self.w["card_emb.weight"][ids],
+            self.w["state_area_emb.weight"][area],
+            self.w["state_index_emb.weight"][index],
+        ], axis=-1)
+        card_tokens = _relu(_linear(
+            self.w["state_token_fc.weight"],
+            self.w["state_token_fc.bias"],
+            token_in,
+        ))
+        feat_token = _relu(_linear(
+            self.w["feat_token_fc.weight"],
+            self.w["feat_token_fc.bias"],
+            feats,
+        ))[np.newaxis, :]
+        tokens = np.concatenate([feat_token, card_tokens], axis=0)
+        mask = np.concatenate([np.ones(1, dtype=bool), ids > 0])
+
+        for i in range(self._state_layer_count):
+            prefix = f"state_layers.{i}."
+            q = _linear(self.w[prefix + "q.weight"], self.w[prefix + "q.bias"], tokens)
+            k = _linear(self.w[prefix + "k.weight"], self.w[prefix + "k.bias"], tokens)
+            v = _linear(self.w[prefix + "v.weight"], self.w[prefix + "v.bias"], tokens)
+            scores = q @ k.T / math.sqrt(max(q.shape[-1], 1))
+            scores[:, ~mask] = NEG_INF
+            attn = _softmax(scores, axis=-1)
+            y = _linear(self.w[prefix + "o.weight"], self.w[prefix + "o.bias"], attn @ v)
+            tokens = _relu(tokens + y)
+            y = _linear(
+                self.w[prefix + "ff2.weight"],
+                self.w[prefix + "ff2.bias"],
+                _relu(_linear(self.w[prefix + "ff1.weight"], self.w[prefix + "ff1.bias"], tokens)),
+            )
+            tokens = _relu(tokens + y)
+            tokens[~mask] = 0.0
+
+        pool_logits = _linear(
+            self.w["state_pool_fc.weight"],
+            self.w["state_pool_fc.bias"],
+            tokens,
+        ).reshape(-1)
+        pool_logits[~mask] = NEG_INF
+        pool = _softmax(pool_logits, axis=-1)
+        pooled = (tokens * pool[:, None]).sum(axis=0)
+        h = _relu(_linear(self.w["state_out_fc.weight"], self.w["state_out_fc.bias"], pooled))
+        return h, tokens, mask
 
     def value(self, h: np.ndarray) -> float:
         v = _relu(_linear(self.w["value_fc1.weight"], self.w["value_fc1.bias"], h))
@@ -125,6 +209,8 @@ class NumpyPolicy:
     def select(self, obs_dict: dict, greedy: bool = True, temperature: float = 1.0,
                top_k: int = 0) -> list[int]:
         """Action selection. temperature=1.0 = greedy, >1.0 = more random."""
+        if self._arch == "cross_attn":
+            return self._select_cross(obs_dict, greedy=greedy, temperature=temperature, top_k=top_k)
         sel = obs_dict.get("select")
         if sel is None:
             raise ValueError("deck selection — return deck directly")
@@ -197,6 +283,95 @@ class NumpyPolicy:
 
         return picks[:d.max_count]
 
+    def _option_base(self, d, opt_feats: np.ndarray) -> np.ndarray:
+        parts = [
+            self.w["card_emb.weight"][d.opt_card],
+            self.w["card_emb.weight"][d.opt_card2],
+            self.w["attack_emb.weight"][d.opt_attack],
+            self.w["opt_type_emb.weight"][d.opt_type],
+        ]
+        if self._has_option_context:
+            ctx = np.rint(opt_feats[:, 3] * 64.0).astype(np.int64).clip(0, 64)
+            sel_type = np.rint(opt_feats[:, 4] * 16.0).astype(np.int64).clip(0, 16)
+            area = np.rint(opt_feats[:, 7] * 16.0).astype(np.int64).clip(0, 16)
+            idx = np.rint(opt_feats[:, 8] * 64.0).astype(np.int64).clip(0, 64)
+            inplay_area = np.rint(opt_feats[:, 9] * 16.0).astype(np.int64).clip(0, 16)
+            inplay_idx = np.rint(opt_feats[:, 10] * 10.0).astype(np.int64).clip(0, 16)
+            parts.extend([
+                self.w["context_emb.weight"][ctx],
+                self.w["select_type_emb.weight"][sel_type],
+                self.w["area_emb.weight"][area],
+                self.w["index_emb.weight"][idx],
+                self.w["inplay_area_emb.weight"][inplay_area],
+                self.w["inplay_index_emb.weight"][inplay_idx],
+            ])
+        parts.append(opt_feats)
+        return _relu(_linear(
+            self.w["opt_fc.weight"],
+            self.w["opt_fc.bias"],
+            np.concatenate(parts, axis=-1),
+        ))
+
+    def _cross_options(self, base: np.ndarray, tokens: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        q = _linear(self.w["cross_q.weight"], self.w["cross_q.bias"], base)
+        k = _linear(self.w["cross_k.weight"], self.w["cross_k.bias"], tokens)
+        v = _linear(self.w["cross_v.weight"], self.w["cross_v.bias"], tokens)
+        scores = q @ k.T / math.sqrt(max(q.shape[-1], 1))
+        scores[:, ~mask] = NEG_INF
+        attn = _softmax(scores, axis=-1)
+        ctx = attn @ v
+        return _relu(_linear(
+            self.w["cross_out.weight"],
+            self.w["cross_out.bias"],
+            np.concatenate([base, ctx], axis=-1),
+        ))
+
+    def _select_cross(self, obs_dict: dict, greedy: bool = True, temperature: float = 1.0,
+                      top_k: int = 0) -> list[int]:
+        sel = obs_dict.get("select")
+        if sel is None:
+            raise ValueError("deck selection — return deck directly")
+
+        d = self.encoder.encode(obs_dict)
+        n = len(d.opt_type)
+        h, tokens, token_mask = self._encode_state_cross(d.board_cards, d.hand_cards, d.state_feats)
+        opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
+        opts = self._cross_options(self._option_base(d, opt_feats), tokens, token_mask)
+
+        picks, picked_sum = [], np.zeros(self._oe, dtype=np.float32)
+        avail = np.ones(n + 1, dtype=bool)
+
+        while len(picks) < d.max_count:
+            avail[n] = len(picks) >= d.min_count
+            rows = np.concatenate([opts, self.w["stop_vec"][np.newaxis, :]], axis=0)
+            hx = np.broadcast_to(h, (n + 1, self._hd))
+            px = np.broadcast_to(picked_sum, (n + 1, self._oe))
+            score_x = np.concatenate([hx, rows, px], axis=-1)
+            logits = _linear(
+                self.w["score_fc2.weight"],
+                self.w["score_fc2.bias"],
+                _relu(_linear(self.w["score_fc1.weight"], self.w["score_fc1.bias"], score_x)),
+            ).reshape(-1)
+            logits = np.where(avail, logits, NEG_INF)
+            if temperature != 1.0:
+                logits = logits / temperature
+            if not greedy and top_k > 0:
+                legal = np.flatnonzero(avail)
+                if len(legal) > top_k:
+                    keep = legal[np.argsort(logits[legal])[-top_k:]]
+                    top_mask = np.zeros_like(avail)
+                    top_mask[keep] = True
+                    logits = np.where(top_mask, logits, NEG_INF)
+            probs = _softmax(logits, axis=-1)
+            idx = int(np.argmax(probs)) if greedy else int(np.random.choice(n + 1, p=probs))
+            if idx >= n:
+                break
+            picks.append(idx)
+            picked_sum += opts[idx]
+            avail[idx] = False
+
+        return picks[:d.max_count]
+
     def first_step_ranking(self, obs_dict: dict, temperature: float = 1.0) -> list[dict]:
         """Return the first-pick option ranking used by greedy selection.
 
@@ -206,6 +381,8 @@ class NumpyPolicy:
         sel = obs_dict.get("select")
         if sel is None:
             raise ValueError("deck selection has no option ranking")
+        if self._arch == "cross_attn":
+            return self._first_step_ranking_cross(obs_dict, temperature=temperature)
 
         d = self.encoder.encode(obs_dict)
         n = len(d.opt_type)
@@ -254,6 +431,43 @@ class NumpyPolicy:
         logits = np.where(avail, logits, NEG_INF)
         shifted = logits - np.max(logits)
         probs = np.exp(shifted) / np.exp(shifted).sum()
+
+        ranking = []
+        for i in range(n + 1):
+            if not avail[i]:
+                continue
+            ranking.append({
+                "index": i if i < n else -1,
+                "logit": float(logits[i]),
+                "prob": float(probs[i]),
+                "type": int(d.opt_type[i]) if i < n else 14,
+                "card": int(d.opt_card[i]) if i < n else 0,
+            })
+        ranking.sort(key=lambda r: (-float(r["prob"]), int(r["index"])))
+        return ranking
+
+    def _first_step_ranking_cross(self, obs_dict: dict, temperature: float = 1.0) -> list[dict]:
+        d = self.encoder.encode(obs_dict)
+        n = len(d.opt_type)
+        h, tokens, token_mask = self._encode_state_cross(d.board_cards, d.hand_cards, d.state_feats)
+        opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
+        opts = self._cross_options(self._option_base(d, opt_feats), tokens, token_mask)
+        rows = np.concatenate([opts, self.w["stop_vec"][np.newaxis, :]], axis=0)
+        hx = np.broadcast_to(h, (n + 1, self._hd))
+        picked = np.zeros(self._oe, dtype=np.float32)
+        px = np.broadcast_to(picked, (n + 1, self._oe))
+        score_x = np.concatenate([hx, rows, px], axis=-1)
+        logits = _linear(
+            self.w["score_fc2.weight"],
+            self.w["score_fc2.bias"],
+            _relu(_linear(self.w["score_fc1.weight"], self.w["score_fc1.bias"], score_x)),
+        ).reshape(-1)
+        if temperature != 1.0:
+            logits = logits / temperature
+        avail = np.ones(n + 1, dtype=bool)
+        avail[n] = d.min_count <= 0
+        logits = np.where(avail, logits, NEG_INF)
+        probs = _softmax(logits, axis=-1)
 
         ranking = []
         for i in range(n + 1):

@@ -15,6 +15,8 @@ from .encoder import STATE_FEAT_DIM, OPT_FEAT_DIM, N_CARDS, N_ATTACKS, N_OPT_TYP
 NEG_INF = -1e9
 _EC, _EA, _EO, _OE, _HD, _S1, _SC = 64, 32, 16, 128, 256, 512, 128
 _CTX, _AREA, _IDX = 16, 8, 8
+ARCH_POINTER = "pointer"
+ARCH_CROSS_ATTN = "cross_attn"
 
 
 class PolicyValueNet(nn.Module):
@@ -385,3 +387,269 @@ class PolicyValueNet(nn.Module):
 
     def count_params(self) -> int:
         return sum(p.numel() for p in self.parameters())
+
+
+class _SelfAttentionBlock(nn.Module):
+    def __init__(self, dim: int, ff_dim: int):
+        super().__init__()
+        self.q = nn.Linear(dim, dim)
+        self.k = nn.Linear(dim, dim)
+        self.v = nn.Linear(dim, dim)
+        self.o = nn.Linear(dim, dim)
+        self.ff1 = nn.Linear(dim, ff_dim)
+        self.ff2 = nn.Linear(ff_dim, dim)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        valid = mask.unsqueeze(1)
+        q = self.q(x)
+        k = self.k(x)
+        v = self.v(x)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(max(q.shape[-1], 1))
+        scores = scores.masked_fill(~valid, NEG_INF)
+        attn = torch.softmax(scores, dim=-1)
+        y = self.o(torch.matmul(attn, v))
+        x = F.relu(x + y)
+        y = self.ff2(F.relu(self.ff1(x)))
+        x = F.relu(x + y)
+        return x * mask.unsqueeze(-1).to(dtype=x.dtype)
+
+
+class CrossAttentionPolicyValueNet(nn.Module):
+    """Pointer policy with tokenized board/hand state and option-state attention.
+
+    The public interface intentionally matches ``PolicyValueNet`` so BC losses,
+    greedy decoding, PPO utilities, and diagnostics can share the same path.
+    """
+
+    def __init__(
+        self,
+        width: float = 1.0,
+        option_context: bool = True,
+        state_feat_dim: int = STATE_FEAT_DIM,
+        opt_feat_dim: int = OPT_FEAT_DIM,
+        plan_dim: int = 0,
+        state_layers: int = 2,
+    ):
+        super().__init__()
+        ec = int(_EC * width); ea = int(_EA * width); eo_t = int(_EO * width)
+        oe = int(_OE * width); hd = int(_HD * width)
+        sc = int(_SC * width)
+        ctx = int(_CTX * width); area = int(_AREA * width); idx = int(_IDX * width)
+        self.option_context = option_context
+        self.slot_state = True
+        self.state_feat_dim = int(state_feat_dim)
+        self.opt_feat_dim = int(opt_feat_dim)
+        self.plan_dim = int(plan_dim)
+        self.state_layers_n = int(state_layers)
+        self._ec=ec; self._ea=ea; self._eo_t=eo_t; self._oe=oe; self._hd=hd
+        self._ctx=ctx; self._area=area; self._idx=idx
+        self.register_buffer("arch_code", torch.tensor([1], dtype=torch.int32), persistent=True)
+
+        self.card_emb = nn.Embedding(N_CARDS + 2, ec, padding_idx=0)
+        self.attack_emb = nn.Embedding(N_ATTACKS + 1, ea, padding_idx=0)
+        self.opt_type_emb = nn.Embedding(N_OPT_TYPES + 1, eo_t)
+        if option_context:
+            self.context_emb = nn.Embedding(65, ctx)
+            self.select_type_emb = nn.Embedding(17, ctx)
+            self.area_emb = nn.Embedding(17, area)
+            self.index_emb = nn.Embedding(65, idx)
+            self.inplay_area_emb = nn.Embedding(17, area)
+            self.inplay_index_emb = nn.Embedding(17, idx)
+
+        self.stop_vec = nn.Parameter(torch.zeros(oe))
+        self.state_area_emb = nn.Embedding(8, area)
+        self.state_index_emb = nn.Embedding(65, idx)
+        self.state_token_fc = nn.Linear(ec + area + idx, oe)
+        self.feat_token_fc = nn.Linear(self.state_feat_dim, oe)
+        ff_dim = max(oe * 2, 64)
+        self.state_layers = nn.ModuleList([
+            _SelfAttentionBlock(oe, ff_dim) for _ in range(max(1, int(state_layers)))
+        ])
+        self.state_pool_fc = nn.Linear(oe, 1)
+        self.state_out_fc = nn.Linear(oe, hd)
+
+        opt_extra = ctx + ctx + area + idx + area + idx if option_context else 0
+        self.opt_fc = nn.Linear(ec + ec + ea + eo_t + opt_extra + self.opt_feat_dim, oe)
+        self.cross_q = nn.Linear(oe, oe)
+        self.cross_k = nn.Linear(oe, oe)
+        self.cross_v = nn.Linear(oe, oe)
+        self.cross_out = nn.Linear(oe + oe, oe)
+
+        self.score_fc1 = nn.Linear(hd + oe + oe, sc)
+        self.score_fc2 = nn.Linear(sc, 1)
+        self.value_fc1 = nn.Linear(hd, sc)
+        self.value_fc2 = nn.Linear(sc, 1)
+        if self.plan_dim > 0:
+            self.plan_fc1 = nn.Linear(hd, sc)
+            self.plan_fc2 = nn.Linear(sc, self.plan_dim)
+        self._cached_state_tokens: torch.Tensor | None = None
+        self._cached_state_mask: torch.Tensor | None = None
+        self._init()
+
+    def _init(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=math.sqrt(2))
+                nn.init.zeros_(m.bias)
+
+    @staticmethod
+    def _fit_feat_dim(x: torch.Tensor, dim: int) -> torch.Tensor:
+        cur = x.shape[-1]
+        if cur == dim:
+            return x
+        if cur > dim:
+            return x[..., :dim]
+        return F.pad(x, (0, dim - cur))
+
+    def _state_area_index(self, board: torch.Tensor, hand: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        bsz = board.shape[0]
+        device = board.device
+        board_area = torch.tensor([1, 2, 2, 2, 2, 2, 3, 4, 4, 4, 4, 4], device=device)
+        board_index = torch.tensor([0, 0, 1, 2, 3, 4, 0, 0, 1, 2, 3, 4], device=device)
+        hand_area = torch.full((hand.shape[1],), 5, dtype=torch.long, device=device)
+        hand_index = torch.arange(hand.shape[1], dtype=torch.long, device=device).clamp(max=64)
+        area = torch.cat([board_area, hand_area], dim=0).unsqueeze(0).expand(bsz, -1)
+        index = torch.cat([board_index, hand_index], dim=0).unsqueeze(0).expand(bsz, -1)
+        return area, index
+
+    def _build_state_tokens(
+        self,
+        board: torch.Tensor,
+        hand: torch.Tensor,
+        feats: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        feats = self._fit_feat_dim(feats, self.state_feat_dim)
+        ids = torch.cat([board, hand], dim=1)
+        area, index = self._state_area_index(board, hand)
+        card_tokens = F.relu(self.state_token_fc(torch.cat([
+            self.card_emb(ids),
+            self.state_area_emb(area),
+            self.state_index_emb(index),
+        ], dim=-1)))
+        feat_token = F.relu(self.feat_token_fc(feats)).unsqueeze(1)
+        tokens = torch.cat([feat_token, card_tokens], dim=1)
+        mask = torch.cat([
+            torch.ones(board.shape[0], 1, dtype=torch.bool, device=board.device),
+            ids > 0,
+        ], dim=1)
+        for layer in self.state_layers:
+            tokens = layer(tokens, mask)
+        return tokens, mask
+
+    def encode_state(self, board: torch.Tensor, hand: torch.Tensor,
+                     feats: torch.Tensor) -> torch.Tensor:
+        tokens, mask = self._build_state_tokens(board, hand, feats)
+        pool_logits = self.state_pool_fc(tokens).squeeze(-1).masked_fill(~mask, NEG_INF)
+        pool = torch.softmax(pool_logits, dim=-1).unsqueeze(-1)
+        pooled = (tokens * pool).sum(dim=1)
+        self._cached_state_tokens = tokens
+        self._cached_state_mask = mask
+        return F.relu(self.state_out_fc(pooled))
+
+    def encode_options(self, opt_type: torch.Tensor, opt_card: torch.Tensor,
+                       opt_card2: torch.Tensor, opt_attack: torch.Tensor,
+                       opt_feats: torch.Tensor) -> torch.Tensor:
+        opt_feats = self._fit_feat_dim(opt_feats, self.opt_feat_dim)
+        parts = [
+            self.card_emb(opt_card), self.card_emb(opt_card2),
+            self.attack_emb(opt_attack), self.opt_type_emb(opt_type),
+        ]
+        if self.option_context:
+            ctx = torch.round(opt_feats[..., 3] * 64.0).long().clamp(0, 64)
+            sel_type = torch.round(opt_feats[..., 4] * 16.0).long().clamp(0, 16)
+            area = torch.round(opt_feats[..., 7] * 16.0).long().clamp(0, 16)
+            idx = torch.round(opt_feats[..., 8] * 64.0).long().clamp(0, 64)
+            inplay_area = torch.round(opt_feats[..., 9] * 16.0).long().clamp(0, 16)
+            inplay_idx = torch.round(opt_feats[..., 10] * 10.0).long().clamp(0, 16)
+            parts.extend([
+                self.context_emb(ctx), self.select_type_emb(sel_type),
+                self.area_emb(area), self.index_emb(idx),
+                self.inplay_area_emb(inplay_area), self.inplay_index_emb(inplay_idx),
+            ])
+        parts.append(opt_feats)
+        base = F.relu(self.opt_fc(torch.cat(parts, dim=-1)))
+
+        tokens = self._cached_state_tokens
+        token_mask = self._cached_state_mask
+        if tokens is None or token_mask is None or tokens.shape[0] != base.shape[0]:
+            return base
+        q = self.cross_q(base)
+        k = self.cross_k(tokens)
+        v = self.cross_v(tokens)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(max(q.shape[-1], 1))
+        scores = scores.masked_fill(~token_mask.unsqueeze(1), NEG_INF)
+        attn = torch.softmax(scores, dim=-1)
+        ctx = torch.matmul(attn, v)
+        return F.relu(self.cross_out(torch.cat([base, ctx], dim=-1)))
+
+    def option_logits(self, h: torch.Tensor, opts: torch.Tensor,
+                      picked_sum: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        B, N, _ = opts.shape
+        stop = self.stop_vec.expand(B, 1, self._oe)
+        rows = torch.cat([opts, stop], dim=1)
+        hx = h.unsqueeze(1).expand(B, N + 1, self._hd)
+        px = picked_sum.unsqueeze(1).expand(B, N + 1, self._oe)
+        x = torch.cat([hx, rows, px], dim=-1)
+        logits = self.score_fc2(F.relu(self.score_fc1(x))).squeeze(-1)
+        return logits.masked_fill(~mask, NEG_INF)
+
+    def value(self, h: torch.Tensor) -> torch.Tensor:
+        return torch.tanh(self.value_fc2(F.relu(self.value_fc1(h)))).squeeze(-1)
+
+    def plan_logits(self, h: torch.Tensor) -> torch.Tensor:
+        if self.plan_dim <= 0:
+            raise RuntimeError("CrossAttentionPolicyValueNet was created without plan_dim")
+        return self.plan_fc2(F.relu(self.plan_fc1(h)))
+
+    def count_params(self) -> int:
+        return sum(p.numel() for p in self.parameters())
+
+
+def build_policy_model(arch: str = ARCH_POINTER, **kwargs) -> nn.Module:
+    arch = (arch or ARCH_POINTER).strip().lower()
+    if arch in {ARCH_POINTER, "mlp"}:
+        kwargs.pop("state_layers", None)
+        return PolicyValueNet(**kwargs)
+    if arch in {ARCH_CROSS_ATTN, "cross-attn", "attention"}:
+        kwargs.pop("slot_state", None)
+        return CrossAttentionPolicyValueNet(**kwargs)
+    raise ValueError(f"unknown policy arch: {arch!r}")
+
+
+def checkpoint_arch(files: list[str] | tuple[str, ...] | set[str]) -> str:
+    keys = set(files)
+    if "state_token_fc.weight" in keys or "cross_q.weight" in keys:
+        return ARCH_CROSS_ATTN
+    return ARCH_POINTER
+
+
+def checkpoint_feature_dims(z) -> tuple[int, int, bool, bool]:
+    arch = checkpoint_arch(z.files)
+    option_context = "context_emb.weight" in z.files
+    ec = z["card_emb.weight"].shape[1]
+    if arch == ARCH_CROSS_ATTN:
+        state_feat_dim = int(z["feat_token_fc.weight"].shape[1])
+        slot_state = True
+    else:
+        state_in = z["state_fc1.weight"].shape[1]
+        slot_feat_dim = state_in - 5 * ec
+        legacy_feat_dim = state_in - 3 * ec
+        slot_state = 8 <= slot_feat_dim <= 256
+        state_feat_dim = slot_feat_dim if slot_state else legacy_feat_dim
+    opt_extra = 0
+    if option_context:
+        opt_extra = (
+            z["context_emb.weight"].shape[1]
+            + z["select_type_emb.weight"].shape[1]
+            + z["area_emb.weight"].shape[1]
+            + z["index_emb.weight"].shape[1]
+            + z["inplay_area_emb.weight"].shape[1]
+            + z["inplay_index_emb.weight"].shape[1]
+        )
+    opt_feat_dim = z["opt_fc.weight"].shape[1] - (
+        2 * ec
+        + z["attack_emb.weight"].shape[1]
+        + z["opt_type_emb.weight"].shape[1]
+        + opt_extra
+    )
+    return int(state_feat_dim), int(opt_feat_dim), bool(option_context), bool(slot_state)

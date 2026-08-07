@@ -3329,6 +3329,140 @@ Current Kaggle score refresh:
   `Authentication required`; `/root/.kaggle/by` needs refreshed Kaggle auth or
   an accepted token format before current scores can be checked or monitored.
 
+## 2026-08-07 Cross-Attention Architecture Wave 1
+
+User asked for a more aggressive model-architecture step because trajectory
+auxiliary heads and weak-matchup-filtered BC did not teach continuous plans.
+Implemented a new stateless architecture first, before full game-history
+models, because submission inference is currently pure NumPy and Kaggle agent
+resources are CPU-only.
+
+Code changes:
+
+- `ptcg_rl/model.py`: added `CrossAttentionPolicyValueNet`, `build_policy_model`,
+  `checkpoint_arch`, and `checkpoint_feature_dims`.
+- `ptcg_rl/numpy_policy.py`: `NumpyPolicy.load()` now auto-detects cross-attn
+  checkpoints and runs matching NumPy state-token and option cross-attention
+  inference.
+- `tools/bc2_train.py`: added `--arch pointer|cross_attn` and `--state-layers`.
+- `tools/bc2_accuracy.py` and `tools/bc2_failure_report.py`: auto-load pointer
+  or cross-attn checkpoints.
+- `tools/train_bc_population.py` and `tools/build_shadow_pool.py`: pass through
+  `--arch` and `--state-layers`; shadow manifest records `arch`.
+
+Architecture:
+
+- Tokens: one scalar feature token, 12 board-card tokens, 25 hand-card tokens.
+- Board/hand tokens use card embedding plus state area/index embeddings.
+- State tokens pass through small self-attention blocks.
+- Legal option embeddings cross-attend to state tokens before the existing
+  autoregressive pointer scorer.
+- Public model interface stays compatible with `sequence_nll`,
+  `greedy_decode`, PPO utilities, and diagnostics.
+
+Submission/resource notes:
+
+- Kaggle official FAQ shows submission size limit as 197.7 MiB after page
+  rendering; current w4 cross-attn submission package is only 33.3 MiB.
+- Remote parameter counts:
+
+```text
+cross_attn w1: 0.67M params
+cross_attn w2: 2.38M params
+cross_attn w3: 5.11M params
+cross_attn w4: 8.88M params
+```
+
+Smoke checks completed:
+
+```text
+python3 -m py_compile ptcg_rl/model.py ptcg_rl/numpy_policy.py tools/bc2_train.py ...
+PYTHONPATH=.:.. python3 /tmp/ptcg_cross_attn_remote_smoke.py
+numpy_cross_attn_smoke_ok steps=30
+```
+
+Real corpus smoke:
+
+- Script: `/tmp/run_cross_attn_smoke_train.sh`
+- Trained `Mega Lucario` 43d6 on `data/bc_corpus_banded_v11_0803_0804`
+  for one epoch, width 1.
+- Saved:
+  `checkpoints/arch_smoke/bc2_mega_lucario_43d_cross_attn_w1_smoke.npz`
+- Accuracy smoke loaded successfully and reported exact `0.398`, first `0.411`,
+  top3 `0.760` on 4096 samples.
+
+Lucario 43d wave1:
+
+- Script: `/tmp/run_lucario43d_cross_attn_wave1.sh`
+- Corpus: `data/bc_corpus_banded_v11_0701_0804`
+- Target: `Mega Lucario`, `deck_sig=43d6d8b0fce9`, bands
+  `1200+ 1100-1199 1000-1099 900-999`
+- Output directory:
+  `checkpoints/arch_cross_attn_20260807/`
+- Logs:
+  `logs/arch_cross_attn_20260807/`
+
+Trained two w4 models, 16 epochs, batch 2048, 24 GiB cap:
+
+```text
+bc2_mega_lucario_43d6_cross_w4_scratch.npz
+  best val=1.0669
+  accuracy exact=0.669 first=0.685 top3=0.923 set_f1=0.783
+
+bc2_mega_lucario_43d6_cross_w4_init_tempo.npz
+  init from checkpoints/lucario43d_20260807/bc2_mega_lucario_43d6_strategy_tempo_w4.npz
+  partial init loaded 20 tensors, skipped old state_fc1/state_fc2 tensors
+  best val=1.0378
+  accuracy exact=0.661 first=0.676 top3=0.918 set_f1=0.788
+```
+
+Evaluation script:
+
+```text
+/tmp/eval_lucario43d_cross_attn_wave1.sh
+logs/arch_cross_attn_20260807/eval/
+```
+
+Local eval results:
+
+```text
+baseline strategy_tempo_w4:
+  random g300 = 278/300 = 92.7%
+  vs Marnie b8f w4 g300 = 29/300 = 9.7%
+
+cross_w4_scratch:
+  random g300 = 297/300 = 99.0%
+  vs Marnie b8f w4 g300 = 39/300 = 13.0%
+
+cross_w4_init_tempo:
+  random g300 = 299/300 = 99.7%
+  vs Marnie b8f w4 g300 = 33/300 = 11.0%
+```
+
+Interpretation:
+
+- Cross-attn is a real positive architecture signal for Lucario 43d: random
+  stability improved sharply and focused Marnie matchup improved from `9.7%` to
+  `13.0%` for scratch.
+- It does not solve structural weak matchups by itself. The gain is not enough
+  to claim continuous-plan learning, but it is a stronger base than the pointer
+  policy for the next wave.
+- Scratch beat partial-init on focused Marnie despite worse val NLL; do not rely
+  on validation loss alone for architecture selection.
+- Cross-attn NumPy inference is slower than pointer but still practical in
+  local eval (`~26 games/s` vs random with 16 workers; focused RR around
+  `11-12 games/s`).
+
+Recommended next architecture work:
+
+1. Run cross-attn w4 scratch and init variants on Marnie b8f, Ogerpon 697/5899,
+   Crustle b141/3cd, and Dragapult cc2.
+2. Add `--set-loss-weight 0.05/0.10` ablation for cross-attn, because set F1
+   improved and multi-select remains important.
+3. Only after cross-attn population results are understood, implement real
+   history input from observation game logs or agent-maintained recent action
+   tokens. That is the next step toward continuous plan execution.
+
 ## Next Work
 
 Immediate:

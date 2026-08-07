@@ -83,6 +83,8 @@ def build_train_cmd(args: argparse.Namespace, job: Job) -> list[str]:
         "--batch-size", str(args.batch_size),
         "--lr", str(args.lr),
         "--width", str(args.width),
+        "--arch", args.arch,
+        "--state-layers", str(args.state_layers),
         "--device", "cuda:0" if job.gpu is not None else args.device,
         "--cuda-memory-gb", str(args.cuda_memory_gb),
         "--cuda-memory-fraction", str(args.cuda_memory_fraction),
@@ -318,6 +320,8 @@ def main() -> None:
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--width", type=float, default=2.0)
+    p.add_argument("--arch", choices=["pointer", "cross_attn"], default="pointer")
+    p.add_argument("--state-layers", type=int, default=2)
     p.add_argument("--device", default="cuda:0", help="used only when --gpus is empty")
     p.add_argument("--init", default="",
                    help="optional checkpoint used to initialize every job unless --init-manifest provides an archetype-specific path")

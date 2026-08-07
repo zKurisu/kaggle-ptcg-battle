@@ -66,6 +66,7 @@ FIELDS = [
     "first_date",
     "last_date",
     "opponent_filters",
+    "arch",
     "init_path",
     "checkpoint_path",
     "eval_entry",
@@ -266,6 +267,8 @@ def train_cmd(row: dict, args: argparse.Namespace, checkpoint_path: str) -> str:
         "--batch-size", str(args.batch_size),
         "--lr", str(args.lr),
         "--width", str(args.width),
+        "--arch", args.arch,
+        "--state-layers", str(args.state_layers),
         "--device", args.device,
         "--cuda-memory-gb", str(args.cuda_memory_gb),
         "--cuda-memory-fraction", str(args.cuda_memory_fraction),
@@ -345,7 +348,8 @@ def write_manifest(rows: list[dict], args: argparse.Namespace) -> None:
             if shadow in seen_shadow_names:
                 shadow = f"{shadow}_{rank:03d}"
             seen_shadow_names.add(shadow)
-            checkpoint = str(Path(args.checkpoint_dir) / f"{shadow}_w{args.width:g}.npz")
+            suffix = f"w{args.width:g}" if args.arch == "pointer" else f"{args.arch}_w{args.width:g}"
+            checkpoint = str(Path(args.checkpoint_dir) / f"{shadow}_{suffix}.npz")
             init_path = render_init_path(row, args)
             deck_path = deck_paths.get(str(row["deck_sig"]), "")
             eval_entry = f"{shadow}={checkpoint}:{deck_path}" if deck_path else ""
@@ -371,6 +375,7 @@ def write_manifest(rows: list[dict], args: argparse.Namespace) -> None:
                 "first_date": row["first_date"],
                 "last_date": row["last_date"],
                 "opponent_filters": render_opponent_filters(args),
+                "arch": args.arch,
                 "init_path": init_path,
                 "checkpoint_path": checkpoint,
                 "eval_entry": eval_entry,
@@ -410,6 +415,8 @@ def main() -> None:
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--width", type=float, default=2.0)
+    p.add_argument("--arch", choices=["pointer", "cross_attn"], default="pointer")
+    p.add_argument("--state-layers", type=int, default=2)
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--cuda-memory-gb", type=float, default=0.0,
                    help="emit an approximate GiB CUDA allocator cap for each shadow train command")

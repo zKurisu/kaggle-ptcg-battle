@@ -17,7 +17,7 @@ sys.path.insert(0, str(_REPO))
 
 from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, sequence_nll
 from ptcg_rl.deck_plans import CARD_NAMES
-from ptcg_rl.model import PolicyValueNet
+from ptcg_rl.model import build_policy_model, checkpoint_feature_dims
 
 
 CONTEXT_IDS = {
@@ -326,28 +326,7 @@ def _load_npz_init(model: torch.nn.Module, path: str, device: torch.device, *, p
 
 def _checkpoint_feature_dims(path: str) -> tuple[int, int]:
     with np.load(path) as z:
-        ec = z["card_emb.weight"].shape[1]
-        state_in = z["state_fc1.weight"].shape[1]
-        slot_feat_dim = state_in - 5 * ec
-        legacy_feat_dim = state_in - 3 * ec
-        state_feat_dim = slot_feat_dim if 8 <= slot_feat_dim <= 256 else legacy_feat_dim
-        option_context = "context_emb.weight" in z.files
-        opt_extra = 0
-        if option_context:
-            opt_extra = (
-                z["context_emb.weight"].shape[1]
-                + z["select_type_emb.weight"].shape[1]
-                + z["area_emb.weight"].shape[1]
-                + z["index_emb.weight"].shape[1]
-                + z["inplay_area_emb.weight"].shape[1]
-                + z["inplay_index_emb.weight"].shape[1]
-            )
-        opt_feat_dim = z["opt_fc.weight"].shape[1] - (
-            2 * ec
-            + z["attack_emb.weight"].shape[1]
-            + z["opt_type_emb.weight"].shape[1]
-            + opt_extra
-        )
+        state_feat_dim, opt_feat_dim, _, _ = checkpoint_feature_dims(z)
     return int(state_feat_dim), int(opt_feat_dim)
 
 
@@ -431,6 +410,10 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--width", type=float, default=2.0)
+    parser.add_argument("--arch", choices=["pointer", "cross_attn"], default="pointer",
+                        help="policy architecture; pointer is the legacy MLP, cross_attn tokenizes board/hand and cross-attends options")
+    parser.add_argument("--state-layers", type=int, default=2,
+                        help="number of state self-attention layers for --arch cross_attn")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--cuda-memory-gb", type=float, default=0.0,
                         help="cap this process' CUDA allocator to approximately N GiB; 0 disables")
@@ -614,7 +597,13 @@ def main() -> None:
         model_kwargs["opt_feat_dim"] = opt_feat_dim
     if plan_target_dim:
         model_kwargs["plan_dim"] = plan_target_dim
-    model = PolicyValueNet(width=args.width, slot_state=not args.legacy_state_pool, **model_kwargs).to(device)
+    model = build_policy_model(
+        args.arch,
+        width=args.width,
+        slot_state=not args.legacy_state_pool,
+        state_layers=args.state_layers,
+        **model_kwargs,
+    ).to(device)
     if args.init:
         partial_init = args.init_partial or bool(plan_target_dim)
         loaded, skipped = _load_npz_init(model, args.init, device, partial=partial_init)
@@ -635,7 +624,8 @@ def main() -> None:
     print(
         f"BC2: {args.archetype} {args.score_bands} device={device} "
         f"{memory_limit_msg + ' ' if memory_limit_msg else ''}"
-        f"width={args.width} slot_state={not args.legacy_state_pool} "
+        f"arch={args.arch} width={args.width} state_layers={args.state_layers} "
+        f"slot_state={not args.legacy_state_pool} "
         f"state_feat_dim={state_feat_dim or 'default'} opt_feat_dim={opt_feat_dim or 'default'} "
         f"{'feature_dims_from_init ' if inferred_from_init else ''}"
         f"deck_sigs={args.deck_sig or 'all'} team_names={args.team_name or 'all'} "

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 08:50 Asia/Shanghai.
+Last updated: 2026-08-07 10:45 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -44,6 +44,9 @@ ssh ks 'pgrep -af "ptcg_download_july_episodes|kaggle datasets download" || true
 Recent relevant commits and current update:
 
 - Latest update in this session:
+  - `tools/mine_strategy_trajectories.py`: new trajectory-level miner that groups BC corpus rows by game, compares winning vs losing whole-game trajectories, emits metric/event/ngram gaps, and writes `strategy_seeds.csv`.
+  - `tools/build_bc_subset.py`: now supports whole-game filtering via `--game-key-csv` plus repeatable `--where` conditions, so strategy-conditioned subsets can be built from trajectory reports.
+  - `ptcg_rl/deck_plans.py`: Mega Lucario plan now includes Riolu `677` and key 43d cards; Marnie plan now marks Spikemuth Gym `1259` as a search/stadium key. This fixes misleading Lucario reports that only tracked Riolu `333`.
   - `tools/eval_round_robin.py`: now supports `--manifest`, `--manifest-limit`, and `--manifest-random`. It reads CSVs with `eval_entry` or `checkpoint_path`/`deck_path`, skips exact duplicate entries, and suffixes duplicate names.
   - `tools/analyze_kaggle_replays.py`: `--known-decks-dir` is now repeatable, matching the README examples and allowing 0804/0802 deck pools to be loaded together for replay naming.
   - `tools/eval_round_robin.py`: now also supports `--mcts-entry NAME` for per-entry MCTS probes. Use this when checking whether search helps one candidate; the old global `--mcts` turns MCTS on for every policy entry and can pollute candidate-vs-opponent conclusions.
@@ -69,6 +72,95 @@ Remote smoke tests completed on `ks`:
 - `/tmp/ptcg_rl_tiny_rollout_0805.sh`: passed after fixing the single-opponent loader. It ran a 2-game CPU rollout/update against random Ogerpon deck, collected 106 decisions, completed PPO update, and wrote `/tmp/ptcg_rl_tiny_out.npz`.
 
 These files were synced to `ks`. Check `git status` before starting the next change.
+
+## 2026-08-07 Trajectory BC / Mega Lucario 43d
+
+The user explicitly pointed out that weak-matchup improvement is a continuous
+strategy problem, not a single action-bias problem. Current conclusion supports
+that: single-step Marnie weighting barely helped Lucario, but whole-game tempo
+success filtering produced a measurable improvement.
+
+Remote paths:
+
+```text
+logs/lucario43d_20260807/trace_marnie/
+logs/strategy_trajectories_20260807/lucario43d_vs_marnie_v11_0701_0804_v2/
+data/strategy_bc_subsets_20260807/Mega_Lucario/lucario43d_marnie_tempo_success/
+data/strategy_bc_subsets_20260807/Mega_Lucario/lucario43d_marnie_fast_grimmsnarl_success/
+checkpoints/lucario43d_20260807/bc2_mega_lucario_43d6_strategy_tempo_w4.npz
+checkpoints/lucario43d_20260807/bc2_mega_lucario_43d6_strategy_fastgrim_w4.npz
+logs/lucario43d_20260807/strategy_pilots/
+```
+
+Actual Kaggle episode corpus signal for `Mega Lucario` deck sig
+`43d6d8b0fce9` vs `Marnie Grimmsnarl` from
+`data/bc_corpus_banded_v11_0701_0804`:
+
+```text
+games=202 wins=104 losses=98 wr=0.515
+decisions=13936
+```
+
+Important winning trajectory differences:
+
+```text
+attack_count                     win 5.375 vs loss 4.102
+attack_by_4                      win 0.962 vs loss 0.786
+attack_by_6                      win 1.000 vs loss 0.888
+board_by_4_solrock               win 0.990 vs loss 0.847
+board_by_4_lunatone              win 0.971 vs loss 0.847
+board_by_4_makuhita              win 0.923 vs loss 0.745
+board_by_4_mega_lucario_ex       win 0.875 vs loss 0.704
+opp_board_by_4_grimmsnarl_ex     win 0.202 vs loss 0.388
+opp_active_turns_grimmsnarl_ex   win 26.25 vs loss 37.15
+```
+
+Interpretation:
+
+- Lucario 43d beats Marnie in real episodes when it plays a tempo plan:
+  early Riolu/Mega Lucario, early Solrock/Lunatone/Makuhita, and attacks by
+  turn 4-6.
+- Losses are overrepresented when Marnie stabilizes Grimmsnarl ex early and
+  keeps it active/bench for many turns. This is a choke-point signal: future
+  work should look for earlier windows to pressure Impidimp/Morgrem/Grimmsnarl
+  or prevent the game from reaching stable Grimmsnarl, not merely downweight one
+  action.
+- Spikemuth Gym appears as a loss-overrepresented candidate-side ability action
+  in trace/corpus reports. Treat this as a sequence smell, not a direct ban:
+  it often appears after the game has already entered a losing resource loop.
+
+Strategy subsets built:
+
+```text
+tempo_success:              86 games, 6075 decisions
+fast_grimmsnarl_success:    21 games, 1520 decisions
+```
+
+Pilot fine-tunes from existing 43d w4:
+
+```text
+strategy_tempo:
+  random_g500: 475/500 = 95.0%
+  vs Marnie b8f g300: 44/300 = 14.7%, baseline 35/300 = 11.7%, delta +3.0pp
+  core g200 avg_delta +4.67pp
+  core deltas: Marnie +4.5, Lopunny +5.0, Alakazam +4.5,
+               Crustle +8.5, Dragapult +6.0, Ogerpon -0.5
+
+strategy_fastgrim:
+  random_g500: 472/500 = 94.4%
+  vs Marnie b8f g300: 32/300 = 10.7%, baseline 11.7%, delta -1.0pp
+```
+
+Current recommendation:
+
+- Keep `strategy_tempo` as the first useful proof that trajectory-conditioned BC
+  is better than single-step weighting.
+- Do not scale `fast_grimmsnarl_success` as-is; the 21-game subset is too sparse
+  and did not improve the Marnie local matchup.
+- Next improvement should generalize `mine_strategy_trajectories.py` across
+  each archetype's weak matchups and auto-build tempo/choke/comeback subsets,
+  then run small initialized pilots. Avoid returning to winner-only or
+  filtered-only BC without whole-game conditions.
 
 ## 2026-08-05 Search/Rules/Community Diagnostics
 

@@ -24,6 +24,93 @@ def as_str_array(arr: np.ndarray) -> np.ndarray:
     return np.asarray(arr).astype(str)
 
 
+def parse_game_key(value: str) -> tuple[str, int] | None:
+    value = str(value or "").strip()
+    if not value:
+        return None
+    if ":" in value:
+        episode, player = value.rsplit(":", 1)
+        if player.lstrip("-").isdigit():
+            return episode, int(player)
+    return None
+
+
+def coerce_compare(lhs: str, rhs: str, op: str) -> bool:
+    lhs_s = str(lhs or "")
+    rhs_s = str(rhs or "")
+    try:
+        lhs_v = float(lhs_s)
+        rhs_v = float(rhs_s)
+        numeric = True
+    except Exception:
+        lhs_v = lhs_s
+        rhs_v = rhs_s
+        numeric = False
+    if op == "=":
+        return lhs_v == rhs_v if numeric else lhs_s == rhs_s
+    if op == "!=":
+        return lhs_v != rhs_v if numeric else lhs_s != rhs_s
+    if op == ">":
+        return lhs_v > rhs_v
+    if op == ">=":
+        return lhs_v >= rhs_v
+    if op == "<":
+        return lhs_v < rhs_v
+    if op == "<=":
+        return lhs_v <= rhs_v
+    raise ValueError(f"unsupported where operator: {op}")
+
+
+def parse_where(spec: str) -> tuple[str, str, str]:
+    for op in (">=", "<=", "!=", "=", ">", "<"):
+        if op in spec:
+            col, value = spec.split(op, 1)
+            col = col.strip()
+            if not col:
+                raise ValueError(f"empty --where column in {spec!r}")
+            return col, op, value.strip()
+    raise ValueError(f"--where must be COL=VALUE, COL!=VALUE, COL>=VALUE, etc.; got {spec!r}")
+
+
+def read_game_key_filter(args: argparse.Namespace) -> set[tuple[str, int]]:
+    if not args.game_key_csv:
+        return set()
+    where = [parse_where(x) for x in args.where]
+    allowed: set[tuple[str, int]] = set()
+    raw = kept = 0
+    with open(args.game_key_csv, newline="") as f:
+        for row in csv.DictReader(f):
+            raw += 1
+            ok = True
+            for col, op, value in where:
+                if col not in row:
+                    raise ValueError(f"--where column {col!r} not found in {args.game_key_csv}")
+                if not coerce_compare(row.get(col, ""), value, op):
+                    ok = False
+                    break
+            if not ok:
+                continue
+            if args.game_key_col in row:
+                key = parse_game_key(row[args.game_key_col])
+            elif "episode_id" in row and "player_index" in row:
+                key = (str(row["episode_id"]), int(row["player_index"]))
+            else:
+                raise ValueError(
+                    f"{args.game_key_csv} must contain {args.game_key_col!r} or episode_id/player_index"
+                )
+            if key is None:
+                continue
+            allowed.add(key)
+            kept += 1
+    print(
+        f"game-key filter: {args.game_key_csv} raw_rows={raw} kept_rows={kept} unique_games={len(allowed)}",
+        flush=True,
+    )
+    if not allowed:
+        raise RuntimeError("game-key filter kept no games")
+    return allowed
+
+
 def discover_paths(corpus: str, archetype: str, score_bands: list[str]) -> list[str]:
     arch = clean_arch(archetype)
     paths: list[str] = []
@@ -35,6 +122,16 @@ def discover_paths(corpus: str, archetype: str, score_bands: list[str]) -> list[
 def row_mask(data: dict[str, np.ndarray], args: argparse.Namespace) -> np.ndarray:
     n = len(data["board"])
     mask = np.ones(n, dtype=bool)
+    allowed_games = getattr(args, "_allowed_game_keys", set())
+    if allowed_games:
+        if "episode_id" not in data or "player_index" not in data:
+            raise ValueError("game-key filter requested but corpus has no episode_id/player_index")
+        episodes = as_str_array(data["episode_id"])
+        players = np.asarray(data["player_index"], dtype=np.int16)
+        game_mask = np.zeros(n, dtype=bool)
+        for i in range(n):
+            game_mask[i] = (episodes[i], int(players[i])) in allowed_games
+        mask &= game_mask
     if args.deck_sig:
         if "deck_sig" not in data:
             raise ValueError("deck_sig filter requested but corpus has no deck_sig")
@@ -114,12 +211,18 @@ def main() -> None:
     p.add_argument("--opponent-deck-sig", action="append", default=[])
     p.add_argument("--opponent-archetype", action="append", default=[])
     p.add_argument("--outcome", choices=["all", "win", "loss", "draw"], default="all")
+    p.add_argument("--game-key-csv", default="",
+                   help="optional CSV containing game_key or episode_id/player_index; keeps whole selected games")
+    p.add_argument("--game-key-col", default="game_key")
+    p.add_argument("--where", action="append", default=[],
+                   help="condition on --game-key-csv rows, e.g. outcome=win or attack_by_4=1; repeatable")
     p.add_argument("--out", required=True, help="output corpus root")
     p.add_argument("--out-band", required=True, help="synthetic score band/folder name")
     p.add_argument("--name", default="subset", help="output npz stem")
     p.add_argument("--max-games", type=int, default=0)
     p.add_argument("--seed", type=int, default=7)
     args = p.parse_args()
+    args._allowed_game_keys = read_game_key_filter(args)
 
     paths = discover_paths(args.corpus, args.archetype, args.score_bands)
     if not paths:

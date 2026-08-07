@@ -2886,6 +2886,137 @@ Alakazam/Mega Lopunny, underestimated Crustle into Marnie, and missed live Mega
 Lucario pressure. Add Mega Lucario signatures such as `ab089ccfad1a` to the
 local environment pool before using RR as a Kaggle score predictor.
 
+## 2026-08-07 High-Score Disadvantage Replay Audit
+
+User asked whether 1000+/1100+/1200+ Kaggle players can win their bad
+matchups. Remote latest episode data currently only goes through 0805:
+
+```text
+/home/jie/Do/0_PTCG/workspace/episodes_raw/pokemon-tcg-ai-battle-episodes-2026-08-05.zip
+```
+
+Ran high-score replay analysis on `ks` and pulled outputs locally:
+
+```text
+logs/high_score_disadvantage_20260807/0805/
+```
+
+Generated files:
+
+```text
+threshold_summary.csv
+exact_band_summary.csv
+archetype_priors_score900.csv
+disadvantage_matchups_by_threshold.csv
+teams_high_score_disadvantage.csv
+high_score_player_rows.csv
+teams_by_archetype_high_score_disadvantage.csv
+teams_by_decksig_high_score_disadvantage.csv
+summary.md
+```
+
+Definitions used:
+
+- Player-side rows from 0805 daily Kaggle replay episodes; one game contributes
+  two rows.
+- Only rows where both teams had current leaderboard score >=900 were used for
+  matchup priors.
+- Hard disadvantage = archetype prior games >=30, non-mirror, and prior WR
+  <=0.45.
+- A separate soft check with WR <=0.50 was computed from
+  `high_score_player_rows.csv` to handle borderline cases such as Mega Lucario
+  vs Marnie.
+
+Hard disadvantage summary:
+
+```text
+1000+: overall 1635/3150 = 0.519; bad-matchup 347/930 = 0.373; share 0.295
+1100+: overall  628/1110 = 0.566; bad-matchup 120/305 = 0.393; share 0.275
+1200+: overall    77/118 = 0.653; bad-matchup   3/13  = 0.231; share 0.110
+```
+
+Exact bands:
+
+```text
+1000-1099: overall 1007/2040 = 0.494; bad-matchup 227/625 = 0.363
+1100-1199: overall  551/992  = 0.555; bad-matchup 117/292 = 0.401
+1200+:     overall   77/118  = 0.653; bad-matchup   3/13  = 0.231
+```
+
+Important interpretation:
+
+- High score does not mean the agent turns bad matchups into good matchups.
+  1000+/1100+ players improve bad-matchup win rate only modestly versus the
+  global hard-prior baseline, and still remain below 50% overall in those rows.
+- 1100+ players show real lift in some specific bad matchups:
+  - Marnie vs Mega Lopunny: `37/71 = 0.521`, prior `0.376`.
+  - Marnie vs Festival Lead: `10/14 = 0.714`, prior `0.322` but small sample.
+  - Dragapult vs Crustle: `9/16 = 0.563`, prior `0.364`.
+  - Alakazam vs Marnie: `11/21 = 0.524`, prior `0.401`.
+- Some hard weaknesses remain hard even at high score:
+  - Marnie vs Ogerpon at 1100+: `8/30 = 0.267`, prior `0.237`.
+  - Mega Lopunny vs Mega Lucario at 1100+: `1/29 = 0.034`, prior `0.087`.
+  - Crustle vs Alakazam at 1100+: `3/18 = 0.167`, prior `0.333`.
+
+The 1200+ bucket is only `Majkel1337` in this snapshot, so treat it as a
+single-player case study, not a population estimate:
+
+```text
+Majkel1337 Mega Lucario sig 43d6d8b0fce9:
+  overall 73/103 = 0.709
+  hard-disadvantage rows: 0
+  main opponents: Marnie 40, Mega Lopunny 33, Alakazam 15
+
+Majkel1337 Ogerpon sig 697a82e582d5:
+  overall 4/15 = 0.267
+  hard-disadvantage 3/13 = 0.231
+```
+
+With soft disadvantage WR <=0.50, 1200+ changes to:
+
+```text
+1200+: overall 77/118 = 0.653; soft bad-matchup 20/53 = 0.377; share 0.449
+Mega Lucario vs Marnie: 17/40 = 0.425, prior 0.453
+Ogerpon bad matchups: 3/13 = 0.231
+```
+
+This says the 1200+ score came mostly from strong Mega Lucario global matchup
+coverage and opponent mix, not from reliably overcoming hard counters.
+
+Useful successful bad-matchup replay sources for imitation/trace mining:
+
+```text
+Raihan Ramadistra Marnie b8f251a476e7:
+  overall 100/168 = 0.595; bad-matchup 34/67 = 0.508
+  pairs: Marnie<=Mega Lopunny 38, <=Ogerpon 14, <=Dragapult 12, <=Festival 3
+
+flg Dragapult cc2e995b5ad0:
+  overall 52/80 = 0.650; bad-matchup 11/21 = 0.524
+  pairs: Dragapult<=Mega Lopunny 17, <=Crustle 4
+
+flg Alakazam 791e3c4c20f4:
+  overall 28/49 = 0.571; bad-matchup 11/22 = 0.500
+  pairs: Alakazam<=Marnie 21, <=Dragapult 1
+
+James Cox & Henry Chao Ogerpon 2bd9da52c43a:
+  overall 71/113 = 0.628; bad-matchup 31/56 = 0.554
+  pairs: Ogerpon<=Alakazam 26, <=Mega Lopunny 13, <=Dragapult 10, <=Crustle 7
+
+MissingNo. Marnie b8f251a476e7:
+  overall 15/25 = 0.600; bad-matchup 7/10 = 0.700
+  small sample, but useful for trace mining.
+```
+
+Conclusion for pipeline:
+
+- Use `high_score_player_rows.csv` to extract successful bad-matchup replay
+  seeds for trace/teacher mining.
+- Do not assume high score alone implies bad-matchup mastery. For training,
+  filter by `(won == 1 and is_disadvantage == 1)` and then group by
+  `team/archetype/deck_sig/pair`.
+- Add a soft-disadvantage option (`prior_wr <= 0.50`) for near-even but
+  practically difficult pairs, especially Mega Lucario vs Marnie.
+
 ## 2026-08-06 Episode 0805 Ladder Read
 
 The 0805 episode zip exists on `ks`:

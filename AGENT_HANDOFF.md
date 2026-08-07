@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 16:36 Asia/Shanghai.
+Last updated: 2026-08-07 16:53 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -3529,6 +3529,48 @@ Interpretation:
   Festival/Lopunny cases, but lost too much global quality against the w4 pool.
 - Crustle and Dragapult cross-attn set000 failed random stability and should
   not be used as shadow or submission candidates from this wave.
+
+Cross-attn full-date retrain started:
+
+- Active script on `ks`: `/tmp/run_cross_attn_full_dates_core.sh`
+- Active runner PID observed at start: `951318`
+- Corpus: `data/bc_corpus_banded_v11_0701_0804`
+- Checkpoints: `checkpoints/arch_cross_attn_full32_20260807/`
+- Logs: `logs/arch_cross_attn_full32_20260807/`
+- Runner log: `logs/arch_cross_attn_full32_20260807/full_runner.log`
+- Targets:
+  - `Mega Lucario`, `deck_sig=43d6d8b0fce9`, 18 epochs
+  - `Marnie Grimmsnarl`, `deck_sig=b8f251a476e7`, 8 epochs
+  - `Teal Mask Ogerpon`, `deck_sig=697a82e582d5`, 18 epochs
+  - `Teal Mask Ogerpon`, `deck_sig=5899c772bace`, 20 epochs
+- Config:
+  - `--arch cross_attn --width 4 --state-layers 2`
+  - `--batch-size 4096 --lr 8e-5`
+  - `--cuda-memory-gb 32`
+  - `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
+  - `--set-loss-weight 0 --split-by-game`
+  - win/loss/draw weights `1.5/0.4/0.8`
+- The first attempt used `--cuda-memory-gb 24` under
+  `logs/arch_cross_attn_full_20260807/` and failed on Lucario with CUDA OOM
+  after the first batch. It was stopped and superseded by the `full32` run.
+- Status at 2026-08-07 16:53 Asia/Shanghai:
+  - Lucario entered training and saved at least epoch 2.
+  - Ogerpon5899 entered training and saved at least epoch 1.
+  - Ogerpon697 entered training and reached epoch 1 step 25/33.
+  - Marnie was still loading the 112 full-date files, with about 0.9M kept rows
+    by file 63/112; expected final kept count is around 3.6M.
+
+Monitor:
+
+```bash
+ssh ks 'pgrep -af "run_cross_attn_full_dates_core|checkpoints/arch_cross_attn_full32_20260807"'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/arch_cross_attn_full32_20260807/full_runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && for f in logs/arch_cross_attn_full32_20260807/*.train.log; do echo ===$f===; tail -25 "$f"; done'
+```
+
+When this finishes, first inspect `*.accuracy.log` and `*.random_g500.log`.
+Only if Marnie/Ogerpon/Lucario random is stable should the next step be paired
+baseline-delta versus the existing w4 specialist pool.
 
 ## Next Work
 

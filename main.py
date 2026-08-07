@@ -34,6 +34,8 @@ def _safe_random(obs_dict: dict) -> list[int]:
 
 def agent(obs_dict: dict) -> list[int]:
     if obs_dict.get("select") is None:
+        if hasattr(policy, "reset_history"):
+            policy.reset_history()
         return list(MY_DECK)
 
     sel = obs_dict.get("select", {})

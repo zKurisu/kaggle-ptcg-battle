@@ -31,6 +31,7 @@ class BCBatch:
     outcome_mask: torch.Tensor
     trajectory_target: torch.Tensor
     trajectory_mask: torch.Tensor
+    history: dict[str, torch.Tensor]
     actions: list[list[int]]
     n_options: list[int]
     contexts: list[int]
@@ -66,6 +67,53 @@ def _trajectory_game_key(data: dict[str, np.ndarray], i: int) -> str:
     return f"{data['episode_id'][i]}:{data['player_index'][i]}"
 
 
+def _state_context(data: dict[str, np.ndarray], i: int) -> int:
+    try:
+        feats = np.asarray(data["feats"][i], dtype=np.float32)
+        if len(feats) > 17:
+            return int(round(float(feats[17]) * 64.0))
+    except Exception:
+        pass
+    return 0
+
+
+def _history_event(data: dict[str, np.ndarray], i: int) -> tuple[int, int, int, int, int, int, float]:
+    """Return one compact event for the labeled decision at row ``i``.
+
+    Integer ids are offset by +1 where zero is reserved for padding.
+    """
+    action = np.asarray(data["action"][i], dtype=np.int64)
+    max_count = max(int(data["max_c"][i]), 1)
+    if len(action) == 0:
+        return 15, 0, 0, 0, _state_context(data, i) + 1, 1, 0.0
+    first = int(action[0])
+    ot = np.asarray(data["ot"][i], dtype=np.int64)
+    if first < 0 or first >= len(ot):
+        return 0, 0, 0, 0, 0, 0, 0.0
+    oc = np.asarray(data["oc"][i], dtype=np.int64)
+    oc2 = np.asarray(data["oc2"][i], dtype=np.int64)
+    oa = np.asarray(data["oa"][i], dtype=np.int64)
+    of = np.asarray(data["of_arr"][i], dtype=np.float32)
+    ctx = 0
+    sel_type = 0
+    if of.ndim == 2 and first < of.shape[0]:
+        if of.shape[1] > 3:
+            ctx = int(round(float(of[first, 3]) * 64.0))
+        if of.shape[1] > 4:
+            sel_type = int(round(float(of[first, 4]) * 16.0))
+    valid = [int(a) for a in action if 0 <= int(a) < len(ot)]
+    count = min(len(valid), max_count) / float(max_count)
+    return (
+        int(ot[first]) + 1,
+        int(oc[first]) if first < len(oc) else 0,
+        int(oc2[first]) if first < len(oc2) else 0,
+        int(oa[first]) if first < len(oa) else 0,
+        max(0, min(ctx, 64)) + 1,
+        max(0, min(sel_type, 16)) + 1,
+        float(count),
+    )
+
+
 class BCCorpus:
     """NPZ-backed corpus index with strict label filtering and vectorized collation."""
 
@@ -97,6 +145,7 @@ class BCCorpus:
         trajectory_missing: str = "default",
         trajectory_targets: dict[str, np.ndarray] | None = None,
         trajectory_target_dim: int = 0,
+        history_k: int = 0,
         split_by_game: bool = False,
         load_progress_every: int = 0,
     ):
@@ -141,8 +190,10 @@ class BCCorpus:
         if self.trajectory_targets and self.trajectory_target_dim <= 0:
             first = next(iter(self.trajectory_targets.values()))
             self.trajectory_target_dim = int(first.shape[-1])
-        self.split_by_game = bool(split_by_game)
+        self.history_k = max(0, int(history_k))
+        self.split_by_game = bool(split_by_game or self.history_k > 0)
         self.npz_data: list[dict[str, np.ndarray]] = []
+        self.history_prev: list[np.ndarray] = []
         self.groups: list[list[tuple[int, int]]] = []
         self.stats = {
             "raw": 0,
@@ -206,6 +257,10 @@ class BCCorpus:
             group: list[tuple[int, int]] = []
             game_groups: dict[str, list[tuple[int, int]]] = {}
             n_rows = len(data["board"])
+            file_history_prev = (
+                np.full((n_rows, self.history_k), -1, dtype=np.int32)
+                if self.history_k > 0 else np.empty((0, 0), dtype=np.int32)
+            )
             file_raw0 = self.stats["raw"]
             file_kept0 = self.stats["kept"]
             for i in range(n_rows):
@@ -271,9 +326,18 @@ class BCCorpus:
                     )
             self.npz_data.append(data)
             if self.split_by_game and game_groups:
-                self.groups.extend(game_groups.values())
+                for rows in game_groups.values():
+                    rows = sorted(rows, key=lambda x: x[1])
+                    if self.history_k > 0:
+                        for pos, (_, row_i) in enumerate(rows):
+                            prev = [r for _, r in rows[max(0, pos - self.history_k) : pos]]
+                            if prev:
+                                file_history_prev[row_i, -len(prev):] = np.asarray(prev, dtype=np.int32)
+                    self.groups.append(rows)
             elif group:
                 self.groups.append(group)
+            if self.history_k > 0:
+                self.history_prev.append(file_history_prev)
             if load_progress_every:
                 print(
                     f"  loaded {path_i}/{len(paths)} {os.path.basename(path)} "
@@ -318,6 +382,14 @@ class BCCorpus:
         outcome_mask = np.zeros(bsz, dtype=np.float32)
         trajectory_target = np.zeros((bsz, self.trajectory_target_dim), dtype=np.float32)
         trajectory_mask = np.zeros((bsz, self.trajectory_target_dim), dtype=np.float32)
+        history_type = np.zeros((bsz, self.history_k), dtype=np.int64)
+        history_card = np.zeros((bsz, self.history_k), dtype=np.int64)
+        history_card2 = np.zeros((bsz, self.history_k), dtype=np.int64)
+        history_attack = np.zeros((bsz, self.history_k), dtype=np.int64)
+        history_context = np.zeros((bsz, self.history_k), dtype=np.int64)
+        history_select_type = np.zeros((bsz, self.history_k), dtype=np.int64)
+        history_count = np.zeros((bsz, self.history_k), dtype=np.float32)
+        history_mask = np.zeros((bsz, self.history_k), dtype=np.float32)
         actions: list[list[int]] = []
         contexts: list[int] = []
         true_first_types: list[int] = []
@@ -379,6 +451,20 @@ class BCCorpus:
                     n_target = min(len(target), self.trajectory_target_dim)
                     trajectory_target[bi, :n_target] = target[:n_target]
                     trajectory_mask[bi, :n_target] = 1.0
+            if self.history_k > 0:
+                for hi, prev_si in enumerate(self.history_prev[di][si]):
+                    if prev_si < 0:
+                        continue
+                    (
+                        history_type[bi, hi],
+                        history_card[bi, hi],
+                        history_card2[bi, hi],
+                        history_attack[bi, hi],
+                        history_context[bi, hi],
+                        history_select_type[bi, hi],
+                        history_count[bi, hi],
+                    ) = _history_event(data, int(prev_si))
+                    history_mask[bi, hi] = 1.0
 
         max_steps = max(len(a) for a in actions) + 1
         targets = np.full((bsz, max_steps), -1, dtype=np.int64)
@@ -406,6 +492,16 @@ class BCCorpus:
             outcome_mask=torch.as_tensor(outcome_mask, device=device),
             trajectory_target=torch.as_tensor(trajectory_target, device=device),
             trajectory_mask=torch.as_tensor(trajectory_mask, device=device),
+            history={
+                "type": torch.as_tensor(history_type, device=device),
+                "card": torch.as_tensor(history_card, device=device),
+                "card2": torch.as_tensor(history_card2, device=device),
+                "attack": torch.as_tensor(history_attack, device=device),
+                "context": torch.as_tensor(history_context, device=device),
+                "select_type": torch.as_tensor(history_select_type, device=device),
+                "count": torch.as_tensor(history_count, device=device),
+                "mask": torch.as_tensor(history_mask, device=device),
+            },
             actions=actions,
             n_options=n_options,
             contexts=contexts,

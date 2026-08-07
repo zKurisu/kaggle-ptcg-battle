@@ -44,7 +44,8 @@ def _value_fn(numpy_policy, observation: dict) -> float:
     """Evaluate state value using the numpy policy network. Higher = better for current player."""
     try:
         d = numpy_policy.encoder.encode(observation)
-        h = numpy_policy.encode_state(d.board_cards, d.hand_cards, d.state_feats)
+        history = numpy_policy._history_arrays() if hasattr(numpy_policy, "_history_arrays") else None
+        h = numpy_policy.encode_state(d.board_cards, d.hand_cards, d.state_feats, history)
         return float(numpy_policy.value(h))
     except Exception:
         return 0.0

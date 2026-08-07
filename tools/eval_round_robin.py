@@ -236,6 +236,9 @@ def play_game(a: Entry, b: Entry, swapped: bool, use_mcts: bool, sims: int,
     if seed is not None:
         random.seed(seed)
     first, second = (b, a) if swapped else (a, b)
+    for entry in (first, second):
+        if entry.policy is not None and hasattr(entry.policy, "reset_history"):
+            entry.policy.reset_history()
     obs, sd = battle_start(first.deck, second.deck)
     if obs is None:
         return 2

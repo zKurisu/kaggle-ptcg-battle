@@ -23,7 +23,7 @@ class PolicyValueNet(nn.Module):
     def __init__(self, width: float = 1.0, option_context: bool = True,
                  slot_state: bool = True, state_feat_dim: int = STATE_FEAT_DIM,
                  opt_feat_dim: int = OPT_FEAT_DIM, plan_dim: int = 0,
-                 hierarchical_plan: bool = False):
+                 hierarchical_plan: bool = False, history_k: int = 0):
         """width=1.0→501K, 2.0→4M, 3.0→9M params."""
         super().__init__()
         ec = int(_EC * width); ea = int(_EA * width); eo_t = int(_EO * width)
@@ -36,9 +36,11 @@ class PolicyValueNet(nn.Module):
         self.opt_feat_dim = int(opt_feat_dim)
         self.plan_dim = int(plan_dim)
         self.hierarchical_plan = bool(hierarchical_plan and self.plan_dim > 0)
+        self.history_k = max(0, int(history_k))
         self._ec=ec; self._ea=ea; self._eo_t=eo_t; self._oe=oe; self._hd=hd
         self._ctx=ctx; self._area=area; self._idx=idx
         self._plan_cd = sc if self.hierarchical_plan else 0
+        self._hist = sc if self.history_k > 0 else 0
 
         self.card_emb = nn.Embedding(N_CARDS + 2, ec, padding_idx=0)
         self.attack_emb = nn.Embedding(N_ATTACKS + 1, ea, padding_idx=0)
@@ -55,6 +57,15 @@ class PolicyValueNet(nn.Module):
         state_in = (5 * ec if slot_state else 3 * ec) + self.state_feat_dim
         self.state_fc1 = nn.Linear(state_in, s1)
         self.state_fc2 = nn.Linear(s1, hd)
+        if self.history_k > 0:
+            self.history_type_emb = nn.Embedding(N_OPT_TYPES + 2, eo_t, padding_idx=0)
+            self.history_context_emb = nn.Embedding(66, ctx, padding_idx=0)
+            self.history_select_type_emb = nn.Embedding(18, ctx, padding_idx=0)
+            self.history_pos_emb = nn.Embedding(self.history_k, ctx)
+            hist_in = ec + ec + ea + eo_t + ctx + ctx + ctx + 2
+            self.history_token_fc = nn.Linear(hist_in, sc)
+            self.history_gru = nn.GRU(sc, sc, batch_first=True)
+            self.history_out_fc = nn.Linear(hd + sc, hd)
         opt_extra = ctx + ctx + area + idx + area + idx if option_context else 0
         self.opt_fc = nn.Linear(ec + ec + ea + eo_t + opt_extra + self.opt_feat_dim, oe)
         self.score_fc1 = nn.Linear(hd + oe + oe, sc)
@@ -88,8 +99,45 @@ class PolicyValueNet(nn.Module):
 
     # ── state encoder ───────────────────────────────────────────────
 
+    def _encode_history(self, history: dict[str, torch.Tensor] | None, bsz: int,
+                        device: torch.device) -> torch.Tensor:
+        if self.history_k <= 0:
+            return torch.zeros(bsz, 0, device=device)
+        if not history or history.get("mask") is None or history["mask"].numel() == 0:
+            return torch.zeros(bsz, self._hist, device=device)
+        mask = history["mask"].to(device=device, dtype=torch.float32)
+        if mask.shape[1] != self.history_k:
+            mask = mask[:, -self.history_k:]
+        k = mask.shape[1]
+        pos = torch.arange(k, device=device).unsqueeze(0).expand(mask.shape[0], -1)
+        parts = [
+            self.card_emb(history["card"].to(device=device).long()[:, -k:]),
+            self.card_emb(history["card2"].to(device=device).long()[:, -k:]),
+            self.attack_emb(history["attack"].to(device=device).long()[:, -k:]),
+            self.history_type_emb(history["type"].to(device=device).long()[:, -k:].clamp(0, N_OPT_TYPES + 1)),
+            self.history_context_emb(history["context"].to(device=device).long()[:, -k:].clamp(0, 65)),
+            self.history_select_type_emb(history["select_type"].to(device=device).long()[:, -k:].clamp(0, 17)),
+            self.history_pos_emb(pos),
+            history["count"].to(device=device, dtype=torch.float32)[:, -k:].unsqueeze(-1),
+            mask.unsqueeze(-1),
+        ]
+        x = torch.cat(parts, dim=-1)
+        token = F.relu(self.history_token_fc(x)) * mask.unsqueeze(-1)
+        hidden = torch.zeros(1, mask.shape[0], self._hist, device=device, dtype=token.dtype)
+        for t in range(k):
+            _, next_hidden = self.history_gru(token[:, t:t + 1], hidden)
+            valid = mask[:, t].view(1, -1, 1) > 0
+            hidden = torch.where(valid, next_hidden, hidden)
+        return hidden.squeeze(0)
+
+    def _merge_history(self, h: torch.Tensor, history: dict[str, torch.Tensor] | None) -> torch.Tensor:
+        if self.history_k <= 0:
+            return h
+        hist = self._encode_history(history, h.shape[0], h.device)
+        return F.relu(self.history_out_fc(torch.cat([h, hist], dim=-1)))
+
     def encode_state(self, board: torch.Tensor, hand: torch.Tensor,
-                     feats: torch.Tensor) -> torch.Tensor:
+                     feats: torch.Tensor, history: dict[str, torch.Tensor] | None = None) -> torch.Tensor:
         feats = self._fit_feat_dim(feats, self.state_feat_dim)
         if self.slot_state:
             my_active = self.card_emb(board[..., 0])
@@ -98,12 +146,12 @@ class PolicyValueNet(nn.Module):
             opp_bench = self._pool(board[..., 7:])
             hnd = self._pool(hand)
             x = torch.cat([my_active, my_bench, opp_active, opp_bench, hnd, feats], dim=-1)
-            return F.relu(self.state_fc2(F.relu(self.state_fc1(x))))
+            return self._merge_history(F.relu(self.state_fc2(F.relu(self.state_fc1(x)))), history)
         my = self._pool(board[..., :6])
         opp = self._pool(board[..., 6:])
         hnd = self._pool(hand)
         x = torch.cat([my, opp, hnd, feats], dim=-1)
-        return F.relu(self.state_fc2(F.relu(self.state_fc1(x))))
+        return self._merge_history(F.relu(self.state_fc2(F.relu(self.state_fc1(x)))), history)
 
     # ── option encoder ──────────────────────────────────────────────
 
@@ -448,6 +496,7 @@ class CrossAttentionPolicyValueNet(nn.Module):
         opt_feat_dim: int = OPT_FEAT_DIM,
         plan_dim: int = 0,
         hierarchical_plan: bool = False,
+        history_k: int = 0,
         state_layers: int = 2,
     ):
         super().__init__()
@@ -461,10 +510,12 @@ class CrossAttentionPolicyValueNet(nn.Module):
         self.opt_feat_dim = int(opt_feat_dim)
         self.plan_dim = int(plan_dim)
         self.hierarchical_plan = bool(hierarchical_plan and self.plan_dim > 0)
+        self.history_k = max(0, int(history_k))
         self.state_layers_n = int(state_layers)
         self._ec=ec; self._ea=ea; self._eo_t=eo_t; self._oe=oe; self._hd=hd
         self._ctx=ctx; self._area=area; self._idx=idx
         self._plan_cd = sc if self.hierarchical_plan else 0
+        self._hist = sc if self.history_k > 0 else 0
         self.register_buffer("arch_code", torch.tensor([1], dtype=torch.int32), persistent=True)
 
         self.card_emb = nn.Embedding(N_CARDS + 2, ec, padding_idx=0)
@@ -489,6 +540,15 @@ class CrossAttentionPolicyValueNet(nn.Module):
         ])
         self.state_pool_fc = nn.Linear(oe, 1)
         self.state_out_fc = nn.Linear(oe, hd)
+        if self.history_k > 0:
+            self.history_type_emb = nn.Embedding(N_OPT_TYPES + 2, eo_t, padding_idx=0)
+            self.history_context_emb = nn.Embedding(66, ctx, padding_idx=0)
+            self.history_select_type_emb = nn.Embedding(18, ctx, padding_idx=0)
+            self.history_pos_emb = nn.Embedding(self.history_k, ctx)
+            hist_in = ec + ec + ea + eo_t + ctx + ctx + ctx + 2
+            self.history_token_fc = nn.Linear(hist_in, sc)
+            self.history_gru = nn.GRU(sc, sc, batch_first=True)
+            self.history_out_fc = nn.Linear(hd + sc, hd)
 
         opt_extra = ctx + ctx + area + idx + area + idx if option_context else 0
         self.opt_fc = nn.Linear(ec + ec + ea + eo_t + opt_extra + self.opt_feat_dim, oe)
@@ -565,15 +625,52 @@ class CrossAttentionPolicyValueNet(nn.Module):
             tokens = layer(tokens, mask)
         return tokens, mask
 
+    def _encode_history(self, history: dict[str, torch.Tensor] | None, bsz: int,
+                        device: torch.device) -> torch.Tensor:
+        if self.history_k <= 0:
+            return torch.zeros(bsz, 0, device=device)
+        if not history or history.get("mask") is None or history["mask"].numel() == 0:
+            return torch.zeros(bsz, self._hist, device=device)
+        mask = history["mask"].to(device=device, dtype=torch.float32)
+        if mask.shape[1] != self.history_k:
+            mask = mask[:, -self.history_k:]
+        k = mask.shape[1]
+        pos = torch.arange(k, device=device).unsqueeze(0).expand(mask.shape[0], -1)
+        parts = [
+            self.card_emb(history["card"].to(device=device).long()[:, -k:]),
+            self.card_emb(history["card2"].to(device=device).long()[:, -k:]),
+            self.attack_emb(history["attack"].to(device=device).long()[:, -k:]),
+            self.history_type_emb(history["type"].to(device=device).long()[:, -k:].clamp(0, N_OPT_TYPES + 1)),
+            self.history_context_emb(history["context"].to(device=device).long()[:, -k:].clamp(0, 65)),
+            self.history_select_type_emb(history["select_type"].to(device=device).long()[:, -k:].clamp(0, 17)),
+            self.history_pos_emb(pos),
+            history["count"].to(device=device, dtype=torch.float32)[:, -k:].unsqueeze(-1),
+            mask.unsqueeze(-1),
+        ]
+        x = torch.cat(parts, dim=-1)
+        token = F.relu(self.history_token_fc(x)) * mask.unsqueeze(-1)
+        hidden = torch.zeros(1, mask.shape[0], self._hist, device=device, dtype=token.dtype)
+        for t in range(k):
+            _, next_hidden = self.history_gru(token[:, t:t + 1], hidden)
+            valid = mask[:, t].view(1, -1, 1) > 0
+            hidden = torch.where(valid, next_hidden, hidden)
+        return hidden.squeeze(0)
+
+    def _merge_history(self, h: torch.Tensor, history: dict[str, torch.Tensor] | None) -> torch.Tensor:
+        if self.history_k <= 0:
+            return h
+        hist = self._encode_history(history, h.shape[0], h.device)
+        return F.relu(self.history_out_fc(torch.cat([h, hist], dim=-1)))
+
     def encode_state(self, board: torch.Tensor, hand: torch.Tensor,
-                     feats: torch.Tensor) -> torch.Tensor:
+                     feats: torch.Tensor, history: dict[str, torch.Tensor] | None = None) -> torch.Tensor:
         tokens, mask = self._build_state_tokens(board, hand, feats)
         pool_logits = self.state_pool_fc(tokens).squeeze(-1).masked_fill(~mask, NEG_INF)
         pool = torch.softmax(pool_logits, dim=-1).unsqueeze(-1)
         pooled = (tokens * pool).sum(dim=1)
         self._cached_state_tokens = tokens
         self._cached_state_mask = mask
-        return F.relu(self.state_out_fc(pooled))
+        return self._merge_history(F.relu(self.state_out_fc(pooled)), history)
 
     def encode_options(self, opt_type: torch.Tensor, opt_card: torch.Tensor,
                        opt_card2: torch.Tensor, opt_attack: torch.Tensor,
@@ -708,3 +805,10 @@ def checkpoint_plan_dim(z) -> int:
 def checkpoint_hierarchical_plan(z) -> bool:
     """Return whether a checkpoint conditions policy logits on predicted plan."""
     return "plan_condition_fc.weight" in z
+
+
+def checkpoint_history_k(z) -> int:
+    """Infer past-decision history length from a checkpoint."""
+    if "history_pos_emb.weight" not in z:
+        return 0
+    return int(z["history_pos_emb.weight"].shape[0])

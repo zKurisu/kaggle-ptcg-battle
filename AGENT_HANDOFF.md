@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 19:11 Asia/Shanghai.
+Last updated: 2026-08-07 19:45 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -401,6 +401,84 @@ Monitor with:
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -80 logs/hier_plan_compare_20260807.runner.log'
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "run_hier_plan_compare|bc2_train.py.*hierarchical-plan|bc2_accuracy.py.*hier_plan_compare|eval_bc.py.*hier_plan_compare"'
 ```
+
+### True Past-K History Policy Implementation
+
+Implemented after the hierarchical-plan result showed that game-level target
+conditioning was not real sequential memory.
+
+New behavior:
+
+- `tools/bc2_train.py --history-k K` enables a real past-K own-decision history
+  encoder. Default `K=0` keeps old behavior/checkpoints unchanged.
+- Training history is built inside `ptcg_rl/bc2/data.py` from the previous K
+  kept decisions in the same `episode_id:player_index` game. Rows are
+  chronological within each game and history is right-aligned old-to-new, so
+  current/future labels are not leaked.
+- Each history event contains the first selected option's type/card/card2/attack,
+  option context/select type, selected-count ratio, and a mask.
+- `ptcg_rl/model.py` adds a small GRU history encoder for both pointer and
+  cross-attn policies. Its output is fused back to the normal state embedding
+  at fixed `hd`, preserving the scorer dimensions.
+- `ptcg_rl/numpy_policy.py` now detects `history_pos_emb.weight` in checkpoints,
+  keeps a rolling history buffer during inference, and applies the same GRU
+  math in NumPy.
+- `main.py`, `tools/eval_bc.py`, `tools/eval_round_robin.py`,
+  `tools/trace_matchup_decisions.py`, and `tools/generate_rollout_bc.py` reset
+  policy history at each new game to avoid cross-game leakage.
+- `tools/bc2_accuracy.py` and `tools/bc2_failure_report.py` infer `history_k`
+  from checkpoints and build matching corpus history.
+
+Limitations of this first version:
+
+- It records our own past decisions only. Opponent history is not included yet,
+  because the current BC corpus is target-player rows by archetype; opponent
+  action rows are not reliably available in the same sample stream.
+- It stores one compact event per decision, using the first selected option for
+  multi-select contexts. This is enough to test sequential conditioning, but a
+  later version can add selected-set sketches.
+- Rule overlays and random exploration can still make the rolling history differ
+  from the model's pre-overlay action. Submission path has no rule overlay, so
+  this is mainly a rollout-generation caveat.
+
+Remote smoke validation:
+
+```text
+py_compile passed on local and ks for model/numpy_policy/bc2/train/eval files.
+Torch-vs-NumPy history encode smoke passed on ks:
+  PolicyValueNet max abs diff 4.8e-07
+  CrossAttentionPolicyValueNet max abs diff 8.9e-07
+Real corpus CPU smoke:
+  command used Mega Lucario 43d, pointer width 0.25, history_k=4, 1 epoch.
+  checkpoint saved to /tmp/bc2_history_smoke.npz
+  bc2_accuracy smoke over 2048 samples completed.
+  eval_bc smoke completed 2 games without inference errors.
+Old-checkpoint init smoke:
+  old Mega Lucario w4 -> --history-k 2 loaded 24 old tensors successfully.
+  CPU training was manually stopped after init/first batch because width4 CPU
+  was too slow; use GPU for real runs.
+```
+
+Example history training command shape:
+
+```bash
+python3 tools/bc2_train.py \
+  --corpus data/bc_corpus_banded_v11_0701_0804 \
+  --archetype "Mega Lucario" \
+  --score-bands 1200+ 1100-1199 1000-1099 900-999 \
+  --deck-sig 43d6d8b0fce9 \
+  --arch pointer --width 4 --history-k 8 \
+  --batch-size 2048 --epochs 8 --lr 5e-5 \
+  --cuda-memory-gb 24 --device cuda:1 \
+  --win-weight 1.5 --loss-weight 0.4 --draw-weight 0.8 \
+  --first-action-weight 1.5 --option-weight 0.15 \
+  --init checkpoints/deck_sig_specialists_v11all35_20260806/w4/bc2_mega_lucario_sig2_43d6d8b0_v11all35_sigpure_top3_w4.npz \
+  --save checkpoints/history_k_20260807/bc2_mega_lucario_43d6_hist8_w4init.npz
+```
+
+Evaluation commands do not need a new flag; they infer history automatically
+from checkpoint weights. Always keep the `PYTHONPATH` prefix in non-interactive
+remote runs.
 
 ## 2026-08-05 Search/Rules/Community Diagnostics
 

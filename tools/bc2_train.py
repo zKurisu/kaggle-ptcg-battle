@@ -17,7 +17,7 @@ sys.path.insert(0, str(_REPO))
 
 from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, sequence_nll
 from ptcg_rl.deck_plans import CARD_NAMES
-from ptcg_rl.model import build_policy_model, checkpoint_feature_dims
+from ptcg_rl.model import build_policy_model, checkpoint_feature_dims, checkpoint_history_k
 
 
 CONTEXT_IDS = {
@@ -343,6 +343,11 @@ def _checkpoint_feature_dims(path: str) -> tuple[int, int]:
     return int(state_feat_dim), int(opt_feat_dim)
 
 
+def _checkpoint_history_k(path: str) -> int:
+    with np.load(path) as z:
+        return checkpoint_history_k(z)
+
+
 def _configure_cuda_memory_limit(device: torch.device, *, gb: float = 0.0, fraction: float = 0.0) -> str:
     if device.type != "cuda":
         return ""
@@ -432,6 +437,8 @@ def main() -> None:
                             "condition action logits on predicted --trajectory-target plan signals. "
                             "Requires at least one --trajectory-target."
                         ))
+    parser.add_argument("--history-k", type=int, default=0,
+                        help="condition the policy on this many previous own decisions from the same game; 0 disables")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--cuda-memory-gb", type=float, default=0.0,
                         help="cap this process' CUDA allocator to approximately N GiB; 0 disables")
@@ -562,6 +569,9 @@ def main() -> None:
         raise ValueError("--trajectory-target-loss-weight > 0 requires at least one --trajectory-target")
     if args.hierarchical_plan and plan_target_dim <= 0:
         raise ValueError("--hierarchical-plan requires at least one --trajectory-target")
+    history_k = max(0, int(args.history_k))
+    if args.init and history_k <= 0:
+        history_k = _checkpoint_history_k(args.init)
     inferred_from_init = False
     state_feat_dim = int(args.state_feat_dim) if args.state_feat_dim else None
     opt_feat_dim = int(args.opt_feat_dim) if args.opt_feat_dim else None
@@ -599,7 +609,8 @@ def main() -> None:
         trajectory_missing=args.trajectory_missing_policy,
         trajectory_targets=trajectory_targets,
         trajectory_target_dim=plan_target_dim,
-        split_by_game=args.split_by_game or bool(trajectory_weights) or bool(trajectory_targets),
+        history_k=history_k,
+        split_by_game=args.split_by_game or bool(trajectory_weights) or bool(trajectory_targets) or history_k > 0,
         load_progress_every=args.load_progress_every,
     )
     if corpus.stats["kept"] <= 0:
@@ -623,6 +634,8 @@ def main() -> None:
         model_kwargs["plan_dim"] = plan_target_dim
     if args.hierarchical_plan:
         model_kwargs["hierarchical_plan"] = True
+    if history_k > 0:
+        model_kwargs["history_k"] = history_k
     model = build_policy_model(
         args.arch,
         width=args.width,
@@ -634,7 +647,7 @@ def main() -> None:
         skip_prefixes = list(args.init_skip_prefix)
         if args.reset_scorer:
             skip_prefixes.extend(["score_fc", "stop_vec"])
-        partial_init = args.init_partial or bool(plan_target_dim) or bool(skip_prefixes)
+        partial_init = args.init_partial or bool(plan_target_dim) or bool(skip_prefixes) or history_k > 0
         loaded, skipped = _load_npz_init(
             model,
             args.init,
@@ -644,7 +657,7 @@ def main() -> None:
         )
         msg = f"Init: loaded={loaded} path={args.init}"
         if partial_init and not args.init_partial:
-            msg += " partial_init_for_plan_head=True"
+            msg += " partial_init_for_new_heads=True"
         if skip_prefixes:
             msg += f" skip_prefixes={skip_prefixes}"
         if skipped:
@@ -663,6 +676,7 @@ def main() -> None:
         f"{memory_limit_msg + ' ' if memory_limit_msg else ''}"
         f"arch={args.arch} width={args.width} state_layers={args.state_layers} "
         f"hierarchical_plan={args.hierarchical_plan} "
+        f"history_k={history_k} "
         f"slot_state={not args.legacy_state_pool} "
         f"state_feat_dim={state_feat_dim or 'default'} opt_feat_dim={opt_feat_dim or 'default'} "
         f"{'feature_dims_from_init ' if inferred_from_init else ''}"
@@ -684,7 +698,7 @@ def main() -> None:
         f"trajectory_base/cap/missing={args.trajectory_base_weight}/{args.trajectory_weight_cap}/"
         f"{args.trajectory_missing_weight}:{args.trajectory_missing_policy} "
         f"reset_scorer={args.reset_scorer} init_skip_prefix={args.init_skip_prefix or 'none'} "
-        f"split_by_game={args.split_by_game or bool(trajectory_weights) or bool(trajectory_targets)} "
+        f"split_by_game={args.split_by_game or bool(trajectory_weights) or bool(trajectory_targets) or history_k > 0} "
         f"set_loss={args.set_loss_weight}/{args.set_loss_min_count}/{args.set_loss_negative_weight} "
         f"aux_corpus={aux_details or 'none'} aux_bands={args.aux_score_bands} aux_repeat={aux_repeat} "
         f"params={params/1e6:.1f}M",

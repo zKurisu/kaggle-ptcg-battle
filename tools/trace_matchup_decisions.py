@@ -409,6 +409,9 @@ def play_traced_game(
     swapped = bool(game % 2)
     first, second = (opponent, candidate) if swapped else (candidate, opponent)
     candidate_side = 1 if swapped else 0
+    for entry in (first, second):
+        if entry.policy is not None and hasattr(entry.policy, "reset_history"):
+            entry.policy.reset_history()
     obs, sd = battle_start(first.deck, second.deck)
     decisions: list[dict] = []
     result = 2

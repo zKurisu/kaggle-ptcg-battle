@@ -67,6 +67,8 @@ def _play_one_game(policy, deck, game_index, use_mcts=False, sims=48,
 
     random.seed(seed)
     our_side = 0 if game_index % 2 == 0 else 1
+    if hasattr(policy, "reset_history"):
+        policy.reset_history()
     obs, sd = battle_start(deck, deck)
     if obs is None:
         return 0, 1

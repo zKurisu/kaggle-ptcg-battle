@@ -282,6 +282,9 @@ def _play_rollout_game(
     first, second = (candidate, opponent) if candidate_first else (opponent, candidate)
     candidate_side = 0 if candidate_first else 1
     game_actor = _choose_actor(actors, rng) if actor_scope == "game" else None
+    for entry in (first, second):
+        if entry.policy is not None and hasattr(entry.policy, "reset_history"):
+            entry.policy.reset_history()
     decisions: list[dict[str, Any]] = []
     stats = {
         "games": 1,

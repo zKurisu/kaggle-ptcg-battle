@@ -61,6 +61,8 @@ class NumpyPolicy:
             if self._hierarchical_plan
             else 0
         )
+        self._history_k = int(self.w["history_pos_emb.weight"].shape[0]) if "history_pos_emb.weight" in self.w else 0
+        self._history: list[dict[str, float | int]] = []
         if self._arch == "cross_attn":
             self._slot_state = True
             self._state_feat_dim = self.w["feat_token_fc.weight"].shape[1]
@@ -90,6 +92,68 @@ class NumpyPolicy:
             + opt_extra
         )
 
+    def reset_history(self) -> None:
+        self._history.clear()
+
+    def _history_arrays(self) -> dict[str, np.ndarray] | None:
+        if self._history_k <= 0:
+            return None
+        out = {
+            "type": np.zeros(self._history_k, dtype=np.int64),
+            "card": np.zeros(self._history_k, dtype=np.int64),
+            "card2": np.zeros(self._history_k, dtype=np.int64),
+            "attack": np.zeros(self._history_k, dtype=np.int64),
+            "context": np.zeros(self._history_k, dtype=np.int64),
+            "select_type": np.zeros(self._history_k, dtype=np.int64),
+            "count": np.zeros(self._history_k, dtype=np.float32),
+            "mask": np.zeros(self._history_k, dtype=np.float32),
+        }
+        events = self._history[-self._history_k:]
+        start = self._history_k - len(events)
+        for i, event in enumerate(events, start):
+            for key in ("type", "card", "card2", "attack", "context", "select_type"):
+                out[key][i] = int(event.get(key, 0))
+            out["count"][i] = float(event.get("count", 0.0))
+            out["mask"][i] = 1.0
+        return out
+
+    def _remember_decision(self, d, picks: list[int]) -> None:
+        if self._history_k <= 0:
+            return
+        if picks:
+            idx = int(picks[0])
+            if 0 <= idx < len(d.opt_type):
+                opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
+                ctx = int(np.rint(opt_feats[idx, 3] * 64.0)) if opt_feats.shape[1] > 3 else 0
+                sel_type = int(np.rint(opt_feats[idx, 4] * 16.0)) if opt_feats.shape[1] > 4 else 0
+                event = {
+                    "type": int(d.opt_type[idx]) + 1,
+                    "card": int(d.opt_card[idx]),
+                    "card2": int(d.opt_card2[idx]),
+                    "attack": int(d.opt_attack[idx]),
+                    "context": max(0, min(ctx, 64)) + 1,
+                    "select_type": max(0, min(sel_type, 16)) + 1,
+                    "count": min(len(picks), max(int(d.max_count), 1)) / float(max(int(d.max_count), 1)),
+                }
+            else:
+                event = None
+        else:
+            ctx = int(np.rint(d.state_feats[17] * 64.0)) if len(d.state_feats) > 17 else 0
+            event = {
+                "type": 15,
+                "card": 0,
+                "card2": 0,
+                "attack": 0,
+                "context": max(0, min(ctx, 64)) + 1,
+                "select_type": 1,
+                "count": 0.0,
+            }
+        if event is None:
+            return
+        self._history.append(event)
+        if len(self._history) > self._history_k:
+            del self._history[:-self._history_k]
+
     @classmethod
     def load(cls, path: str) -> "NumpyPolicy":
         with np.load(path) as z:
@@ -102,10 +166,73 @@ class NumpyPolicy:
         mask = (ids > 0).astype(np.float32)[:, None]
         return (e * mask).sum(axis=0) / (mask.sum() + 1e-8)
 
+    def _encode_history(self, history: dict[str, np.ndarray] | None) -> np.ndarray:
+        if self._history_k <= 0:
+            return np.zeros(0, dtype=np.float32)
+        hidden_dim = self.w["history_gru.weight_hh_l0"].shape[1]
+        if not history:
+            return np.zeros(hidden_dim, dtype=np.float32)
+        mask = np.asarray(history.get("mask", np.zeros(self._history_k)), dtype=np.float32)[-self._history_k:]
+        if mask.shape[0] < self._history_k:
+            mask = np.pad(mask, (self._history_k - mask.shape[0], 0))
+        def arr(name: str, dtype=np.int64):
+            x = np.asarray(history.get(name, np.zeros(self._history_k)), dtype=dtype)[-self._history_k:]
+            if x.shape[0] < self._history_k:
+                x = np.pad(x, (self._history_k - x.shape[0], 0))
+            return x
+        typ = arr("type").clip(0, self.w["history_type_emb.weight"].shape[0] - 1)
+        card = arr("card").clip(0, self.w["card_emb.weight"].shape[0] - 1)
+        card2 = arr("card2").clip(0, self.w["card_emb.weight"].shape[0] - 1)
+        attack = arr("attack").clip(0, self.w["attack_emb.weight"].shape[0] - 1)
+        ctx = arr("context").clip(0, self.w["history_context_emb.weight"].shape[0] - 1)
+        sel_type = arr("select_type").clip(0, self.w["history_select_type_emb.weight"].shape[0] - 1)
+        count = arr("count", dtype=np.float32).astype(np.float32)
+        pos = np.arange(self._history_k, dtype=np.int64)
+        x = np.concatenate([
+            self.w["card_emb.weight"][card],
+            self.w["card_emb.weight"][card2],
+            self.w["attack_emb.weight"][attack],
+            self.w["history_type_emb.weight"][typ],
+            self.w["history_context_emb.weight"][ctx],
+            self.w["history_select_type_emb.weight"][sel_type],
+            self.w["history_pos_emb.weight"][pos],
+            count[:, None],
+            mask[:, None],
+        ], axis=-1)
+        token = _relu(_linear(self.w["history_token_fc.weight"], self.w["history_token_fc.bias"], x))
+        token *= mask[:, None]
+        w_ih = self.w["history_gru.weight_ih_l0"]
+        w_hh = self.w["history_gru.weight_hh_l0"]
+        b_ih = self.w["history_gru.bias_ih_l0"]
+        b_hh = self.w["history_gru.bias_hh_l0"]
+        h = np.zeros(hidden_dim, dtype=np.float32)
+        for t in range(self._history_k):
+            if mask[t] <= 0:
+                continue
+            gi = token[t] @ w_ih.T + b_ih
+            gh = h @ w_hh.T + b_hh
+            i_r, i_z, i_n = np.split(gi, 3)
+            h_r, h_z, h_n = np.split(gh, 3)
+            r = 1.0 / (1.0 + np.exp(-np.clip(i_r + h_r, -30.0, 30.0)))
+            z = 1.0 / (1.0 + np.exp(-np.clip(i_z + h_z, -30.0, 30.0)))
+            n = np.tanh(i_n + r * h_n)
+            h = (1.0 - z) * n + z * h
+        return h.astype(np.float32, copy=False)
+
+    def _merge_history(self, h: np.ndarray, history: dict[str, np.ndarray] | None) -> np.ndarray:
+        if self._history_k <= 0:
+            return h
+        hist = self._encode_history(history)
+        return _relu(_linear(
+            self.w["history_out_fc.weight"],
+            self.w["history_out_fc.bias"],
+            np.concatenate([h, hist]),
+        ))
+
     def encode_state(self, board: np.ndarray, hand: np.ndarray,
-                     feats: np.ndarray) -> np.ndarray:
+                     feats: np.ndarray, history: dict[str, np.ndarray] | None = None) -> np.ndarray:
         if self._arch == "cross_attn":
-            h, tokens, mask = self._encode_state_cross(board, hand, feats)
+            h, tokens, mask = self._encode_state_cross(board, hand, feats, history)
             self._cached_state_tokens = tokens
             self._cached_state_mask = mask
             return h
@@ -119,19 +246,26 @@ class NumpyPolicy:
             hnd = self._pool(hand)
             x = np.concatenate([my_active, my_bench, opp_active, opp_bench, hnd, feats])
             x = _relu(_linear(self.w["state_fc1.weight"], self.w["state_fc1.bias"], x))
-            return _relu(_linear(self.w["state_fc2.weight"], self.w["state_fc2.bias"], x))
+            return self._merge_history(
+                _relu(_linear(self.w["state_fc2.weight"], self.w["state_fc2.bias"], x)),
+                history,
+            )
         my = self._pool(board[:6])
         opp = self._pool(board[6:])
         hnd = self._pool(hand)
         x = np.concatenate([my, opp, hnd, feats])
         x = _relu(_linear(self.w["state_fc1.weight"], self.w["state_fc1.bias"], x))
-        return _relu(_linear(self.w["state_fc2.weight"], self.w["state_fc2.bias"], x))
+        return self._merge_history(
+            _relu(_linear(self.w["state_fc2.weight"], self.w["state_fc2.bias"], x)),
+            history,
+        )
 
     def _encode_state_cross(
         self,
         board: np.ndarray,
         hand: np.ndarray,
         feats: np.ndarray,
+        history: dict[str, np.ndarray] | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         feats = self._fit_feat_dim(feats, self._state_feat_dim)
         ids = np.concatenate([board.astype(np.int64), hand.astype(np.int64)])
@@ -186,7 +320,7 @@ class NumpyPolicy:
         pool = _softmax(pool_logits, axis=-1)
         pooled = (tokens * pool[:, None]).sum(axis=0)
         h = _relu(_linear(self.w["state_out_fc.weight"], self.w["state_out_fc.bias"], pooled))
-        return h, tokens, mask
+        return self._merge_history(h, history), tokens, mask
 
     def value(self, h: np.ndarray) -> float:
         v = _relu(_linear(self.w["value_fc1.weight"], self.w["value_fc1.bias"], h))
@@ -241,7 +375,7 @@ class NumpyPolicy:
         """V(s) from a raw observation dict. Higher = better for current player."""
         try:
             d = self.encoder.encode(obs_dict)
-            h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats)
+            h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats, self._history_arrays())
             return self.value(h)
         except Exception:
             return 0.0
@@ -249,17 +383,23 @@ class NumpyPolicy:
     # ── greedy / sampling select ────────────────────────────────────
 
     def select(self, obs_dict: dict, greedy: bool = True, temperature: float = 1.0,
-               top_k: int = 0) -> list[int]:
+               top_k: int = 0, update_history: bool = True) -> list[int]:
         """Action selection. temperature=1.0 = greedy, >1.0 = more random."""
         if self._arch == "cross_attn":
-            return self._select_cross(obs_dict, greedy=greedy, temperature=temperature, top_k=top_k)
+            return self._select_cross(
+                obs_dict,
+                greedy=greedy,
+                temperature=temperature,
+                top_k=top_k,
+                update_history=update_history,
+            )
         sel = obs_dict.get("select")
         if sel is None:
             raise ValueError("deck selection — return deck directly")
 
         d = self.encoder.encode(obs_dict)
         n = len(d.opt_type)
-        h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats)
+        h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats, self._history_arrays())
         opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
 
         parts = [
@@ -318,7 +458,10 @@ class NumpyPolicy:
             picked_sum += opts[idx]
             avail[idx] = False
 
-        return picks[:d.max_count]
+        picks = picks[:d.max_count]
+        if update_history:
+            self._remember_decision(d, picks)
+        return picks
 
     def _option_base(self, d, opt_feats: np.ndarray) -> np.ndarray:
         parts = [
@@ -364,14 +507,19 @@ class NumpyPolicy:
         ))
 
     def _select_cross(self, obs_dict: dict, greedy: bool = True, temperature: float = 1.0,
-                      top_k: int = 0) -> list[int]:
+                      top_k: int = 0, update_history: bool = True) -> list[int]:
         sel = obs_dict.get("select")
         if sel is None:
             raise ValueError("deck selection — return deck directly")
 
         d = self.encoder.encode(obs_dict)
         n = len(d.opt_type)
-        h, tokens, token_mask = self._encode_state_cross(d.board_cards, d.hand_cards, d.state_feats)
+        h, tokens, token_mask = self._encode_state_cross(
+            d.board_cards,
+            d.hand_cards,
+            d.state_feats,
+            self._history_arrays(),
+        )
         opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
         opts = self._cross_options(self._option_base(d, opt_feats), tokens, token_mask)
 
@@ -400,7 +548,10 @@ class NumpyPolicy:
             picked_sum += opts[idx]
             avail[idx] = False
 
-        return picks[:d.max_count]
+        picks = picks[:d.max_count]
+        if update_history:
+            self._remember_decision(d, picks)
+        return picks
 
     def first_step_ranking(self, obs_dict: dict, temperature: float = 1.0) -> list[dict]:
         """Return the first-pick option ranking used by greedy selection.
@@ -416,7 +567,7 @@ class NumpyPolicy:
 
         d = self.encoder.encode(obs_dict)
         n = len(d.opt_type)
-        h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats)
+        h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats, self._history_arrays())
         opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
 
         parts = [
@@ -472,7 +623,12 @@ class NumpyPolicy:
     def _first_step_ranking_cross(self, obs_dict: dict, temperature: float = 1.0) -> list[dict]:
         d = self.encoder.encode(obs_dict)
         n = len(d.opt_type)
-        h, tokens, token_mask = self._encode_state_cross(d.board_cards, d.hand_cards, d.state_feats)
+        h, tokens, token_mask = self._encode_state_cross(
+            d.board_cards,
+            d.hand_cards,
+            d.state_feats,
+            self._history_arrays(),
+        )
         opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
         opts = self._cross_options(self._option_base(d, opt_feats), tokens, token_mask)
         rows = np.concatenate([opts, self.w["stop_vec"][np.newaxis, :]], axis=0)
@@ -628,6 +784,15 @@ class NumpyPolicy:
         # Best action = highest visit count
         best = max(children, key=lambda c: c.get("visits", 0))
         if best is None or best["sel"] == [n]:  # STOP
+            try:
+                self._remember_decision(self.encoder.encode(obs_dict), [])
+            except Exception:
+                pass
             return []
 
-        return best["sel"][:mc_sel]
+        picks = best["sel"][:mc_sel]
+        try:
+            self._remember_decision(self.encoder.encode(obs_dict), picks)
+        except Exception:
+            pass
+        return picks

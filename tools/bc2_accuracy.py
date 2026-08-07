@@ -21,6 +21,7 @@ from ptcg_rl.model import (
     checkpoint_arch,
     checkpoint_feature_dims,
     checkpoint_hierarchical_plan,
+    checkpoint_history_k,
     checkpoint_plan_dim,
     checkpoint_width,
 )
@@ -74,7 +75,7 @@ def _bucket(n: int) -> str:
 
 @torch.no_grad()
 def first_action_topk(model, batch, ks: tuple[int, ...]) -> list[list[int]]:
-    h = model.encode_state(batch.board, batch.hand, batch.feats)
+    h = model.encode_state(batch.board, batch.hand, batch.feats, batch.history)
     opts = model.encode_options(batch.opt_type, batch.opt_card, batch.opt_card2, batch.opt_attack, batch.opt_feats)
     max_options = batch.max_options
     device = batch.board.device
@@ -203,6 +204,7 @@ def main() -> None:
         width = float(args.width) if args.width > 0 else checkpoint_width(z)
         plan_dim = checkpoint_plan_dim(z)
         hierarchical_plan = checkpoint_hierarchical_plan(z)
+        history_k = checkpoint_history_k(z)
         model = build_policy_model(
             arch,
             width=width,
@@ -212,6 +214,7 @@ def main() -> None:
             opt_feat_dim=opt_feat_dim,
             plan_dim=plan_dim,
             hierarchical_plan=hierarchical_plan,
+            history_k=history_k,
         ).to(device)
         state = {k: torch.as_tensor(z[k], device=device) for k in z.files}
     current = model.state_dict()
@@ -231,6 +234,7 @@ def main() -> None:
         opponent_archetypes=args.opponent_archetype,
         opponent_team_names=args.opponent_team_name,
         winner_only=args.winner_only,
+        history_k=history_k,
         load_progress_every=args.load_progress_every,
     )
     indices = corpus.all_indices()

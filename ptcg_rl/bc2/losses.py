@@ -52,7 +52,7 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
                  set_loss_min_count: int = 2,
                  set_loss_negative_weight: float = 0.25) -> torch.Tensor:
     """Autoregressive sequence NLL with padded options masked out."""
-    h = model.encode_state(batch.board, batch.hand, batch.feats)
+    h = model.encode_state(batch.board, batch.hand, batch.feats, batch.history)
     opts = model.encode_options(batch.opt_type, batch.opt_card, batch.opt_card2, batch.opt_attack, batch.opt_feats)
     bsz = batch.board.shape[0]
     max_options = batch.max_options

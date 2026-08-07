@@ -7,7 +7,7 @@ from .data import BCBatch
 
 @torch.no_grad()
 def greedy_decode(model, batch: BCBatch) -> list[list[int]]:
-    h = model.encode_state(batch.board, batch.hand, batch.feats)
+    h = model.encode_state(batch.board, batch.hand, batch.feats, batch.history)
     opts = model.encode_options(batch.opt_type, batch.opt_card, batch.opt_card2, batch.opt_attack, batch.opt_feats)
     bsz = batch.board.shape[0]
     max_options = batch.max_options

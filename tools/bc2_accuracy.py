@@ -221,7 +221,9 @@ def main() -> None:
             opt_feat_dim=opt_feat_dim,
         ).to(device)
         state = {k: torch.as_tensor(z[k], device=device) for k in z.files}
-    model.load_state_dict(state)
+    current = model.state_dict()
+    state = {k: v for k, v in state.items() if k in current and tuple(v.shape) == tuple(current[k].shape)}
+    model.load_state_dict(state, strict=False)
     model.eval()
 
     paths = discover_npz_paths(args.corpus, args.archetype, args.score_bands)

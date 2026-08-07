@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 10:45 Asia/Shanghai.
+Last updated: 2026-08-07 11:00 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -161,6 +161,74 @@ Current recommendation:
   each archetype's weak matchups and auto-build tempo/choke/comeback subsets,
   then run small initialized pilots. Avoid returning to winner-only or
   filtered-only BC without whole-game conditions.
+
+## 2026-08-07 Trajectory-Aware Initial BC Implementation
+
+Trajectory information can now be introduced during the original BC training
+run instead of only through post-hoc subset fine-tuning.
+
+Changed files:
+
+- `ptcg_rl/bc2/data.py`: `BCCorpus` accepts `trajectory_weights`,
+  `trajectory_targets`, `trajectory_missing`, and `split_by_game`. When
+  trajectory data is present, `bc2_train.py` defaults to splitting train/val by
+  `episode_id:player_index` groups.
+- `ptcg_rl/model.py`: optional `plan_dim` auxiliary head. Default is off, so
+  old commands/checkpoints are unchanged.
+- `ptcg_rl/bc2/losses.py`: optional BCE trajectory/plan auxiliary loss.
+- `tools/bc2_train.py`: new CLI flags:
+  - `--trajectory-csv PATH` repeatable, usually a `games.csv` from
+    `tools/mine_strategy_trajectories.py`.
+  - `--trajectory-weight CONDITION=WEIGHT`, e.g. `attack_by_4=1.25`,
+    `attack_count>=5=1.15`, `outcome==win=1.10`.
+  - `--trajectory-missing-policy default|drop`; `drop` trains only games found
+    in the CSV.
+  - `--trajectory-target COL_OR_CONDITION` plus
+    `--trajectory-target-loss-weight W` enables the training-only plan head.
+  - `--split-by-game` can be used without trajectory data for leakage-safe
+    validation.
+- `tools/bc2_accuracy.py` and `tools/bc2_failure_report.py` now ignore extra
+  auxiliary plan tensors when loading policy checkpoints for diagnostics.
+- `tools/bc2_train.py` strict init also tolerates extra `plan_*` tensors when
+  loading a plan-head checkpoint into a normal no-plan model. `NumpyPolicy`
+  already ignores extra checkpoint keys, so submission inference does not use
+  the auxiliary head.
+
+Example initial training command shape:
+
+```bash
+python3 tools/bc2_train.py \
+  --corpus data/bc_corpus_banded_v11_0701_0804 \
+  --archetype "Mega Lucario" \
+  --score-bands 1200+ 1100-1199 1000-1099 \
+  --deck-sig 43d6d8b0fce9 \
+  --width 4 --device cuda:0 --cuda-memory-gb 8 \
+  --epochs 24 --batch-size 4096 --lr 8e-5 \
+  --win-weight 1.5 --loss-weight 0.4 --draw-weight 0.8 \
+  --trajectory-csv logs/strategy_trajectories_20260807/lucario43d_vs_marnie_v11_0701_0804_v2/games.csv \
+  --trajectory-weight attack_by_4=1.25 \
+  --trajectory-weight primary_board_by_4=1.20 \
+  --trajectory-weight outcome==win=1.10 \
+  --trajectory-target attack_by_4 \
+  --trajectory-target primary_board_by_4 \
+  --trajectory-target outcome==win \
+  --trajectory-target-loss-weight 0.05 \
+  --save checkpoints/lucario43d_20260807/bc2_mega_lucario_43d6_traj_init_w4.npz
+```
+
+Important usage notes:
+
+- Prefer binary or already normalized `--trajectory-target` columns. The plan
+  auxiliary loss is BCE; do not feed raw counts such as `attack_count` unless
+  using a comparison like `attack_count>=5`.
+- Use modest `--trajectory-target-loss-weight` first (`0.03` to `0.10`). The
+  plan head is a representation-shaping loss, not an inference-time planner.
+- For targeted weak-matchup training, combine `--opponent-archetype` or
+  `--opponent-deck-sig` with trajectory weights/targets. For general
+  population training, use weights without filtering so the base distribution is
+  not destroyed.
+- `--trajectory-missing-policy drop` is closest to the previous strategy subset
+  pilot; `default` is safer for initial full-corpus training.
 
 ## 2026-08-05 Search/Rules/Community Diagnostics
 

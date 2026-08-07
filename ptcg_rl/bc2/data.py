@@ -29,6 +29,8 @@ class BCBatch:
     sample_weight: torch.Tensor
     outcome_value: torch.Tensor
     outcome_mask: torch.Tensor
+    trajectory_target: torch.Tensor
+    trajectory_mask: torch.Tensor
     actions: list[list[int]]
     n_options: list[int]
     contexts: list[int]
@@ -60,6 +62,10 @@ def _label_status(data: dict[str, np.ndarray], i: int, include_empty: bool) -> s
     return "keep"
 
 
+def _trajectory_game_key(data: dict[str, np.ndarray], i: int) -> str:
+    return f"{data['episode_id'][i]}:{data['player_index'][i]}"
+
+
 class BCCorpus:
     """NPZ-backed corpus index with strict label filtering and vectorized collation."""
 
@@ -86,6 +92,12 @@ class BCCorpus:
         type_weights: dict[int, float] | None = None,
         card_weights: dict[int, float] | None = None,
         multi_select_weight: float = 1.0,
+        trajectory_weights: dict[str, float] | None = None,
+        trajectory_default_weight: float = 1.0,
+        trajectory_missing: str = "default",
+        trajectory_targets: dict[str, np.ndarray] | None = None,
+        trajectory_target_dim: int = 0,
+        split_by_game: bool = False,
         load_progress_every: int = 0,
     ):
         if not paths:
@@ -113,6 +125,23 @@ class BCCorpus:
         self.type_weights = {int(k): float(v) for k, v in (type_weights or {}).items()}
         self.card_weights = {int(k): float(v) for k, v in (card_weights or {}).items()}
         self.multi_select_weight = float(multi_select_weight)
+        self.trajectory_weights = {
+            str(k): float(v) for k, v in (trajectory_weights or {}).items() if str(k)
+        }
+        self.trajectory_default_weight = float(trajectory_default_weight)
+        self.trajectory_missing = str(trajectory_missing)
+        if self.trajectory_missing not in {"default", "drop"}:
+            raise ValueError("trajectory_missing must be 'default' or 'drop'")
+        self.trajectory_targets = {
+            str(k): np.asarray(v, dtype=np.float32)
+            for k, v in (trajectory_targets or {}).items()
+            if str(k)
+        }
+        self.trajectory_target_dim = int(trajectory_target_dim)
+        if self.trajectory_targets and self.trajectory_target_dim <= 0:
+            first = next(iter(self.trajectory_targets.values()))
+            self.trajectory_target_dim = int(first.shape[-1])
+        self.split_by_game = bool(split_by_game)
         self.npz_data: list[dict[str, np.ndarray]] = []
         self.groups: list[list[tuple[int, int]]] = []
         self.stats = {
@@ -126,6 +155,9 @@ class BCCorpus:
             "opponent_archetype_filtered": 0,
             "opponent_team_filtered": 0,
             "outcome_filtered": 0,
+            "trajectory_filtered": 0,
+            "trajectory_matched": 0,
+            "trajectory_defaulted": 0,
         }
 
         t0 = time.time()
@@ -163,8 +195,16 @@ class BCCorpus:
                     "Corpus does not contain outcome metadata. Re-extract with the updated "
                     "tools/bc_extract_v2.py before using --winner-only."
                 )
+            if (self.trajectory_weights or self.trajectory_targets or self.split_by_game) and (
+                "episode_id" not in data or "player_index" not in data
+            ):
+                raise ValueError(
+                    "Corpus does not contain episode_id/player_index metadata. Re-extract with the "
+                    "updated tools/bc_extract_v2.py before using trajectory weights or --split-by-game."
+                )
             di = len(self.npz_data)
             group: list[tuple[int, int]] = []
+            game_groups: dict[str, list[tuple[int, int]]] = {}
             n_rows = len(data["board"])
             file_raw0 = self.stats["raw"]
             file_kept0 = self.stats["kept"]
@@ -194,10 +234,27 @@ class BCCorpus:
                 if self.winner_only and int(data["won"][i]) != 1:
                     self.stats["outcome_filtered"] += 1
                     continue
+                game_key = (
+                    _trajectory_game_key(data, i)
+                    if (self.trajectory_weights or self.trajectory_targets or self.split_by_game)
+                    else ""
+                )
+                trajectory_has_weight = bool(self.trajectory_weights) and game_key in self.trajectory_weights
+                if self.trajectory_weights and not trajectory_has_weight and self.trajectory_missing == "drop":
+                    self.stats["trajectory_filtered"] += 1
+                    continue
                 status = _label_status(data, i, include_empty)
                 if status == "keep":
-                    group.append((di, i))
+                    if self.split_by_game:
+                        game_groups.setdefault(game_key, []).append((di, i))
+                    else:
+                        group.append((di, i))
                     self.stats["kept"] += 1
+                    if self.trajectory_weights:
+                        if trajectory_has_weight:
+                            self.stats["trajectory_matched"] += 1
+                        else:
+                            self.stats["trajectory_defaulted"] += 1
                 else:
                     self.stats[status] += 1
                 if load_progress_every and (
@@ -213,7 +270,9 @@ class BCCorpus:
                         flush=True,
                     )
             self.npz_data.append(data)
-            if group:
+            if self.split_by_game and game_groups:
+                self.groups.extend(game_groups.values())
+            elif group:
                 self.groups.append(group)
             if load_progress_every:
                 print(
@@ -257,6 +316,8 @@ class BCCorpus:
         weights = np.ones(bsz, dtype=np.float32)
         outcome_value = np.zeros(bsz, dtype=np.float32)
         outcome_mask = np.zeros(bsz, dtype=np.float32)
+        trajectory_target = np.zeros((bsz, self.trajectory_target_dim), dtype=np.float32)
+        trajectory_mask = np.zeros((bsz, self.trajectory_target_dim), dtype=np.float32)
         actions: list[list[int]] = []
         contexts: list[int] = []
         true_first_types: list[int] = []
@@ -308,6 +369,16 @@ class BCCorpus:
                 else:
                     weights[bi] *= self.loss_weight
                     outcome_value[bi] = -1.0
+            if self.trajectory_weights:
+                key = _trajectory_game_key(data, si)
+                weights[bi] *= self.trajectory_weights.get(key, self.trajectory_default_weight)
+            if self.trajectory_targets:
+                key = _trajectory_game_key(data, si)
+                target = self.trajectory_targets.get(key)
+                if target is not None:
+                    n_target = min(len(target), self.trajectory_target_dim)
+                    trajectory_target[bi, :n_target] = target[:n_target]
+                    trajectory_mask[bi, :n_target] = 1.0
 
         max_steps = max(len(a) for a in actions) + 1
         targets = np.full((bsz, max_steps), -1, dtype=np.int64)
@@ -333,6 +404,8 @@ class BCCorpus:
             sample_weight=torch.as_tensor(weights, device=device),
             outcome_value=torch.as_tensor(outcome_value, device=device),
             outcome_mask=torch.as_tensor(outcome_mask, device=device),
+            trajectory_target=torch.as_tensor(trajectory_target, device=device),
+            trajectory_mask=torch.as_tensor(trajectory_mask, device=device),
             actions=actions,
             n_options=n_options,
             contexts=contexts,

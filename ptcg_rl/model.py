@@ -20,7 +20,7 @@ _CTX, _AREA, _IDX = 16, 8, 8
 class PolicyValueNet(nn.Module):
     def __init__(self, width: float = 1.0, option_context: bool = True,
                  slot_state: bool = True, state_feat_dim: int = STATE_FEAT_DIM,
-                 opt_feat_dim: int = OPT_FEAT_DIM):
+                 opt_feat_dim: int = OPT_FEAT_DIM, plan_dim: int = 0):
         """width=1.0→501K, 2.0→4M, 3.0→9M params."""
         super().__init__()
         ec = int(_EC * width); ea = int(_EA * width); eo_t = int(_EO * width)
@@ -31,6 +31,7 @@ class PolicyValueNet(nn.Module):
         self.slot_state = slot_state
         self.state_feat_dim = int(state_feat_dim)
         self.opt_feat_dim = int(opt_feat_dim)
+        self.plan_dim = int(plan_dim)
         self._ec=ec; self._ea=ea; self._eo_t=eo_t; self._oe=oe; self._hd=hd
         self._ctx=ctx; self._area=area; self._idx=idx
 
@@ -55,6 +56,9 @@ class PolicyValueNet(nn.Module):
         self.score_fc2 = nn.Linear(sc, 1)
         self.value_fc1 = nn.Linear(hd, sc)
         self.value_fc2 = nn.Linear(sc, 1)
+        if self.plan_dim > 0:
+            self.plan_fc1 = nn.Linear(hd, sc)
+            self.plan_fc2 = nn.Linear(sc, self.plan_dim)
         self._init()
 
     def _init(self):
@@ -139,6 +143,11 @@ class PolicyValueNet(nn.Module):
 
     def value(self, h: torch.Tensor) -> torch.Tensor:
         return torch.tanh(self.value_fc2(F.relu(self.value_fc1(h)))).squeeze(-1)
+
+    def plan_logits(self, h: torch.Tensor) -> torch.Tensor:
+        if self.plan_dim <= 0:
+            raise RuntimeError("PolicyValueNet was created without plan_dim")
+        return self.plan_fc2(F.relu(self.plan_fc1(h)))
 
     # ── inference: act on ONE decision ──────────────────────────────
 

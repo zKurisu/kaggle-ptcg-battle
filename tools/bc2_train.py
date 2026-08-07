@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import sys
 import time
@@ -120,6 +121,165 @@ def _parse_text_weight_specs(specs: list[str], label: str, *, lower: bool = Fals
     return out
 
 
+def _to_float(value: object) -> tuple[bool, float]:
+    try:
+        return True, float(value)
+    except Exception:
+        return False, 0.0
+
+
+def _trajectory_key(row: dict[str, str]) -> str:
+    key = str(row.get("game_key", "")).strip()
+    if key:
+        return key
+    episode_id = str(row.get("episode_id", "")).strip()
+    player_index = str(row.get("player_index", "")).strip()
+    if episode_id and player_index:
+        return f"{episode_id}:{player_index}"
+    raise ValueError("trajectory CSV row must contain game_key or episode_id/player_index")
+
+
+def _trajectory_condition(row: dict[str, str], expr: str) -> bool:
+    expr = expr.strip()
+    for op in (">=", "<=", "==", "!=", ">", "<"):
+        if op not in expr:
+            continue
+        col, rhs = expr.split(op, 1)
+        col = col.strip()
+        rhs = rhs.strip()
+        lhs_raw = str(row.get(col, "")).strip()
+        lhs_ok, lhs = _to_float(lhs_raw)
+        rhs_ok, rhs_value = _to_float(rhs)
+        if lhs_ok and rhs_ok:
+            if op == ">=":
+                return lhs >= rhs_value
+            if op == "<=":
+                return lhs <= rhs_value
+            if op == "==":
+                return lhs == rhs_value
+            if op == "!=":
+                return lhs != rhs_value
+            if op == ">":
+                return lhs > rhs_value
+            if op == "<":
+                return lhs < rhs_value
+        if op == "==":
+            return lhs_raw == rhs
+        if op == "!=":
+            return lhs_raw != rhs
+        raise ValueError(f"non-numeric trajectory condition cannot use {op!r}: {expr!r}")
+    ok, value = _to_float(row.get(expr, 0.0))
+    return ok and value > 0.0
+
+
+def _is_trajectory_condition(expr: str) -> bool:
+    return any(op in expr for op in (">=", "<=", "==", "!=", ">", "<"))
+
+
+def _parse_trajectory_weight_specs(specs: list[str]) -> list[tuple[str, float]]:
+    parsed: list[tuple[str, float]] = []
+    for spec in specs:
+        if "=" not in spec:
+            raise ValueError(
+                "trajectory weight must be CONDITION=WEIGHT, e.g. attack_by_4=1.4 "
+                "or attack_count>=5=1.2"
+            )
+        expr, weight = spec.rsplit("=", 1)
+        expr = expr.strip()
+        if not expr:
+            raise ValueError(f"trajectory weight has an empty condition in {spec!r}")
+        parsed.append((expr, float(weight)))
+    return parsed
+
+
+def _load_trajectory_weights(
+    paths: list[str],
+    specs: list[str],
+    *,
+    base_weight: float,
+    cap: float,
+) -> tuple[dict[str, float], dict[str, float]]:
+    if not paths:
+        return {}, {}
+    parsed = _parse_trajectory_weight_specs(specs)
+    weights: dict[str, float] = {}
+    stats = {
+        "files": float(len(paths)),
+        "rows": 0.0,
+        "keys": 0.0,
+        "matched_conditions": 0.0,
+        "duplicates": 0.0,
+        "min_weight": 0.0,
+        "max_weight": 0.0,
+        "mean_weight": 0.0,
+    }
+    for path in paths:
+        with open(path, newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                stats["rows"] += 1.0
+                key = _trajectory_key(row)
+                weight = float(base_weight)
+                for expr, mult in parsed:
+                    if _trajectory_condition(row, expr):
+                        weight *= float(mult)
+                        stats["matched_conditions"] += 1.0
+                if cap > 0:
+                    weight = min(weight, float(cap))
+                if key in weights:
+                    stats["duplicates"] += 1.0
+                    weights[key] = max(weights[key], weight)
+                else:
+                    weights[key] = weight
+    stats["keys"] = float(len(weights))
+    if weights:
+        arr = np.asarray(list(weights.values()), dtype=np.float32)
+        stats["min_weight"] = float(arr.min())
+        stats["max_weight"] = float(arr.max())
+        stats["mean_weight"] = float(arr.mean())
+    return weights, stats
+
+
+def _load_trajectory_targets(
+    paths: list[str],
+    columns: list[str],
+) -> tuple[dict[str, np.ndarray], dict[str, float]]:
+    if not paths or not columns:
+        return {}, {}
+    clean_columns = [c.strip() for c in columns if c.strip()]
+    if not clean_columns:
+        return {}, {}
+    targets: dict[str, np.ndarray] = {}
+    stats = {
+        "files": float(len(paths)),
+        "rows": 0.0,
+        "keys": 0.0,
+        "duplicates": 0.0,
+        "target_dim": float(len(clean_columns)),
+    }
+    for path in paths:
+        with open(path, newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                stats["rows"] += 1.0
+                key = _trajectory_key(row)
+                values = []
+                for col in clean_columns:
+                    if _is_trajectory_condition(col):
+                        values.append(1.0 if _trajectory_condition(row, col) else 0.0)
+                    else:
+                        ok, value = _to_float(row.get(col, 0.0))
+                        values.append(float(value) if ok else 0.0)
+                arr = np.asarray(values, dtype=np.float32)
+                if key in targets:
+                    stats["duplicates"] += 1.0
+                    targets[key] = np.maximum(targets[key], arr)
+                else:
+                    targets[key] = arr
+    stats["keys"] = float(len(targets))
+    return targets, stats
+
+
 def _save_npz(model: torch.nn.Module, path: str) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     np.savez_compressed(path, **{k: v.detach().cpu().numpy() for k, v in model.state_dict().items()})
@@ -132,6 +292,17 @@ def _load_npz_init(model: torch.nn.Module, path: str, device: torch.device, *, p
             for k in z.files
         }
     if not partial:
+        current = model.state_dict()
+        extra = [k for k in checkpoint if k not in current]
+        missing = [k for k in current if k not in checkpoint]
+        shape_mismatch = [
+            k for k, v in checkpoint.items()
+            if k in current and tuple(v.shape) != tuple(current[k].shape)
+        ]
+        if extra and all(k.startswith("plan_") for k in extra) and not missing and not shape_mismatch:
+            filtered = {k: v for k, v in checkpoint.items() if k in current}
+            model.load_state_dict(filtered, strict=True)
+            return len(filtered), [f"ignored auxiliary plan tensors: {len(extra)}"]
         model.load_state_dict(checkpoint, strict=True)
         return len(checkpoint), []
 
@@ -197,6 +368,7 @@ def _configure_cuda_memory_limit(device: torch.device, *, gb: float = 0.0, fract
 
 def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
                first_action_weight=1.0, value_weight=0.0,
+               plan_weight=0.0,
                set_loss_weight=0.0, set_loss_min_count=2,
                set_loss_negative_weight=0.25):
     training = optimizer is not None
@@ -213,6 +385,7 @@ def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
             batch,
             first_action_weight=first_action_weight,
             value_weight=value_weight,
+            plan_weight=plan_weight,
             set_loss_weight=set_loss_weight,
             set_loss_min_count=set_loss_min_count,
             set_loss_negative_weight=set_loss_negative_weight,
@@ -304,6 +477,31 @@ def main() -> None:
                         help="repeatable true first option card multiplier, e.g. 647=2.5")
     parser.add_argument("--multi-select-weight", type=float, default=1.0,
                         help="sample multiplier when the labeled action selects more than one option")
+    parser.add_argument("--trajectory-csv", action="append", default=[],
+                        help="repeatable trajectory-level CSV from tools/mine_strategy_trajectories.py, usually games.csv")
+    parser.add_argument("--trajectory-weight", action="append", default=[],
+                        help=(
+                            "repeatable whole-game multiplier CONDITION=WEIGHT. CONDITION can be a truthy "
+                            "numeric column, e.g. attack_by_4=1.4, or a comparison, e.g. attack_count>=5=1.2"
+                        ))
+    parser.add_argument("--trajectory-target", action="append", default=[],
+                        help=(
+                            "repeatable binary/numeric trajectory column or condition predicted by an auxiliary "
+                            "plan head, e.g. attack_by_4, primary_board_by_4, or outcome==win. "
+                            "Requires --trajectory-csv."
+                        ))
+    parser.add_argument("--trajectory-target-loss-weight", type=float, default=0.0,
+                        help="BCE loss multiplier for --trajectory-target auxiliary heads; 0 disables")
+    parser.add_argument("--trajectory-base-weight", type=float, default=1.0,
+                        help="base multiplier for each trajectory CSV game before --trajectory-weight rules")
+    parser.add_argument("--trajectory-weight-cap", type=float, default=8.0,
+                        help="cap trajectory multiplier; 0 disables capping")
+    parser.add_argument("--trajectory-missing-weight", type=float, default=1.0,
+                        help="multiplier for corpus games not present in --trajectory-csv when missing policy is default")
+    parser.add_argument("--trajectory-missing-policy", choices=["default", "drop"], default="default",
+                        help="default keeps non-CSV games with --trajectory-missing-weight; drop trains only CSV games")
+    parser.add_argument("--split-by-game", action="store_true",
+                        help="split train/validation by episode_id:player_index groups instead of whole npz files")
     parser.add_argument("--checkpoint-every", type=int, default=1)
     parser.add_argument("--save", default="checkpoints/bc2_marnie_w2.npz")
     args = parser.parse_args()
@@ -342,6 +540,21 @@ def main() -> None:
         "opponent archetype",
         lower=True,
     )
+    trajectory_weights, trajectory_stats = _load_trajectory_weights(
+        args.trajectory_csv,
+        args.trajectory_weight,
+        base_weight=args.trajectory_base_weight,
+        cap=args.trajectory_weight_cap,
+    )
+    trajectory_targets, trajectory_target_stats = _load_trajectory_targets(
+        args.trajectory_csv,
+        args.trajectory_target,
+    )
+    plan_target_dim = len([x for x in args.trajectory_target if str(x).strip()])
+    if plan_target_dim and not args.trajectory_csv:
+        raise ValueError("--trajectory-target requires at least one --trajectory-csv")
+    if args.trajectory_target_loss_weight > 0 and plan_target_dim <= 0:
+        raise ValueError("--trajectory-target-loss-weight > 0 requires at least one --trajectory-target")
     inferred_from_init = False
     state_feat_dim = int(args.state_feat_dim) if args.state_feat_dim else None
     opt_feat_dim = int(args.opt_feat_dim) if args.opt_feat_dim else None
@@ -374,6 +587,12 @@ def main() -> None:
         type_weights=type_weights,
         card_weights=card_weights,
         multi_select_weight=args.multi_select_weight,
+        trajectory_weights=trajectory_weights,
+        trajectory_default_weight=args.trajectory_missing_weight,
+        trajectory_missing=args.trajectory_missing_policy,
+        trajectory_targets=trajectory_targets,
+        trajectory_target_dim=plan_target_dim,
+        split_by_game=args.split_by_game or bool(trajectory_weights) or bool(trajectory_targets),
         load_progress_every=args.load_progress_every,
     )
     if corpus.stats["kept"] <= 0:
@@ -393,10 +612,15 @@ def main() -> None:
         model_kwargs["state_feat_dim"] = state_feat_dim
     if opt_feat_dim is not None:
         model_kwargs["opt_feat_dim"] = opt_feat_dim
+    if plan_target_dim:
+        model_kwargs["plan_dim"] = plan_target_dim
     model = PolicyValueNet(width=args.width, slot_state=not args.legacy_state_pool, **model_kwargs).to(device)
     if args.init:
-        loaded, skipped = _load_npz_init(model, args.init, device, partial=args.init_partial)
+        partial_init = args.init_partial or bool(plan_target_dim)
+        loaded, skipped = _load_npz_init(model, args.init, device, partial=partial_init)
         msg = f"Init: loaded={loaded} path={args.init}"
+        if partial_init and not args.init_partial:
+            msg += " partial_init_for_plan_head=True"
         if skipped:
             msg += f" skipped={len(skipped)}"
         print(msg, flush=True)
@@ -425,11 +649,22 @@ def main() -> None:
         f"context_weights={context_weights or '{}'} type_weights={type_weights or '{}'} "
         f"card_weights={card_weights or '{}'} "
         f"multi_select_weight={args.multi_select_weight} "
+        f"trajectory_csv={args.trajectory_csv or 'none'} "
+        f"trajectory_weight={args.trajectory_weight or 'none'} "
+        f"trajectory_target={args.trajectory_target or 'none'} "
+        f"trajectory_target_loss_weight={args.trajectory_target_loss_weight} "
+        f"trajectory_base/cap/missing={args.trajectory_base_weight}/{args.trajectory_weight_cap}/"
+        f"{args.trajectory_missing_weight}:{args.trajectory_missing_policy} "
+        f"split_by_game={args.split_by_game or bool(trajectory_weights) or bool(trajectory_targets)} "
         f"set_loss={args.set_loss_weight}/{args.set_loss_min_count}/{args.set_loss_negative_weight} "
         f"aux_corpus={aux_details or 'none'} aux_bands={args.aux_score_bands} aux_repeat={aux_repeat} "
         f"params={params/1e6:.1f}M",
         flush=True,
     )
+    if trajectory_stats:
+        print(f"Trajectory weights: {trajectory_stats}", flush=True)
+    if trajectory_target_stats:
+        print(f"Trajectory targets: {trajectory_target_stats}", flush=True)
     print(
         f"Corpus: files={len(paths)} base_files={base_path_count} "
         f"aux_files={aux_path_count} stats={corpus.stats}",
@@ -453,6 +688,7 @@ def main() -> None:
                 corpus.collate(batch_idx, device),
                 first_action_weight=args.first_action_weight,
                 value_weight=args.value_weight,
+                plan_weight=args.trajectory_target_loss_weight,
                 set_loss_weight=args.set_loss_weight,
                 set_loss_min_count=args.set_loss_min_count,
                 set_loss_negative_weight=args.set_loss_negative_weight,
@@ -481,6 +717,7 @@ def main() -> None:
                 optimizer=None,
                 first_action_weight=args.first_action_weight,
                 value_weight=args.value_weight,
+                plan_weight=args.trajectory_target_loss_weight,
                 set_loss_weight=args.set_loss_weight,
                 set_loss_min_count=args.set_loss_min_count,
                 set_loss_negative_weight=args.set_loss_negative_weight,

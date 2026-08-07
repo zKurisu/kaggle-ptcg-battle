@@ -47,6 +47,7 @@ def _set_aux_loss(
 
 def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
                  value_weight: float = 0.0,
+                 plan_weight: float = 0.0,
                  set_loss_weight: float = 0.0,
                  set_loss_min_count: int = 2,
                  set_loss_negative_weight: float = 0.25) -> torch.Tensor:
@@ -96,11 +97,24 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
             negative_weight=float(set_loss_negative_weight),
         )
     if value_weight <= 0:
-        return loss
-    value_mask = batch.outcome_mask > 0
-    if not bool(value_mask.any()):
-        return loss
-    pred = model.value(h)
-    value_loss = ((pred - batch.outcome_value).pow(2) * batch.sample_weight * batch.outcome_mask).sum()
-    value_loss = value_loss / (batch.sample_weight * batch.outcome_mask).sum().clamp(min=1.0)
-    return loss + float(value_weight) * value_loss
+        value_loss = None
+    else:
+        value_mask = batch.outcome_mask > 0
+        value_loss = None
+        if bool(value_mask.any()):
+            pred = model.value(h)
+            value_loss = ((pred - batch.outcome_value).pow(2) * batch.sample_weight * batch.outcome_mask).sum()
+            value_loss = value_loss / (batch.sample_weight * batch.outcome_mask).sum().clamp(min=1.0)
+    if value_loss is not None:
+        loss = loss + float(value_weight) * value_loss
+    if plan_weight > 0 and batch.trajectory_mask.numel() > 0 and bool((batch.trajectory_mask > 0).any()):
+        logits = model.plan_logits(h)
+        elem = F.binary_cross_entropy_with_logits(
+            logits,
+            batch.trajectory_target,
+            reduction="none",
+        )
+        plan_weight_rows = batch.sample_weight.unsqueeze(1) * batch.trajectory_mask
+        plan_loss = (elem * plan_weight_rows).sum() / plan_weight_rows.sum().clamp(min=1.0)
+        loss = loss + float(plan_weight) * plan_loss
+    return loss

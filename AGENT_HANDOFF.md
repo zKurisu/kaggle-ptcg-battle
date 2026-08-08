@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 10:40 Asia/Shanghai.
+Last updated: 2026-08-08 10:50 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -193,6 +193,43 @@ Monitor:
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 100 logs/v12_history_pilots_parallel_20260808.runner.log'
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 100 logs/v12_cross_nocudnn_20260808.runner.log'
 ssh ks 'pgrep -af "run_v12_history_pilots_parallel|run_v12_cross_nocudnn|bc2_train.py.*v12_history_pilots|bc2_accuracy.py.*v12_history_pilots|eval_bc.py.*v12_history_pilots"'
+```
+
+Update at 2026-08-08 10:50 Asia/Shanghai:
+
+- Do not schedule v12 work by GPU memory alone. The ks container has a cgroup
+  memory limit of `274877906944` bytes, about `256GiB`, even though host
+  `free -h` shows much more memory available.
+- Parallel v12 did speed up small-corpus jobs, but Marnie b8f is a large corpus
+  case: `3790712` kept samples across `115` files. When Marnie cross/no-history
+  loaded alongside other v12 accuracy/random jobs, the kernel reported
+  `Memory cgroup out of memory` and killed Python with status `137`.
+- Completed/observed v12 results so far:
+  - `lucario_43d_v12hist_pointer_init`: random `288/300 = 96.0%`.
+  - `lucario_43d_v12nohist_pointer_refit`: random `286/300 = 95.3%`.
+  - `ogerpon_5899_v12hist_pointer_init`: random `299/300 = 99.7%`.
+  - `ogerpon_5899_v12nohist_pointer_refit`: random `296/300 = 98.7%`.
+  - `marnie_b8f_v12hist_pointer_init`: random `300/300 = 100.0%`.
+  - `lucario_43d_v12hist_cross_init` with `PTCG_DISABLE_CUDNN=1`: training
+    completed, best `val=1.0184`; CPU accuracy was still running at last check.
+  - `marnie_b8f_v12hist_cross_init` with `PTCG_DISABLE_CUDNN=1`: killed by
+    cgroup OOM during epoch 1, not a model/feature failure.
+  - `marnie_b8f_v12nohist_pointer_refit`: killed by cgroup OOM before producing
+    a checkpoint, not a model/feature failure.
+- Active guard runner:
+  `/tmp/run_v12_marnie_large_guarded_20260808.sh`, log
+  `logs/v12_marnie_large_guarded_20260808.runner.log`.
+  It waits until no `bc2_train.py`, `bc2_accuracy.py`, or `eval_bc.py` v12
+  pilot jobs are active and cgroup `memory.current < 170GiB`, then runs Marnie
+  no-history and Marnie cross sequentially. This is intentional: Marnie big
+  jobs should not be parallelized until the data loader is made streaming or
+  memory-mapped.
+
+Monitor the guard:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/v12_marnie_large_guarded_20260808.runner.log'
+ssh ks 'cat /sys/fs/cgroup/memory.current'
 ```
 
 ## 2026-08-08 Top-Player Strategy Mining

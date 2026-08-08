@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 16:30 Asia/Shanghai.
+Last updated: 2026-08-08 16:46 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -235,6 +235,66 @@ Monitor the guard:
 ```bash
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/v12_marnie_large_guarded_20260808.runner.log'
 ssh ks 'cat /sys/fs/cgroup/memory.current'
+```
+
+## 2026-08-08 Sequence Planner Route
+
+The user explicitly asked to stop conservative BC fine-tuning and start a real
+hierarchical/sequence planner. Treat this as a new route, not another
+winner-only/filter/weight tweak.
+
+Observed v12 history-cross result before this change:
+
+- Non-Marnie v12 history-cross helped Lucario only modestly and did not rescue
+  Ogerpon/TRM/Festival generally. Mini RR row means showed
+  `v12_lucario=0.529` vs `w4_lucario=0.430`, but `v12_ogerpon=0.205` vs
+  `w4_ogerpon=0.211`, `v12_trmewtwo=0.684` vs `w4_trmewtwo=0.671`, and
+  `v12_festival=0.677` vs `w4_festival=0.593`.
+- Baseline-delta against w4 random_ge097 was only `+0.055` for Lucario,
+  `+0.009` for Festival, `-0.015` for TRM, and `-0.071` for Ogerpon.
+- Interpretation: passive history features alone are not enough. The model
+  needs an explicit plan mode tied to the current point in the game and the
+  selected card/action/context sequence.
+
+Implemented locally:
+
+- New `ptcg_rl/plan_labels.py` derives per-decision multi-label plan targets:
+  `setup`, `engine`, `power`, `attack`, `disrupt`, `preserve`, `stall`,
+  `finish`.
+- `BCCorpus(..., step_plan=True, archetype=...)` now groups by game and labels
+  each kept row using row order, current board/hand/features, selected first
+  action type/card/context, and `deck_plans.py` archetype tags.
+- `sequence_nll` now supports `step_plan_weight` and
+  `plan_teacher_forcing`. Teacher forcing feeds the step plan label into the
+  hierarchical scorer for part of training while inference still uses the
+  predicted plan head.
+- `tools/bc2_train.py` exposes:
+  `--step-plan`, `--step-plan-loss-weight`, and
+  `--step-plan-teacher-forcing`.
+- The checkpoint format stays submittable through existing NumPy inference
+  because it still uses the existing sigmoid plan head and
+  `plan_condition_fc`/`plan_score_fc*` keys.
+- Local `py_compile` passed, and a synthetic CPU smoke test produced plan
+  counts and a finite hierarchical loss.
+
+First planner training should be from scratch. Do not pass `--init` for these
+experiments unless the user explicitly asks for an ablation:
+
+```bash
+python3 tools/bc2_train.py \
+  --corpus data/bc_corpus_banded_v12_0701_0807_hist32_log128_board12 \
+  --archetype "Mega Lucario" \
+  --score-bands 1200+ 1100-1199 1000-1099 \
+  --deck-sig 43d6d8b0fce9 \
+  --arch cross_attn --width 4 --state-layers 2 \
+  --history-k 32 --log-history-k 128 --board-history-k 12 --board-history-feat-dim 32 \
+  --hierarchical-plan --step-plan \
+  --step-plan-loss-weight 0.30 --step-plan-teacher-forcing 0.50 \
+  --epochs 10 --batch-size 2048 --lr 8e-5 \
+  --first-action-weight 1.5 --win-weight 1.5 --loss-weight 0.4 --draw-weight 0.8 \
+  --state-feat-dim 80 --opt-feat-dim 64 \
+  --cuda-memory-gb 24 --device cuda:0 \
+  --save checkpoints/v12_sequence_planner_20260808/bc2_lucario_43d_seqplan_scratch_w4.npz
 ```
 
 ## 2026-08-08 Top-Player Strategy Mining

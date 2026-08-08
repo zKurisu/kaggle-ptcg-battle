@@ -3,6 +3,7 @@ from __future__ import annotations
 import glob
 import os
 import time
+from collections import Counter
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -11,6 +12,7 @@ import torch
 
 from ptcg_rl.encoder import OPT_FEAT_DIM, STATE_FEAT_DIM
 from ptcg_rl.history_features import BOARD_HISTORY_FEAT_DIM
+from ptcg_rl.plan_labels import PLAN_DIM, PLAN_LABELS, label_decision_plan
 
 
 @dataclass
@@ -32,6 +34,8 @@ class BCBatch:
     outcome_mask: torch.Tensor
     trajectory_target: torch.Tensor
     trajectory_mask: torch.Tensor
+    plan_step_target: torch.Tensor
+    plan_step_mask: torch.Tensor
     history: dict[str, torch.Tensor]
     actions: list[list[int]]
     n_options: list[int]
@@ -146,6 +150,8 @@ class BCCorpus:
         trajectory_missing: str = "default",
         trajectory_targets: dict[str, np.ndarray] | None = None,
         trajectory_target_dim: int = 0,
+        archetype: str = "",
+        step_plan: bool = False,
         history_k: int = 0,
         opp_history_k: int = 0,
         log_history_k: int = 0,
@@ -195,6 +201,9 @@ class BCCorpus:
         if self.trajectory_targets and self.trajectory_target_dim <= 0:
             first = next(iter(self.trajectory_targets.values()))
             self.trajectory_target_dim = int(first.shape[-1])
+        self.archetype = str(archetype)
+        self.step_plan = bool(step_plan)
+        self.step_plan_dim = PLAN_DIM if self.step_plan else 0
         self.history_k = max(0, int(history_k))
         self.opp_history_k = max(0, int(opp_history_k))
         self.log_history_k = max(0, int(log_history_k))
@@ -206,10 +215,13 @@ class BCCorpus:
             or self.opp_history_k > 0
             or self.log_history_k > 0
             or self.board_history_k > 0
+            or self.step_plan
         )
         self.npz_data: list[dict[str, np.ndarray]] = []
         self.history_prev: list[np.ndarray] = []
+        self.step_plan_targets: list[np.ndarray] = []
         self.groups: list[list[tuple[int, int]]] = []
+        self.step_plan_counts: Counter[str] = Counter()
         self.stats = {
             "raw": 0,
             "kept": 0,
@@ -275,6 +287,10 @@ class BCCorpus:
             file_history_prev = (
                 np.full((n_rows, self.history_k), -1, dtype=np.int32)
                 if self.history_k > 0 else np.empty((0, 0), dtype=np.int32)
+            )
+            file_step_plan = (
+                np.zeros((n_rows, self.step_plan_dim), dtype=np.float32)
+                if self.step_plan else np.empty((0, 0), dtype=np.float32)
             )
             file_raw0 = self.stats["raw"]
             file_kept0 = self.stats["kept"]
@@ -348,11 +364,26 @@ class BCCorpus:
                             prev = [r for _, r in rows[max(0, pos - self.history_k) : pos]]
                             if prev:
                                 file_history_prev[row_i, -len(prev):] = np.asarray(prev, dtype=np.int32)
+                    if self.step_plan:
+                        for pos, (_, row_i) in enumerate(rows):
+                            target = label_decision_plan(
+                                data,
+                                row_i,
+                                archetype=self.archetype,
+                                position=pos,
+                                game_len=len(rows),
+                            )
+                            file_step_plan[row_i] = target
+                            for label_i, label_name in enumerate(PLAN_LABELS):
+                                if float(target[label_i]) > 0.0:
+                                    self.step_plan_counts[label_name] += 1
                     self.groups.append(rows)
             elif group:
                 self.groups.append(group)
             if self.history_k > 0:
                 self.history_prev.append(file_history_prev)
+            if self.step_plan:
+                self.step_plan_targets.append(file_step_plan)
             if load_progress_every:
                 print(
                     f"  loaded {path_i}/{len(paths)} {os.path.basename(path)} "
@@ -397,6 +428,8 @@ class BCCorpus:
         outcome_mask = np.zeros(bsz, dtype=np.float32)
         trajectory_target = np.zeros((bsz, self.trajectory_target_dim), dtype=np.float32)
         trajectory_mask = np.zeros((bsz, self.trajectory_target_dim), dtype=np.float32)
+        plan_step_target = np.zeros((bsz, self.step_plan_dim), dtype=np.float32)
+        plan_step_mask = np.zeros((bsz, self.step_plan_dim), dtype=np.float32)
         history_type = np.zeros((bsz, self.history_k), dtype=np.int64)
         history_card = np.zeros((bsz, self.history_k), dtype=np.int64)
         history_card2 = np.zeros((bsz, self.history_k), dtype=np.int64)
@@ -518,6 +551,9 @@ class BCCorpus:
                     n_target = min(len(target), self.trajectory_target_dim)
                     trajectory_target[bi, :n_target] = target[:n_target]
                     trajectory_mask[bi, :n_target] = 1.0
+            if self.step_plan:
+                plan_step_target[bi] = self.step_plan_targets[di][si]
+                plan_step_mask[bi] = 1.0
             if self.history_k > 0:
                 copied = _copy_action_prefix(
                     data, "own_hist", si, bi,
@@ -600,6 +636,8 @@ class BCCorpus:
             outcome_mask=torch.as_tensor(outcome_mask, device=device),
             trajectory_target=torch.as_tensor(trajectory_target, device=device),
             trajectory_mask=torch.as_tensor(trajectory_mask, device=device),
+            plan_step_target=torch.as_tensor(plan_step_target, device=device),
+            plan_step_mask=torch.as_tensor(plan_step_mask, device=device),
             history={
                 "type": torch.as_tensor(history_type, device=device),
                 "card": torch.as_tensor(history_card, device=device),

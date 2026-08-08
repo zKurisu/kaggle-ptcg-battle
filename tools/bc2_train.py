@@ -29,6 +29,7 @@ from ptcg_rl.model import (
     checkpoint_log_history_k,
     checkpoint_opp_history_k,
 )
+from ptcg_rl.plan_labels import PLAN_LABELS
 
 
 CONTEXT_IDS = {
@@ -388,7 +389,8 @@ def _configure_cuda_memory_limit(device: torch.device, *, gb: float = 0.0, fract
 
 def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
                first_action_weight=1.0, value_weight=0.0,
-               plan_weight=0.0,
+               plan_weight=0.0, step_plan_weight=0.0,
+               plan_teacher_forcing=0.0,
                set_loss_weight=0.0, set_loss_min_count=2,
                set_loss_negative_weight=0.25):
     training = optimizer is not None
@@ -406,6 +408,8 @@ def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
             first_action_weight=first_action_weight,
             value_weight=value_weight,
             plan_weight=plan_weight,
+            step_plan_weight=step_plan_weight,
+            plan_teacher_forcing=plan_teacher_forcing,
             set_loss_weight=set_loss_weight,
             set_loss_min_count=set_loss_min_count,
             set_loss_negative_weight=set_loss_negative_weight,
@@ -457,8 +461,20 @@ def main() -> None:
                         help="number of state self-attention layers for --arch cross_attn")
     parser.add_argument("--hierarchical-plan", action="store_true",
                         help=(
-                            "condition action logits on predicted --trajectory-target plan signals. "
-                            "Requires at least one --trajectory-target."
+                            "condition action logits on predicted plan signals. Use with "
+                            "--trajectory-target or --step-plan."
+                        ))
+    parser.add_argument("--step-plan", action="store_true",
+                        help=(
+                            "derive per-decision sequence plan labels from game order, board state, "
+                            "selected card/action/context, and deck-plan card tags"
+                        ))
+    parser.add_argument("--step-plan-loss-weight", type=float, default=0.0,
+                        help="BCE loss multiplier for --step-plan labels")
+    parser.add_argument("--step-plan-teacher-forcing", type=float, default=0.0,
+                        help=(
+                            "probability of feeding the step-plan label to the hierarchical scorer "
+                            "during training; inference still uses predicted plans"
                         ))
     parser.add_argument("--history-k", type=int, default=0,
                         help="condition the policy on this many previous own decisions from the same game; 0 disables")
@@ -599,10 +615,16 @@ def main() -> None:
     plan_target_dim = len([x for x in args.trajectory_target if str(x).strip()])
     if plan_target_dim and not args.trajectory_csv:
         raise ValueError("--trajectory-target requires at least one --trajectory-csv")
-    if args.trajectory_target_loss_weight > 0 and plan_target_dim <= 0:
+    if args.step_plan and plan_target_dim > 0:
+        raise ValueError("--step-plan and --trajectory-target use the same plan head; train them separately")
+    if args.step_plan:
+        plan_target_dim = len(PLAN_LABELS)
+    if args.trajectory_target_loss_weight > 0 and not args.trajectory_target:
         raise ValueError("--trajectory-target-loss-weight > 0 requires at least one --trajectory-target")
+    if args.step_plan_loss_weight > 0 and not args.step_plan:
+        raise ValueError("--step-plan-loss-weight > 0 requires --step-plan")
     if args.hierarchical_plan and plan_target_dim <= 0:
-        raise ValueError("--hierarchical-plan requires at least one --trajectory-target")
+        raise ValueError("--hierarchical-plan requires --trajectory-target or --step-plan")
     history_k = max(0, int(args.history_k))
     opp_history_k = max(0, int(args.opp_history_k))
     log_history_k = max(0, int(args.log_history_k))
@@ -657,6 +679,8 @@ def main() -> None:
         trajectory_missing=args.trajectory_missing_policy,
         trajectory_targets=trajectory_targets,
         trajectory_target_dim=plan_target_dim,
+        archetype=args.archetype,
+        step_plan=args.step_plan,
         history_k=history_k,
         opp_history_k=opp_history_k,
         log_history_k=log_history_k,
@@ -666,6 +690,7 @@ def main() -> None:
             args.split_by_game
             or bool(trajectory_weights)
             or bool(trajectory_targets)
+            or args.step_plan
             or history_k > 0
             or opp_history_k > 0
             or log_history_k > 0
@@ -772,6 +797,8 @@ def main() -> None:
         f"trajectory_weight={args.trajectory_weight or 'none'} "
         f"trajectory_target={args.trajectory_target or 'none'} "
         f"trajectory_target_loss_weight={args.trajectory_target_loss_weight} "
+        f"step_plan={args.step_plan} step_plan_labels={PLAN_LABELS if args.step_plan else 'none'} "
+        f"step_plan_loss/teacher_forcing={args.step_plan_loss_weight}/{args.step_plan_teacher_forcing} "
         f"trajectory_base/cap/missing={args.trajectory_base_weight}/{args.trajectory_weight_cap}/"
         f"{args.trajectory_missing_weight}:{args.trajectory_missing_policy} "
         f"reset_scorer={args.reset_scorer} init_skip_prefix={args.init_skip_prefix or 'none'} "
@@ -785,6 +812,8 @@ def main() -> None:
         print(f"Trajectory weights: {trajectory_stats}", flush=True)
     if trajectory_target_stats:
         print(f"Trajectory targets: {trajectory_target_stats}", flush=True)
+    if args.step_plan:
+        print(f"Step-plan counts: {dict(corpus.step_plan_counts)}", flush=True)
     print(
         f"Corpus: files={len(paths)} base_files={base_path_count} "
         f"aux_files={aux_path_count} stats={corpus.stats}",
@@ -809,6 +838,8 @@ def main() -> None:
                 first_action_weight=args.first_action_weight,
                 value_weight=args.value_weight,
                 plan_weight=args.trajectory_target_loss_weight,
+                step_plan_weight=args.step_plan_loss_weight,
+                plan_teacher_forcing=args.step_plan_teacher_forcing,
                 set_loss_weight=args.set_loss_weight,
                 set_loss_min_count=args.set_loss_min_count,
                 set_loss_negative_weight=args.set_loss_negative_weight,
@@ -838,6 +869,8 @@ def main() -> None:
                 first_action_weight=args.first_action_weight,
                 value_weight=args.value_weight,
                 plan_weight=args.trajectory_target_loss_weight,
+                step_plan_weight=args.step_plan_loss_weight,
+                plan_teacher_forcing=0.0,
                 set_loss_weight=args.set_loss_weight,
                 set_loss_min_count=args.set_loss_min_count,
                 set_loss_negative_weight=args.set_loss_negative_weight,

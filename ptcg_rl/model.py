@@ -317,7 +317,8 @@ class PolicyValueNet(nn.Module):
     # ── scoring ─────────────────────────────────────────────────────
 
     def option_logits(self, h: torch.Tensor, opts: torch.Tensor,
-                      picked_sum: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+                      picked_sum: torch.Tensor, mask: torch.Tensor,
+                      plan_override: torch.Tensor | None = None) -> torch.Tensor:
         B, N, _ = opts.shape
         stop = self.stop_vec.expand(B, 1, self._oe)
         rows = torch.cat([opts, stop], dim=1)
@@ -326,7 +327,7 @@ class PolicyValueNet(nn.Module):
         x = torch.cat([hx, rows, px], dim=-1)
         logits = self.score_fc2(F.relu(self.score_fc1(x))).squeeze(-1)
         if self.hierarchical_plan:
-            plan_prob = torch.sigmoid(self.plan_logits(h))
+            plan_prob = plan_override if plan_override is not None else torch.sigmoid(self.plan_logits(h))
             plan_ctx = F.relu(self.plan_condition_fc(plan_prob))
             plan_x = torch.cat([
                 rows,
@@ -964,7 +965,8 @@ class CrossAttentionPolicyValueNet(nn.Module):
         return F.relu(self.cross_out(torch.cat([base, ctx], dim=-1)))
 
     def option_logits(self, h: torch.Tensor, opts: torch.Tensor,
-                      picked_sum: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+                      picked_sum: torch.Tensor, mask: torch.Tensor,
+                      plan_override: torch.Tensor | None = None) -> torch.Tensor:
         B, N, _ = opts.shape
         stop = self.stop_vec.expand(B, 1, self._oe)
         rows = torch.cat([opts, stop], dim=1)
@@ -973,7 +975,7 @@ class CrossAttentionPolicyValueNet(nn.Module):
         x = torch.cat([hx, rows, px], dim=-1)
         logits = self.score_fc2(F.relu(self.score_fc1(x))).squeeze(-1)
         if self.hierarchical_plan:
-            plan_prob = torch.sigmoid(self.plan_logits(h))
+            plan_prob = plan_override if plan_override is not None else torch.sigmoid(self.plan_logits(h))
             plan_ctx = F.relu(self.plan_condition_fc(plan_prob))
             plan_x = torch.cat([
                 rows,

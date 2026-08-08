@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 16:46 Asia/Shanghai.
+Last updated: 2026-08-08 17:05 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -296,6 +296,39 @@ python3 tools/bc2_train.py \
   --cuda-memory-gb 24 --device cuda:0 \
   --save checkpoints/v12_sequence_planner_20260808/bc2_lucario_43d_seqplan_scratch_w4.npz
 ```
+
+Runtime update at 2026-08-08 17:05 Asia/Shanghai:
+
+- The old `bc2_marnie_b8f_v12hist_cross_init.npz` checkpoint is usable even
+  though its epoch 6 process was OOM-killed. Epoch 5 saved best
+  `val=0.5404`, and a random audit completed:
+  `495/500 = 99.0%`, log
+  `logs/v12_history_pilots_20260807/marnie_b8f_v12hist_cross_init.random_g500.log`.
+  Treat it as a v12 history-cross init ablation candidate, not as the new
+  scratch sequence planner.
+- First scratch sequence planner attempt with `width=4 batch=2048` failed
+  immediately on Lucario/Festival with CUDA OOM around the hierarchical option
+  scorer. Keep those logs; they show that this architecture's peak memory is
+  driven by `batch * max_options * width`, not just model parameter count.
+- Active scratch planner runner:
+  `/tmp/run_sequence_planner_scratch_w3_20260808.sh`, log
+  `logs/v12_sequence_planner_20260808/runner_w3.log`.
+  It uses `width=3`, `batch=1024`, `PTCG_DISABLE_CUDNN=1`,
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, no `--init`, and
+  `--step-plan --hierarchical-plan --step-plan-loss-weight 0.30
+  --step-plan-teacher-forcing 0.50`.
+- Active wave 1:
+  - `lucario_43d` on GPU0, save
+    `checkpoints/v12_sequence_planner_20260808/bc2_lucario_43d_seqplan_scratch_w3.npz`
+  - `festival_e82` on GPU1, save
+    `checkpoints/v12_sequence_planner_20260808/bc2_festival_e82_seqplan_scratch_w3.npz`
+- If wave 1 succeeds, the runner automatically starts:
+  - `trmewtwo_06f0` on GPU2
+  - `ogerpon_2a507` on GPU3
+- Marnie scratch planner is intentionally not in this runner. The container is
+  usually already above `160GiB/256GiB` cgroup memory, and Marnie b8f corpus
+  loads are large enough to cause process kills. Run it separately after memory
+  drops or after making `BCCorpus` streaming/memmap.
 
 ## 2026-08-08 Top-Player Strategy Mining
 

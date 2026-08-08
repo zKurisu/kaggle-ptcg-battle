@@ -29,6 +29,7 @@ class Job:
 
 def _read_jobs(args: argparse.Namespace) -> list[Job]:
     wanted_arch = {x.lower() for x in args.archetype}
+    date_windows = _read_date_windows(args.date_window_csv)
     jobs: list[Job] = []
     queued_checkpoints: set[Path] = set()
     with open(args.manifest, newline="") as f:
@@ -60,8 +61,51 @@ def _read_jobs(args: argparse.Namespace) -> list[Job]:
                 train_cmd.extend(["--cuda-memory-fraction", str(args.cuda_memory_fraction)])
             if args.batch_size > 0:
                 train_cmd = _replace_or_append(train_cmd, "--batch-size", str(args.batch_size))
+            train_cmd = _apply_date_window(train_cmd, raw, date_windows)
             jobs.append(Job(rank, name, archetype, checkpoint, train_cmd, log))
     return jobs
+
+
+def _read_date_windows(path: str) -> dict[tuple[str, str], tuple[str, str]]:
+    if not path:
+        return {}
+    windows: dict[tuple[str, str], tuple[str, str]] = {}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            arch = str(row.get("archetype") or "").strip().lower()
+            sig = str(row.get("deck_sig") or "").strip()
+            date_from = str(row.get("date_from") or "").strip()
+            date_to = str(row.get("date_to") or "").strip()
+            if arch and sig and (date_from or date_to):
+                windows[(arch, sig)] = (date_from, date_to)
+    return windows
+
+
+def _apply_date_window(
+    cmd: list[str],
+    manifest_row: dict[str, str],
+    windows: dict[tuple[str, str], tuple[str, str]],
+) -> list[str]:
+    if not windows:
+        return cmd
+    archetype = str(manifest_row.get("archetype") or "").strip().lower()
+    deck_sig = str(manifest_row.get("deck_sig") or "").strip()
+    if not deck_sig:
+        deck_sig = _cmd_value(cmd, "--deck-sig")
+    date_from, date_to = windows.get((archetype, deck_sig), ("", ""))
+    out = list(cmd)
+    if date_from:
+        out = _replace_or_append(out, "--date-from", date_from)
+    if date_to:
+        out = _replace_or_append(out, "--date-to", date_to)
+    return out
+
+
+def _cmd_value(cmd: list[str], flag: str) -> str:
+    for i, token in enumerate(cmd):
+        if token == flag and i + 1 < len(cmd):
+            return cmd[i + 1]
+    return ""
 
 
 def _replace_or_append(cmd: list[str], flag: str, value: str) -> list[str]:
@@ -139,6 +183,8 @@ def main() -> None:
                    help="append a visible-GPU CUDA allocator fraction cap to manifest commands")
     p.add_argument("--batch-size", type=int, default=0,
                    help="override --batch-size in manifest commands; 0 keeps manifest value")
+    p.add_argument("--date-window-csv", default="",
+                   help="CSV from tools/plan_bc_date_windows.py; matched by archetype+deck_sig and appended as --date-from/--date-to")
     p.add_argument("--log-dir", default="logs/shadow_train")
     p.add_argument("--skip-existing", action="store_true")
     p.add_argument("--poll-seconds", type=float, default=30.0)

@@ -20,6 +20,63 @@ For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload
 
 ## 2026-08-08 BC Memory Reduction And Adaptive Date Windows
 
+Follow-up completed at about 2026-08-08 20:35 Asia/Shanghai:
+
+- Added `tools/plan_bc_date_windows.py`.
+  - It scans extracted BC corpora by `archetype + deck_sig + date`.
+  - Default `--count-mode kept` validates BC labels and is intended for a
+    small candidate manifest.
+  - `--count-mode raw` now has a fast path that reads only `deck_sig` arrays
+    from each npz. Use this for broad/global planning; raw and kept counts have
+    been very close in the v12 corpus.
+  - The planner chooses the newest suffix of dates that reaches a target row
+    count. Sparse sigs fall back to all available dates and get
+    `low_data_all_dates` / `below_target_all_dates`.
+- `tools/train_shadow_manifest.py` now accepts `--date-window-csv`; it matches
+  rows by `archetype + deck_sig` and appends/replaces `--date-from/--date-to`
+  in manifest training commands.
+- `tools/plan_deck_specific_bc.py` now accepts `--date-window-csv`; generated
+  pure sig specialist commands include the planned date window. If a mixed
+  topK row contains multiple sigs, it conservatively uses the earliest
+  `date_from` among those sigs.
+
+Remote global raw plan:
+
+```text
+csv: logs/v12_strategy_conditioned_adaptive_20260808/bc_date_windows_top8_raw.csv
+log: logs/v12_strategy_conditioned_adaptive_20260808/plan_bc_date_windows_top8_raw.log
+command used count-mode raw over v12 0701-0807, bands 1200+/1100/1000/900, top8 per archetype.
+```
+
+Important rows from that plan:
+
+```text
+Alakazam 7f9a538936e3          date_from=2026-08-02 selected=377431 / total=2484992 status=ok
+Crustle 3cd5039c59d2           date_from=2026-07-17 selected=182491 / total=548969  status=ok
+Marnie b8f251a476e7            date_from=2026-08-06 selected=445740 / total=4250701 status=ok
+Mega Lucario 43d6d8b0fce9      date_from=2026-08-02 selected=85815  / total=85815   status=below_target_all_dates
+Ogerpon 697a82e582d5           date_from=2026-07-31 selected=173860 / total=180406  status=ok
+Ogerpon 2a5072194fdf           date_from=2026-07-28 selected=98683  / total=98683   status=below_target_all_dates
+Ogerpon 5899c772bace           date_from=2026-08-01 selected=78444  / total=78444   status=low_data_all_dates
+Team Rocket Mewtwo 06f0...     date_from=2026-07-19 selected=212948 / total=233157  status=ok
+Team Rocket Mewtwo f0bac...    date_from=2026-07-20 selected=80635  / total=80635   status=below_target_all_dates
+Festival Lead e82dcbe62260     date_from=2026-07-27 selected=140891 / total=140891  status=below_target_all_dates
+```
+
+Interpretation:
+
+- Full-date training is now memory-feasible for many sigs, but not always
+  desirable. Huge sigs like `Marnie b8f` and `Alakazam 7f9` should keep recent
+  suffixes; all-date would mostly add old meta and slow training.
+- Sparse sigs such as `Mega Lucario 43d6`, `Ogerpon 5899`, and many Archaludon
+  variants cannot be fixed by date-window selection. They need either all-date
+  specialist training, adjacent-sig sharing, successful-trajectory mining, or
+  constructed/teacher data.
+- The active adaptive runner was launched before this planner existed, so its
+  windows are close but not identical: it uses `Ogerpon 697 2026-08-01+` and
+  `Crustle 3cd 2026-07-18+`; the raw planner recommends `2026-07-31+` and
+  `2026-07-17+` respectively.
+
 Code change committed after the strategy-conditioned pilot:
 
 - `ptcg_rl/bc2/data.py`

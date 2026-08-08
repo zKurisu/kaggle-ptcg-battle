@@ -41,6 +41,10 @@ FIELDS = [
     "variant",
     "deck_rank",
     "deck_sigs",
+    "date_from",
+    "date_to",
+    "selected_kept",
+    "date_status",
     "n_decks",
     "kept",
     "total_kept",
@@ -103,6 +107,39 @@ def read_stats(path: str) -> list[dict]:
     return rows
 
 
+def read_date_windows(path: str) -> dict[tuple[str, str], dict[str, str]]:
+    if not path:
+        return {}
+    out: dict[tuple[str, str], dict[str, str]] = {}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            arch = str(row.get("archetype") or "").strip().lower()
+            sig = str(row.get("deck_sig") or "").strip()
+            if arch and sig:
+                out[(arch, sig)] = dict(row)
+    return out
+
+
+def choose_date_window(
+    archetype: str,
+    deck_sigs: list[str],
+    windows: dict[tuple[str, str], dict[str, str]],
+) -> tuple[str, str, str, str]:
+    if not windows or not deck_sigs:
+        return "", "", "", ""
+    rows = [windows.get((archetype.lower(), sig)) for sig in deck_sigs]
+    rows = [r for r in rows if r]
+    if not rows:
+        return "", "", "", "missing"
+    date_from_values = [str(r.get("date_from") or "").strip() for r in rows if str(r.get("date_from") or "").strip()]
+    date_to_values = [str(r.get("date_to") or "").strip() for r in rows if str(r.get("date_to") or "").strip()]
+    date_from = min(date_from_values) if date_from_values else ""
+    date_to = max(date_to_values) if date_to_values else ""
+    selected_kept = ",".join(str(r.get("selected_kept") or "") for r in rows)
+    statuses = sorted({str(r.get("status") or "") for r in rows if str(r.get("status") or "")})
+    return date_from, date_to, selected_kept, ",".join(statuses)
+
+
 def choose_variants(rows: list[dict], *, total: int, top1_threshold: float, cover_threshold: float,
                     max_k: int, force_top1: bool) -> list[tuple[str, list[dict]]]:
     if total <= 0 or not rows:
@@ -138,6 +175,7 @@ def choose_topn_sig_variants(rows: list[dict], *, top_n: int, prefix_chars: int)
 def make_plan(args: argparse.Namespace) -> list[dict]:
     plan: list[dict] = []
     seen_arch: set[str] = set()
+    date_windows = read_date_windows(args.date_window_csv)
     for path in expand_stats_glob(args.stats_glob):
         arch = infer_archetype(path)
         if arch in seen_arch and not args.allow_duplicate_archetype:
@@ -175,6 +213,11 @@ def make_plan(args: argparse.Namespace) -> list[dict]:
         for variant, selected, deck_rank in variants:
             kept = sum(r["_kept"] for r in selected)
             deck_sigs = [r["deck_sig"] for r in selected]
+            date_from, date_to, selected_kept, date_status = choose_date_window(
+                arch,
+                deck_sigs,
+                date_windows,
+            )
             job_name = f"{slug}_{variant}_{args.tag}"
             save = str(Path(args.checkpoint_dir) / f"bc2_{job_name}.npz")
             log = str(Path(args.log_dir) / f"train_{job_name}.log")
@@ -185,6 +228,10 @@ def make_plan(args: argparse.Namespace) -> list[dict]:
                     "variant": variant,
                     "deck_rank": deck_rank,
                     "deck_sigs": " ".join(deck_sigs),
+                    "date_from": date_from,
+                    "date_to": date_to,
+                    "selected_kept": selected_kept,
+                    "date_status": date_status,
                     "n_decks": len(selected),
                     "kept": kept,
                     "total_kept": total,
@@ -241,6 +288,10 @@ def train_cmd(args: argparse.Namespace, row: dict) -> str:
     ]
     for sig in str(row["deck_sigs"]).split():
         cmd.extend(["--deck-sig", sig])
+    if row.get("date_from"):
+        cmd.extend(["--date-from", str(row["date_from"])])
+    if row.get("date_to"):
+        cmd.extend(["--date-to", str(row["date_to"])])
     cmd.extend(
         [
             "--epochs",
@@ -491,6 +542,8 @@ def main() -> None:
     p.add_argument("--tag", default="v7sig_topdeck_w2")
     p.add_argument("--out", default="logs/deck_specific_bc_plan.csv")
     p.add_argument("--script", default="logs/train_deck_specific_bc.sh")
+    p.add_argument("--date-window-csv", default="",
+                   help="CSV from tools/plan_bc_date_windows.py; matched by archetype+deck_sig and emitted as --date-from/--date-to")
     p.add_argument("--eval-script", default="",
                    help="optional shell script for random smoke + candidate-only ladder-pool evals")
     p.add_argument("--registry", default="logs/policy_deck_registry_v7sig.csv")

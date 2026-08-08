@@ -230,6 +230,49 @@ Post-eval watcher behavior after counter-mixture training exits:
    logs/counter_mixture_20260808/counter_mixture_clean20_vs_w4top1_rr_g60.csv
 ```
 
+Additional direct pure-teacher causality test launched after user asked for a
+more extreme validation of successful trajectories:
+
+```text
+script: /tmp/run_ogerpon_crustle_pure_teacher_20260808.sh
+nohup log: logs/pure_teacher_ogerpon_vs_crustle_20260808/runner.nohup.log
+subset corpus: data/bc_pure_teacher_ogerpon_vs_crustle_20260808
+checkpoints: checkpoints/pure_teacher_ogerpon_vs_crustle_20260808
+target deck: logs/ladder_pool_0805_all/decks/2a5072194fdf_teal_mask_ogerpon_james_cox_henry_chao.csv
+baseline policy: checkpoints/deck_sig_specialists_v11all35_20260806/w4/bc2_teal_mask_ogerpon_sig2_2a507219_v11all35_sigpure_top3_w4.npz
+opponent policy: checkpoints/deck_sig_specialists_v11all35_20260806/w4/bc2_crustle_wall_sig1_3cd5039c_v11all35_sigpure_top3_w4.npz
+opponent deck: logs/ladder_pool_0804_all/decks/3cd5039c59d2_crustle_wall_oshbocker.csv
+```
+
+Why `2a5072194fdf`: in `game_quality_all_pairs.csv`, Teal Mask Ogerpon clean
+wins vs Crustle are concentrated at `2a5072194fdf / James Cox & Henry Chao`
+with 58 clean games. The next largest sig has only 10, while `697a...` has 6
+and `5899...` has 1. This test is therefore sig-specific, not a mixed Ogerpon
+guess.
+
+The pure-teacher runner trains three deliberately extreme models:
+
+```text
+bc2_ogerpon2a_vs_crustle_clean_scratch_w4.npz
+bc2_ogerpon2a_vs_crustle_clean_initpartial_w4.npz
+bc2_ogerpon_all_vs_crustle_clean_scratch_w4.npz
+```
+
+All train only on clean wins, 80 epochs, width 4 cross-attn, history/log/board
+history, hierarchical step-plan. It then automatically runs:
+
+```text
+logs/pure_teacher_ogerpon_vs_crustle_20260808/pure_teacher_random_g300.csv
+logs/pure_teacher_ogerpon_vs_crustle_20260808/pure_teacher_vs_crustle_w4_g300.csv
+```
+
+Monitor:
+
+```bash
+ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/pure_teacher_ogerpon_vs_crustle_20260808/runner.nohup.log'
+ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && ps -eo pid,ppid,stat,pcpu,pmem,etime,cmd | grep -E "pure_teacher_ogerpon|run_ogerpon_crustle|bc2_train.py|eval_baseline_delta|eval_manifest_random" | grep -v grep'
+```
+
 Do not use `counter_plan_aggressive` for submission. If testing rules, use
 default `counter_plan` and only after RR confirms it is not harming the target
 pool. If testing strategy improvement, evaluate the pair-teacher checkpoints

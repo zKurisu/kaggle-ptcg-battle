@@ -1,6 +1,6 @@
 # 11 - Human Matchup Strategy Ingestion
 
-Last updated: 2026-08-06.
+Last updated: 2026-08-08.
 
 The goal is to turn human PTCG matchup knowledge into testable local policy
 improvements. This is not a global "play better" rule layer. Each idea must
@@ -122,6 +122,54 @@ For each seed, run this sequence:
 Do not submit a rule or specialist solely because focused delta improves. The
 previous complex/card-weight/success-FT experiments often improved supervised
 or narrow metrics while failing broad RR.
+
+## Top-Player Episode Mining
+
+Use `tools/mine_top_player_strategy.py` when a strong Kaggle team has enough
+episode data and we want to translate its play into traceable rule/teacher
+hypotheses. The tool compares a target cohort, such as one team name or exact
+deck signature, against a control cohort in the same archetype/matchup.
+
+It writes:
+
+- `games.csv`: one row per target/control trajectory with setup and tempo
+  metrics.
+- `target_game_keys.csv` and `control_game_keys.csv`: whole-game selectors for
+  `tools/build_bc_subset.py`.
+- `metric_gaps.csv`: trajectory-level differences such as attack timing,
+  primary attacker board time, evolve count, and early-end count.
+- `event_gaps.csv`: selected action, board-state, target-card, and 2/3-gram
+  sequence differences.
+- `opportunity_gaps.csv`: states where an action type or tracked card was
+  legal, plus how often target vs control chose it.
+- `rule_candidates.csv` and `summary.md`: ranked hypotheses for narrow rerank,
+  trace, teacher rollout, or trajectory-BC follow-up.
+
+Example: compare a top Marnie team winning games against same-signature control
+losses:
+
+```bash
+python3 tools/mine_top_player_strategy.py \
+  --corpus data/bc_corpus_banded_v11_0701_0804 \
+  --archetype "Marnie Grimmsnarl" \
+  --score-bands 1200+ 1100-1199 1000-1099 \
+  --deck-sig b8f251a476e7 \
+  --target-team-name "LiamK" \
+  --target-outcome win \
+  --control-outcome loss \
+  --opponent-archetype "Teal Mask Ogerpon" \
+  --min-games 10 \
+  --min-rate-gap 0.08 \
+  --min-choose-gap 0.10 \
+  --top 40 \
+  --out-dir logs/top_player_strategy_20260808/marnie_liamk_vs_ogerpon
+```
+
+If the target team is only an example or has too few games, first run
+`tools/build_team_deck_trajectories.py` to find high-support team/deck pairs.
+Treat positive `opportunity_gap` rows as rule-probe candidates only after
+checking trace examples. Treat `event_gap` n-grams and `metric_gap` rows as
+teacher/trajectory hypotheses, not direct action rules.
 
 ## Seed-Driven Job Planner
 

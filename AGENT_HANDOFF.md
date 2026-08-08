@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-07 23:47 Asia/Shanghai.
+Last updated: 2026-08-08 03:30 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -137,6 +137,98 @@ Both are about `42M` and were validated to contain `cg/`, `deck.csv`,
 `main.py`, `policy.npz`, and `ptcg_rl/`. The checkpoints use the previous
 incomplete own-history-k implementation with `history_k=8`, so treat these as
 ablation submissions, not final v12 candidates.
+
+Update at 2026-08-08 03:30 Asia/Shanghai:
+
+- v12 extraction completed and the pilot runner started wave 1.
+- `lucario_43d_v12hist_pointer_init` trained, accuracy completed, and random
+  audit was `288/300 = 96.0%`.
+- `ogerpon_5899_v12hist_pointer_init` trained, accuracy completed, and random
+  audit was `299/300 = 99.7%`.
+- `lucario_43d_v12nohist_pointer_refit` appears to have trained and saved
+  checkpoints, but accuracy/random were not reached because the runner later
+  stopped.
+- `marnie_b8f_v12hist_pointer_init` trained and saved
+  `checkpoints/v12_history_pilots_20260807/bc2_marnie_b8f_v12hist_pointer_init.npz`,
+  but `tools/bc2_accuracy.py` failed immediately afterward with
+  `RuntimeError: cuDNN error: CUDNN_STATUS_NOT_INITIALIZED`.
+- Because `run_wave` treats any failed accuracy/random as wave failure, wave 2
+  did not start. The missing next steps are to rerun Marnie accuracy, run
+  Marnie random, evaluate the no-history Lucario checkpoint, then launch the
+  remaining nohist/cross wave in a fresh script. Prefer CPU or a fresh CUDA
+  process with lower memory pressure for the Marnie accuracy retry.
+
+## 2026-08-08 Top-Player Strategy Mining
+
+Added and synced `tools/mine_top_player_strategy.py`.
+
+Purpose:
+
+- Mine rule/teacher hypotheses from strong Kaggle team/deck episode behavior,
+  for example a LiamK-like team, without hand-writing global rules from
+  intuition.
+- Compare target cohort rows such as `--target-team-name` or
+  `--target-deck-sig` against same-matchup control rows.
+- Output game-level trajectory metrics, selected-action/event gaps, legal
+  opportunity choice gaps, 2/3-gram sequence gaps, ranked rule candidates, and
+  `target_game_keys.csv`/`control_game_keys.csv` for downstream
+  `build_bc_subset.py`.
+
+Remote smoke test:
+
+```text
+corpus: data/bc_corpus_banded_v11_0804_only
+archetype: Marnie Grimmsnarl
+deck_sig: b8f251a476e7
+target team: MissingNo.
+target outcome: win
+control outcome: loss
+out: logs/top_player_strategy_smoke/marnie_missingno_vs_control_loss_v2
+target games: 48
+control games: 280
+```
+
+Smoke findings were sensible enough for tool validation, not a rule conclusion:
+positive candidates included `MAIN turn=5-6 available=RETREAT`,
+`MAIN turn=5-6 available=EVOLVE:648 Marnie's Grimmsnarl ex`, and sequence gaps
+such as `MAIN:RETREAT > SWITCH:Marnie's Grimmsnarl ex`.
+
+Recommended next usage:
+
+```bash
+python3 tools/build_team_deck_trajectories.py \
+  --corpus data/bc_corpus_banded_v11_0701_0804 \
+  --archetype "Marnie Grimmsnarl" \
+  --score-bands 1200+ 1100-1199 1000-1099 \
+  --min-decisions 5000 \
+  --min-episodes 30 \
+  --top 40 \
+  --out logs/top_player_strategy_20260808/marnie_team_trajectories.csv
+
+python3 tools/mine_top_player_strategy.py \
+  --corpus data/bc_corpus_banded_v11_0701_0804 \
+  --archetype "Marnie Grimmsnarl" \
+  --score-bands 1200+ 1100-1199 1000-1099 \
+  --deck-sig b8f251a476e7 \
+  --target-team-name "<TOP_TEAM_FROM_TRAJECTORY_CSV>" \
+  --target-outcome win \
+  --control-outcome loss \
+  --opponent-archetype "Teal Mask Ogerpon" \
+  --min-games 10 \
+  --min-rate-gap 0.08 \
+  --min-choose-gap 0.10 \
+  --top 40 \
+  --out-dir logs/top_player_strategy_20260808/marnie_top_vs_ogerpon
+```
+
+Interpretation discipline:
+
+- Positive `opportunity_gap` rows are narrow rerank/rule-probe candidates.
+- `event_gap` n-grams and `metric_gap` rows are sequence/teacher hypotheses,
+  not direct hard rules.
+- Use `target_game_keys.csv` only after confirming the target cohort is
+  genuinely strong in the specific matchup; otherwise it can encode a strong
+  player's general style rather than a counter-plan.
 
 ## Episode Backfill
 

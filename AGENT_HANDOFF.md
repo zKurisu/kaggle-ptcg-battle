@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 11:55 Asia/Shanghai.
+Last updated: 2026-08-08 12:05 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -4377,6 +4377,15 @@ Key first finding:
 - With the revised quality gate, `2a5072194fdf / James Cox & Henry Chao` has
   `58/61` clean wins and `brick_share=0.049` into Crustle. This is a strong
   teacher seed for Ogerpon-vs-Crustle strategy data.
+- `Marnie Grimmsnarl=>Teal Mask Ogerpon` also has many clean teachers, mostly
+  `b8f251a476e7` teams. Top clean rows included:
+  `Raihan Ramadistra 34/39`, `@kdcyberdude 26/29`,
+  `Sixth Sense 27/34`, `やる気元気ミワハルキ 21/23`,
+  `Dries @ Tufa Labs 26/49`, `LiamK 20/35`, `Dominic Peel 23/45`.
+  This points to b8f team-conditioned clean subsets rather than winner-only BC.
+- `Mega Lucario=>Teal Mask Ogerpon` has a very strong clean teacher:
+  `43d6d8b0fce9 / Majkel1337`, `33/34` clean wins and `34/42 = 80.95%` game
+  win rate in the teacher scan.
 
 New commits after the first teacher-tool commit:
 
@@ -4394,7 +4403,9 @@ runner log: logs/v12_matchup_teachers_20260808/quality_audit.runner.log
 out dir: logs/v12_matchup_teachers_20260808/quality_audit
 status at last update:
   pair 1/18 Teal Mask Ogerpon=>Crustle Wall completed
-  pair 2/18 Marnie Grimmsnarl=>Teal Mask Ogerpon running
+  pair 2/18 Marnie Grimmsnarl=>Teal Mask Ogerpon completed
+  pair 3/18 Mega Lucario=>Teal Mask Ogerpon completed
+  pair 4/18 Mega Lucario=>Crustle Wall running
 ```
 
 Monitor:

@@ -13,6 +13,7 @@ _REPO = _HERE.parent
 sys.path.insert(0, str(_REPO))
 
 from ptcg_rl.deck_registry import registry_deck_for_policy
+from ptcg_rl.rule_overlay import RULE_MODES
 
 
 def _copytree(src: Path, dst: Path):
@@ -38,6 +39,8 @@ def main():
                    help="fail if --registry cannot resolve the policy deck")
     p.add_argument("--cg-dir", default=None,
                    help="path to cg engine directory; defaults to nearby ../cg")
+    p.add_argument("--rules", choices=["", *RULE_MODES], default="",
+                   help="optional rule overlay mode to enable in packaged agent")
     p.add_argument("--out", default=str(repo / "submission.tar.gz"))
     args = p.parse_args()
 
@@ -71,6 +74,9 @@ def main():
         shutil.copy2(repo / "main.py", root / "main.py")
         shutil.copy2(deck, root / "deck.csv")
         shutil.copy2(policy, root / "policy.npz")
+        if args.rules:
+            (root / "rules.txt").write_text(args.rules + "\n")
+            print(f"  rules:  {args.rules}", flush=True)
         print("  copying ptcg_rl", flush=True)
         _copytree(repo / "ptcg_rl", root / "ptcg_rl")
         print("  copying cg engine", flush=True)

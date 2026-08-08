@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-09 00:43 Asia/Shanghai.
+Last updated: 2026-08-09 02:05 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -17,6 +17,118 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## 2026-08-09 Explicit Rule/Plan Pivot
+
+User asked to first provide two models trained today that can be packaged for
+submission, then pivot to explicit rule/plan methods using Kaggle community and
+real PTCG strategy sources.
+
+Two today-trained models that are technically packageable, but are only useful
+as Kaggle ablation probes, not as strong local candidates:
+
+```bash
+cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+
+python3 tools/package_submission.py \
+  --policy checkpoints/pair_teachers_v12_0701_0807_allquality_clean20/bc2_festival_lead_vs_mega_lopunny_clean_teacher_w4.npz \
+  --deck logs/ladder_pool_0804_all/decks/41ffa7894f40_festival_lead_dominic_peel.csv \
+  --out /home/jie/Do/0_PTCG/submission/ablation_20260809_festival_pair_teacher_vs_lopunny.tar.gz
+
+python3 tools/package_submission.py \
+  --policy checkpoints/pair_teachers_v12_0701_0807_allquality_clean20/bc2_festival_lead_vs_dragapult_clean_teacher_w4.npz \
+  --deck logs/ladder_pool_0804_all/decks/41ffa7894f40_festival_lead_dominic_peel.csv \
+  --out /home/jie/Do/0_PTCG/submission/ablation_20260809_festival_pair_teacher_vs_dragapult.tar.gz
+```
+
+Local quality caveat:
+
+```text
+Festival vs Lopunny pair-teacher random: 186/200 = 0.930
+Festival vs Dragapult pair-teacher random: 180/200 = 0.900
+Both target matchups worsened badly versus W4 baseline, so do not treat them as
+score candidates unless the user explicitly wants Kaggle ablation.
+```
+
+Rule/plan code added:
+
+- `ptcg_rl/rule_overlay.py`
+  - new `strategy_plan`: broad exploratory explicit plan overlay.
+  - new `strategy_pair`: narrow pair overlay. After 300-game checks it is still
+    not submission-ready.
+- `main.py`
+  - packaged agent can read `rules.txt` or `PTCG_RULE_MODE` and apply the rule
+    overlay after NumPy policy/MCTS selection.
+- `tools/package_submission.py`
+  - new `--rules <mode>` writes `rules.txt` into the tarball.
+- `tools/eval_baseline_delta.py`
+  - new `--rules-entry NAME=<mode>` for paired A/B.
+- `tools/eval_rule_overlay_stats.py`
+  - new sequential trigger tracer for counting rule reasons in concrete
+    matchups.
+
+Kaggle/community notes:
+
+- Topic `724362` ("Top players’ methods, revealed by 30,000 games") suggests
+  the top end likely combines trained models with bounded search/RL, but the
+  comments also warn search only helps if state value is reliable. This matches
+  our MCTS/PPO issue: without a trustworthy value head, search can amplify bad
+  BC preferences.
+- Topic `708810` confirms inference is CPU-only with a 600 second total game
+  budget and roughly 1.6 vCPU/8GB RAM. Keep explicit rule/plan lightweight.
+- Public PTCG data/guide sources checked as seeds, not proof:
+  - Limitless decks overview: https://limitlesstcg.com/decks
+  - Limitless Marnie's Grimmsnarl overview: https://limitlesstcg.com/decks/329
+  - Limitless Crustle overview: https://limitlesstcg.com/decks/341
+  - Limitless Mega Lucario deck list example: https://limitlesstcg.com/decks/list/27700
+  - Limitless Crustle matchup stats: https://play.limitlesstcg.com/decks/crustle-dri/matchups?format=standard&rotation=2026&set=CRI
+- Real PTCG strategic direction inferred from those sources and local card IDs:
+  - Ogerpon: energy/draw engine; hard matchups may require partner/secondary
+    routes, not just repeated Teal Dance.
+  - Marnie: fast Grimmsnarl/Punk Up plus spread/disruption; simple "force
+    evolution" alone hurt local Ogerpon matchup.
+  - Lucario: route is Solrock/Lunatone/search/disruption into Mega Lucario or
+    Hariyama payoff, not single-step attacker preference.
+
+Rule probe results on ks:
+
+```text
+logs/rule_plan_20260809/strategy_plan_probe_summary.csv
+  Ogerpon5899 strategy_plan vs Crustle3cd: +0.025 (0.020 -> 0.045), not enough.
+  Marnie b8f strategy_plan vs Ogerpon5899: -0.060 (0.110 -> 0.050), bad.
+  Crustle3cd strategy_plan vs Lopunny b0: +0.010, too small.
+  Festival41 strategy_plan vs Lopunny: -0.085, bad.
+  Festival41 strategy_plan vs Dragapult: +0.050 in first seed only.
+  Lucario43d strategy_plan vs Marnie: +0.015, tiny.
+  Lucario43d strategy_plan vs Crustle: -0.095, bad.
+
+logs/rule_plan_20260809/strategy_pair_probe_summary.csv
+  Ogerpon5899 strategy_pair vs Crustle3cd: +0.025 in 200g, but unstable.
+  Crustle3cd strategy_pair vs Lopunny b0: +0.025 in 200g, but unstable.
+  Festival41 strategy_pair vs Dragapult: -0.055, remove from trusted rules.
+
+logs/rule_plan_20260809/ab_ogerpon5899_strategy_pair_narrow_vs_crustle3cd_g300.csv
+  narrowed Ogerpon pair rule: -0.023 (0.040 -> 0.017), not trusted.
+
+logs/rule_plan_20260809/ab_crustle3cd_strategy_pair_narrow_vs_lopunny_b0_g300.csv
+  narrowed Crustle pair rule: -0.020 (0.547 -> 0.527), not trusted.
+
+logs/rule_plan_20260809/triggers_ogerpon5899_strategy_pair_narrow_vs_crustle3cd_g100.log
+  Ogerpon rules triggered heavily:
+    pair:ogerpon_take_setup_over_blank_attack: 680
+    pair:ogerpon_attach_before_teal_dance_vs_crustle: 620
+  but WR stayed 5/100. This blocks bad attacks but does not construct a win
+  route. Do not submit rule-overlay builds yet.
+```
+
+Current interpretation:
+
+- The infrastructure for explicit rule/plan evaluation is now usable.
+- Current hand-written rules are not enough and should not be used for Kaggle
+  submission.
+- The next useful step is trace-level route synthesis: compare complete clean
+  win traces against normal losses, then convert the route into finite-state
+  plan guards with trigger counters. Single-action preferences are too weak.
 
 ## 2026-08-08 Aggressive Weak-Matchup Counter Work
 

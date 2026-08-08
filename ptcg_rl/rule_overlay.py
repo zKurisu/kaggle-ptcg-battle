@@ -25,6 +25,8 @@ RULE_MODES = (
     "targeted",
     "counter_plan",
     "counter_plan_aggressive",
+    "strategy_plan",
+    "strategy_pair",
 )
 
 MARNIE_IMPIDIMP = 646
@@ -42,6 +44,17 @@ TEAM_ROCKET_SPIDOPS = 401
 TEAM_ROCKET_MEWTWO_EX = 431
 TEAM_ROCKET_MIMIKYU = 434
 MEGA_LUCARIO_EX = 678
+LUCARIO_RIOLU_ASC = 677
+LUCARIO_MAKUHITA = 673
+LUCARIO_HARIYAMA = 674
+LUCARIO_LUNATONE = 675
+LUCARIO_SOLROCK = 676
+PREMIUM_POWER_PRO = 1141
+FIGHTING_GONG = 1142
+POKE_PAD = 1152
+ULTRA_BALL = 1121
+BOSS_ORDERS = 1182
+JUDGE = 1213
 
 MARNIE_LINE = {MARNIE_IMPIDIMP, MARNIE_MORGREM, MARNIE_GRIMMSNARL_EX}
 OGERPON_LINE = {OGERPON_EX}
@@ -57,6 +70,7 @@ MEGA_LUCARIO_LINE = {333, 673, 674, 675, 676, 677, MEGA_LUCARIO_EX, 1141, 1142, 
 DRAGAPULT_LINE = {119, 120, 121}
 ALAKAZAM_LINE = {109, 245, 742}
 MEGA_LOPUNNY_LINE = {65, 66, 306, 858, 849}
+MEGA_LOPUNNY_SIGNATURE = {306, 858, 849}
 FESTIVAL_LINE = {42, 89, 90, 93}
 KNOWN_EX_ATTACKERS = {
     OGERPON_EX,
@@ -146,6 +160,10 @@ def _visible_card_ids(player: dict) -> set[int]:
     return _zone_card_ids(player, "active", "bench", "discard")
 
 
+def _board_card_ids(player: dict) -> set[int]:
+    return _zone_card_ids(player, "active", "bench")
+
+
 def _has_energy_attach_available(options: list[dict]) -> bool:
     return any(_option_type(opt) == ATTACH for opt in options)
 
@@ -205,7 +223,7 @@ def _visible_matchup_flags(opp: dict) -> dict[str, bool]:
         "lucario": active in MEGA_LUCARIO_LINE or bool(visible & MEGA_LUCARIO_LINE),
         "dragapult": active in DRAGAPULT_LINE or bool(visible & DRAGAPULT_LINE),
         "alakazam": active in ALAKAZAM_LINE or bool(visible & ALAKAZAM_LINE),
-        "lopunny": active in MEGA_LOPUNNY_LINE or bool(visible & MEGA_LOPUNNY_LINE),
+        "lopunny": active in MEGA_LOPUNNY_SIGNATURE or bool(visible & MEGA_LOPUNNY_SIGNATURE),
         "festival": active in FESTIVAL_LINE or bool(visible & FESTIVAL_LINE),
     }
 
@@ -371,6 +389,215 @@ def _counter_guard_overlay(
     return None
 
 
+def _strategy_plan_overlay(
+    *,
+    plan: DeckPlan | None,
+    obs: dict,
+    options: list[dict],
+    chosen_type: int,
+    chosen_card: int,
+    context: int,
+    turn: int,
+    turn_action_count: int,
+    my_active: int,
+    my_bench: set[int],
+    me: dict,
+    opp: dict,
+) -> RuleDecision | None:
+    """Matchup-aware route gates derived from trace contrasts and public guides.
+
+    This mode is intentionally more opinionated than ``counter_plan``. It is a
+    probe for explicit game plans: force core setup, then switch routes in known
+    weak matchups where pure BC repeatedly takes the wrong line.
+    """
+    if not plan:
+        return None
+
+    flags = _visible_matchup_flags(opp)
+    opp_active = _active_card_id(opp)
+    my_board = _board_card_ids(me)
+
+    # Keep opening active/bench choices coherent. This is where an otherwise
+    # good model can lose the whole route before it has a normal action turn.
+    if context in (3, 4):
+        if flags["crustle"]:
+            non_ex_counters = (set(plan.secondary_attackers) | set(plan.engine_cards)) - KNOWN_EX_ATTACKERS
+            pick = _first_card_any_type(obs, options, non_ex_counters)
+            if pick is not None and chosen_card in KNOWN_EX_ATTACKERS:
+                return RuleDecision([pick], "strategy:non_ex_open_vs_crustle")
+        if turn <= 4:
+            setup = set(plan.setup_basics) | set(plan.engine_cards)
+            pick = _first_card_any_type(obs, options, setup)
+            if pick is not None and chosen_card not in setup:
+                return RuleDecision([pick], "strategy:coherent_opening_piece")
+
+    # Stage/evolution decks should not spend their first real turns on generic
+    # draw/attach/end when the core evolution is directly legal.
+    if turn <= 12 and plan.evolution_chain and chosen_type in (PLAY, ATTACH, ABILITY, END):
+        evo = _first_card_tag(plan, obs, options, EVOLVE, set(plan.evolution_chain))
+        if evo is not None:
+            return RuleDecision([evo], "strategy:force_core_evolution")
+
+    if plan.archetype == "Teal Mask Ogerpon" and flags["crustle"]:
+        # The clean-win contrast did not show "more Ogerpon attacks"; it showed
+        # more secondary/search route construction. Do that before repeated Teal
+        # Dance loops when Crustle is already visible.
+        secondary_route = {756, 1071, 272}
+        route_cards = secondary_route | {ULTRA_BALL}
+        route_ready = bool(my_board & secondary_route)
+        route_pick = _first_card_by_types(obs, options, route_cards, (PLAY, ABILITY))
+        if not route_ready and route_pick is not None and chosen_card not in route_cards:
+            if chosen_type in (ABILITY, ATTACH, END, PLAY):
+                return RuleDecision([route_pick], "strategy:ogerpon_build_secondary_vs_crustle")
+        if my_active == OGERPON_EX and opp_active == CRUSTLE and chosen_type == ATTACK:
+            retreats = _find_type(options, RETREAT)
+            if retreats and bool(my_bench & secondary_route):
+                return RuleDecision([retreats[0]], "strategy:ogerpon_pivot_off_crustle")
+            if route_pick is not None and turn_action_count <= 8:
+                return RuleDecision([route_pick], "strategy:ogerpon_no_primary_attack_vs_crustle")
+            pick = _first_non_attack_tempo(obs, options, avoid_cards={OGERPON_EX})
+            if pick is not None and _option_type(options[pick]) != END:
+                return RuleDecision([pick], "strategy:ogerpon_take_setup_over_blank_attack")
+        if chosen_type == ABILITY and chosen_card == OGERPON_EX:
+            attaches = _find_type(options, ATTACH)
+            if attaches:
+                return RuleDecision([attaches[0]], "strategy:ogerpon_attach_before_teal_dance_vs_crustle")
+
+    if plan.archetype == "Marnie Grimmsnarl" and flags["ogerpon"]:
+        # Public Marnie guides and local losses agree on this: the deck must
+        # become a damage-spread engine quickly. Do not drift into utility setup
+        # before the Marnie line and Punk Up are online.
+        if turn <= 10 and MARNIE_IMPIDIMP not in my_board:
+            impidimp = _first_exact_card(obs, options, PLAY, MARNIE_IMPIDIMP)
+            if impidimp is not None and chosen_card != MARNIE_IMPIDIMP:
+                return RuleDecision([impidimp], "strategy:marnie_find_impidimp_vs_ogerpon")
+        if turn <= 12:
+            if my_active == MARNIE_IMPIDIMP:
+                morgrem = _first_exact_card(obs, options, EVOLVE, MARNIE_MORGREM)
+                if morgrem is not None and chosen_card != MARNIE_MORGREM:
+                    return RuleDecision([morgrem], "strategy:marnie_morgrem_vs_ogerpon")
+            if my_active == MARNIE_MORGREM:
+                grimmsnarl = _first_exact_card(obs, options, EVOLVE, MARNIE_GRIMMSNARL_EX)
+                if grimmsnarl is not None and chosen_card != MARNIE_GRIMMSNARL_EX:
+                    return RuleDecision([grimmsnarl], "strategy:marnie_grimmsnarl_vs_ogerpon")
+        punk_up = _first_exact_card(obs, options, ABILITY, MARNIE_GRIMMSNARL_EX)
+        if punk_up is not None and chosen_type not in (ATTACK,):
+            return RuleDecision([punk_up], "strategy:marnie_punk_up_vs_ogerpon")
+        if MARNIE_GRIMMSNARL_EX in my_board and turn_action_count >= 4 and chosen_type in (END, PLAY, ABILITY):
+            support_engine = _first_card_by_types(obs, options, {MUNKIDORI, 103, 104, SPIKEMUTH_GYM}, (EVOLVE, PLAY, ABILITY))
+            if support_engine is not None:
+                return RuleDecision([support_engine], "strategy:marnie_spread_engine_vs_ogerpon")
+            attacks = _find_type(options, ATTACK)
+            if attacks and not _has_energy_attach_available(options):
+                return RuleDecision([attacks[0]], "strategy:marnie_pressure_after_setup")
+
+    if plan.archetype == "Mega Lucario" and turn <= 10:
+        # Official Mega Lucario guidance is a route, not a single attacker:
+        # assemble Solrock/Lunatone, use support/search, and only then cash in
+        # with Mega Lucario/Hariyama.
+        if LUCARIO_LUNATONE not in my_board:
+            lunatone = _first_exact_card(obs, options, PLAY, LUCARIO_LUNATONE)
+            if lunatone is not None and chosen_card != LUCARIO_LUNATONE:
+                return RuleDecision([lunatone], "strategy:lucario_assemble_lunatone")
+        if LUCARIO_SOLROCK not in my_board:
+            solrock = _first_exact_card(obs, options, PLAY, LUCARIO_SOLROCK)
+            if solrock is not None and chosen_card != LUCARIO_SOLROCK:
+                return RuleDecision([solrock], "strategy:lucario_assemble_solrock")
+        lunar_cycle = _first_exact_card(obs, options, ABILITY, LUCARIO_LUNATONE)
+        if lunar_cycle is not None and chosen_type in (END, PLAY, ATTACH, ATTACK):
+            return RuleDecision([lunar_cycle], "strategy:lucario_lunar_cycle_before_commit")
+        search = _first_card_by_types(obs, options, {FIGHTING_GONG, POKE_PAD, ULTRA_BALL}, (PLAY,))
+        if search is not None and chosen_type in (END, ATTACK):
+            return RuleDecision([search], "strategy:lucario_search_before_commit")
+        if LUCARIO_MAKUHITA in my_board:
+            hariyama = _first_exact_card(obs, options, EVOLVE, LUCARIO_HARIYAMA)
+            if hariyama is not None and chosen_type in (END, PLAY, ATTACH, ABILITY):
+                return RuleDecision([hariyama], "strategy:lucario_hariyama_disrupt")
+        if MEGA_LUCARIO_EX in my_board:
+            power_pro = _first_exact_card(obs, options, PLAY, PREMIUM_POWER_PRO)
+            if power_pro is not None and chosen_type in (END, ATTACK):
+                return RuleDecision([power_pro], "strategy:lucario_power_pro_before_attack")
+
+    if plan.archetype in ("Dragapult", "Alakazam", "Cynthia Garchomp", "Festival Lead", "Crustle Wall"):
+        # These are mostly setup-critical archetypes in our pool. Keep their
+        # explicit plan narrow until pair-specific trace rules are added.
+        if turn <= 10 and plan.evolution_chain and chosen_type in (END, PLAY, ATTACH, ABILITY):
+            evo = _first_card_tag(plan, obs, options, EVOLVE, set(plan.evolution_chain))
+            if evo is not None:
+                return RuleDecision([evo], f"strategy:{plan.archetype.lower().replace(' ', '_')}_evolve")
+        if plan.archetype == "Crustle Wall" and flags["lopunny"]:
+            crustle = _first_exact_card(obs, options, EVOLVE, CRUSTLE)
+            if crustle is not None and chosen_card != CRUSTLE:
+                return RuleDecision([crustle], "strategy:crustle_wall_online_vs_lopunny")
+
+    if chosen_type == END:
+        for opt_type in (EVOLVE, ABILITY, ATTACH, ATTACK):
+            candidates = _find_type(options, opt_type)
+            if candidates:
+                return RuleDecision([candidates[0]], f"strategy:no_early_end:{opt_type}")
+
+    return None
+
+
+def _strategy_pair_overlay(
+    *,
+    plan: DeckPlan | None,
+    obs: dict,
+    options: list[dict],
+    chosen_type: int,
+    chosen_card: int,
+    context: int,
+    turn: int,
+    turn_action_count: int,
+    my_active: int,
+    my_bench: set[int],
+    me: dict,
+    opp: dict,
+) -> RuleDecision | None:
+    """Narrow pair rules that passed the first A/B direction check.
+
+    This mode is safer than ``strategy_plan``: it only applies to visible
+    matchups where the broad plan probe improved local win rate. Pair rules are
+    still experimental, but they should not fire in unrelated ladder games.
+    """
+    if not plan:
+        return None
+
+    flags = _visible_matchup_flags(opp)
+    opp_active = _active_card_id(opp)
+    my_board = _board_card_ids(me)
+
+    if plan.archetype == "Teal Mask Ogerpon" and flags["crustle"]:
+        secondary_route = {756, 1071, 272}
+        route_cards = secondary_route | {ULTRA_BALL}
+        route_ready = bool(my_board & secondary_route)
+        route_pick = _first_card_by_types(obs, options, route_cards, (PLAY, ABILITY))
+        if not route_ready and route_pick is not None and chosen_card not in route_cards:
+            if chosen_type in (ABILITY, ATTACH, END, PLAY):
+                return RuleDecision([route_pick], "pair:ogerpon_build_secondary_vs_crustle")
+        if chosen_type == ABILITY and chosen_card == OGERPON_EX:
+            attaches = _find_type(options, ATTACH)
+            if attaches:
+                return RuleDecision([attaches[0]], "pair:ogerpon_attach_before_teal_dance_vs_crustle")
+        if my_active == OGERPON_EX and opp_active == CRUSTLE and chosen_type == ATTACK:
+            retreats = _find_type(options, RETREAT)
+            if retreats and bool(my_bench & secondary_route):
+                return RuleDecision([retreats[0]], "pair:ogerpon_pivot_off_crustle")
+            if route_pick is not None and turn_action_count <= 8:
+                return RuleDecision([route_pick], "pair:ogerpon_no_primary_attack_vs_crustle")
+            pick = _first_non_attack_tempo(obs, options, avoid_cards={OGERPON_EX})
+            if turn_action_count <= 5 and pick is not None and _option_type(options[pick]) != END:
+                return RuleDecision([pick], "pair:ogerpon_take_setup_over_blank_attack")
+
+    if plan.archetype == "Crustle Wall" and flags["lopunny"]:
+        if turn <= 10 and chosen_type in (END, PLAY, ATTACH, ABILITY):
+            crustle = _first_exact_card(obs, options, EVOLVE, CRUSTLE)
+            if crustle is not None and chosen_card != CRUSTLE:
+                return RuleDecision([crustle], "pair:crustle_wall_online_vs_lopunny")
+
+    return None
+
+
 def apply_rule_overlay(obs: dict, action: list[int], deck: list[int] | None = None,
                        *, mode: str = "conservative") -> RuleDecision:
     """Return a guarded action for local experiments.
@@ -432,6 +659,42 @@ def apply_rule_overlay(obs: dict, action: list[int], deck: list[int] | None = No
             turn_action_count=turn_action_count,
             my_active=my_active,
             my_bench=my_bench,
+            opp=opp,
+        )
+        if decision is not None:
+            return decision
+
+    if mode == "strategy_plan":
+        decision = _strategy_plan_overlay(
+            plan=plan,
+            obs=obs,
+            options=options,
+            chosen_type=chosen_type,
+            chosen_card=chosen_card,
+            context=context,
+            turn=turn,
+            turn_action_count=turn_action_count,
+            my_active=my_active,
+            my_bench=my_bench,
+            me=me,
+            opp=opp,
+        )
+        if decision is not None:
+            return decision
+
+    if mode == "strategy_pair":
+        decision = _strategy_pair_overlay(
+            plan=plan,
+            obs=obs,
+            options=options,
+            chosen_type=chosen_type,
+            chosen_card=chosen_card,
+            context=context,
+            turn=turn,
+            turn_action_count=turn_action_count,
+            my_active=my_active,
+            my_bench=my_bench,
+            me=me,
             opp=opp,
         )
         if decision is not None:

@@ -14,6 +14,7 @@ sys.path.insert(0, str(_REPO))
 
 from tools.eval_round_robin import (
     Entry,
+    RULE_MODES,
     clean_entry_name,
     has_cg_engine,
     load_entries,
@@ -215,6 +216,8 @@ def main() -> None:
     p.add_argument("--max-turns", type=int, default=700)
     p.add_argument("--progress-every", type=int, default=20)
     p.add_argument("--out-csv", default="logs/baseline_delta.csv")
+    p.add_argument("--rules-entry", action="append", default=[],
+                   help="experimental rule overlay for one named entry, e.g. candidate=strategy_plan")
     args = p.parse_args()
 
     if not has_cg_engine():
@@ -222,12 +225,21 @@ def main() -> None:
 
     opp_specs, weights = opponent_specs(args)
     specs = [args.baseline, *args.candidate, *opp_specs]
+    rules_by_name = {}
+    for spec in args.rules_entry:
+        if "=" not in spec:
+            p.error(f"--rules-entry must be NAME=<mode>, where mode is one of: {', '.join(RULE_MODES)}")
+        name, mode = spec.split("=", 1)
+        if mode not in RULE_MODES:
+            p.error(f"--rules-entry mode must be one of: {', '.join(RULE_MODES)}")
+        rules_by_name[clean_entry_name(name)] = mode
     entries = load_entries(
         specs,
         args.deck,
         include_random=False,
         registry=args.registry,
         skip_bad_entries=args.skip_bad_entries,
+        rules_by_name=rules_by_name,
     )
     baseline = entries[0]
     candidates = entries[1:1 + len(args.candidate)]

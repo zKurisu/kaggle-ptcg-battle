@@ -473,8 +473,8 @@ def main() -> None:
                         help="BCE loss multiplier for --step-plan labels")
     parser.add_argument("--step-plan-teacher-forcing", type=float, default=0.0,
                         help=(
-                            "probability of feeding the step-plan label to the hierarchical scorer "
-                            "during training; inference still uses predicted plans"
+                            "probability of feeding available trajectory/step-plan labels to the "
+                            "hierarchical scorer during training; inference still uses predicted plans"
                         ))
     parser.add_argument("--history-k", type=int, default=0,
                         help="condition the policy on this many previous own decisions from the same game; 0 disables")
@@ -612,13 +612,12 @@ def main() -> None:
         args.trajectory_csv,
         args.trajectory_target,
     )
-    plan_target_dim = len([x for x in args.trajectory_target if str(x).strip()])
-    if plan_target_dim and not args.trajectory_csv:
+    trajectory_target_dim = len([x for x in args.trajectory_target if str(x).strip()])
+    plan_target_dim = trajectory_target_dim
+    if trajectory_target_dim and not args.trajectory_csv:
         raise ValueError("--trajectory-target requires at least one --trajectory-csv")
-    if args.step_plan and plan_target_dim > 0:
-        raise ValueError("--step-plan and --trajectory-target use the same plan head; train them separately")
     if args.step_plan:
-        plan_target_dim = len(PLAN_LABELS)
+        plan_target_dim += len(PLAN_LABELS)
     if args.trajectory_target_loss_weight > 0 and not args.trajectory_target:
         raise ValueError("--trajectory-target-loss-weight > 0 requires at least one --trajectory-target")
     if args.step_plan_loss_weight > 0 and not args.step_plan:
@@ -678,7 +677,7 @@ def main() -> None:
         trajectory_default_weight=args.trajectory_missing_weight,
         trajectory_missing=args.trajectory_missing_policy,
         trajectory_targets=trajectory_targets,
-        trajectory_target_dim=plan_target_dim,
+        trajectory_target_dim=trajectory_target_dim,
         archetype=args.archetype,
         step_plan=args.step_plan,
         history_k=history_k,
@@ -797,6 +796,7 @@ def main() -> None:
         f"trajectory_weight={args.trajectory_weight or 'none'} "
         f"trajectory_target={args.trajectory_target or 'none'} "
         f"trajectory_target_loss_weight={args.trajectory_target_loss_weight} "
+        f"trajectory_target_dim={trajectory_target_dim} plan_target_dim={plan_target_dim} "
         f"step_plan={args.step_plan} step_plan_labels={PLAN_LABELS if args.step_plan else 'none'} "
         f"step_plan_loss/teacher_forcing={args.step_plan_loss_weight}/{args.step_plan_teacher_forcing} "
         f"trajectory_base/cap/missing={args.trajectory_base_weight}/{args.trajectory_weight_cap}/"

@@ -6,6 +6,77 @@ import torch.nn.functional as F
 from .data import BCBatch
 
 
+def _plan_logits(model, h: torch.Tensor) -> torch.Tensor | None:
+    if not getattr(model, "plan_dim", 0):
+        return None
+    return model.plan_logits(h)
+
+
+def _plan_parts(batch: BCBatch, logits: torch.Tensor) -> list[tuple[str, torch.Tensor, torch.Tensor, slice]]:
+    """Return trajectory-level and step-level plan targets aligned to logits.
+
+    The plan head can now be a concatenation of coarse game strategy targets
+    followed by per-decision step-plan labels. Keeping this alignment in one
+    helper avoids silently training only one half of the plan vector.
+    """
+    parts: list[tuple[str, torch.Tensor, torch.Tensor, slice]] = []
+    offset = 0
+    dim = int(logits.shape[1])
+    if batch.trajectory_target.numel() > 0:
+        n = min(int(batch.trajectory_target.shape[1]), max(0, dim - offset))
+        if n > 0:
+            parts.append((
+                "trajectory",
+                batch.trajectory_target[:, :n],
+                batch.trajectory_mask[:, :n],
+                slice(offset, offset + n),
+            ))
+        offset += int(batch.trajectory_target.shape[1])
+    if batch.plan_step_target.numel() > 0:
+        n = min(int(batch.plan_step_target.shape[1]), max(0, dim - offset))
+        if n > 0:
+            parts.append((
+                "step",
+                batch.plan_step_target[:, :n],
+                batch.plan_step_mask[:, :n],
+                slice(offset, offset + n),
+            ))
+    return parts
+
+
+def _combined_plan_override(
+    model,
+    h: torch.Tensor,
+    batch: BCBatch,
+    *,
+    teacher_forcing: float,
+) -> torch.Tensor | None:
+    if (
+        float(teacher_forcing) <= 0
+        or not getattr(model, "hierarchical_plan", False)
+        or not getattr(model, "plan_dim", 0)
+    ):
+        return None
+    logits = _plan_logits(model, h)
+    if logits is None:
+        return None
+    pred_plan = torch.sigmoid(logits)
+    target = pred_plan.detach().clone()
+    mask = torch.zeros_like(pred_plan)
+    for _, part_target, part_mask, sl in _plan_parts(batch, logits):
+        target[:, sl] = torch.where(part_mask > 0, part_target, target[:, sl])
+        mask[:, sl] = torch.maximum(mask[:, sl], part_mask)
+    if not bool((mask > 0).any()):
+        return None
+    if float(teacher_forcing) >= 1.0:
+        return target
+    use_teacher = (
+        torch.rand(pred_plan.shape[0], 1, dtype=pred_plan.dtype, device=pred_plan.device)
+        < float(teacher_forcing)
+    ).to(dtype=pred_plan.dtype)
+    return use_teacher * target + (1.0 - use_teacher) * pred_plan
+
+
 def _set_aux_loss(
     model,
     h: torch.Tensor,
@@ -66,23 +137,12 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
     picked_sum = torch.zeros(bsz, model._oe, device=device)
     total = torch.tensor(0.0, device=device)
     weight_total = torch.tensor(0.0, device=device)
-    plan_override = None
-    if (
-        float(plan_teacher_forcing) > 0
-        and getattr(model, "hierarchical_plan", False)
-        and batch.plan_step_mask.numel() > 0
-        and bool((batch.plan_step_mask > 0).any())
-    ):
-        pred_plan = torch.sigmoid(model.plan_logits(h))
-        target_plan = torch.where(batch.plan_step_mask > 0, batch.plan_step_target, pred_plan)
-        if float(plan_teacher_forcing) >= 1.0:
-            plan_override = target_plan
-        else:
-            use_teacher = (
-                torch.rand(bsz, 1, dtype=pred_plan.dtype, device=device)
-                < float(plan_teacher_forcing)
-            ).to(dtype=pred_plan.dtype)
-            plan_override = use_teacher * target_plan + (1.0 - use_teacher) * pred_plan
+    plan_override = _combined_plan_override(
+        model,
+        h,
+        batch,
+        teacher_forcing=plan_teacher_forcing,
+    )
 
     for step in range(batch.targets.shape[1]):
         stop_ok = step >= batch.min_count
@@ -128,24 +188,31 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
             value_loss = value_loss / (batch.sample_weight * batch.outcome_mask).sum().clamp(min=1.0)
     if value_loss is not None:
         loss = loss + float(value_weight) * value_loss
-    if plan_weight > 0 and batch.trajectory_mask.numel() > 0 and bool((batch.trajectory_mask > 0).any()):
-        logits = model.plan_logits(h)
-        elem = F.binary_cross_entropy_with_logits(
-            logits,
-            batch.trajectory_target,
-            reduction="none",
-        )
-        plan_weight_rows = batch.sample_weight.unsqueeze(1) * batch.trajectory_mask
-        plan_loss = (elem * plan_weight_rows).sum() / plan_weight_rows.sum().clamp(min=1.0)
-        loss = loss + float(plan_weight) * plan_loss
-    if step_plan_weight > 0 and batch.plan_step_mask.numel() > 0 and bool((batch.plan_step_mask > 0).any()):
-        logits = model.plan_logits(h)
-        elem = F.binary_cross_entropy_with_logits(
-            logits,
-            batch.plan_step_target,
-            reduction="none",
-        )
-        plan_weight_rows = batch.sample_weight.unsqueeze(1) * batch.plan_step_mask
-        plan_loss = (elem * plan_weight_rows).sum() / plan_weight_rows.sum().clamp(min=1.0)
-        loss = loss + float(step_plan_weight) * plan_loss
+    logits = _plan_logits(model, h) if (plan_weight > 0 or step_plan_weight > 0) else None
+    if logits is not None:
+        parts = _plan_parts(batch, logits)
+        if plan_weight > 0:
+            traj = next((part for part in parts if part[0] == "trajectory"), None)
+            if traj is not None:
+                _, target, mask_part, sl = traj
+            else:
+                target = mask_part = None
+                sl = slice(0, 0)
+            if target is not None and bool((mask_part > 0).any()):
+                elem = F.binary_cross_entropy_with_logits(logits[:, sl], target, reduction="none")
+                plan_weight_rows = batch.sample_weight.unsqueeze(1) * mask_part
+                plan_loss = (elem * plan_weight_rows).sum() / plan_weight_rows.sum().clamp(min=1.0)
+                loss = loss + float(plan_weight) * plan_loss
+        if step_plan_weight > 0:
+            step = next((part for part in parts if part[0] == "step"), None)
+            if step is not None:
+                _, target, mask_part, sl = step
+            else:
+                target = mask_part = None
+                sl = slice(0, 0)
+            if target is not None and bool((mask_part > 0).any()):
+                elem = F.binary_cross_entropy_with_logits(logits[:, sl], target, reduction="none")
+                plan_weight_rows = batch.sample_weight.unsqueeze(1) * mask_part
+                plan_loss = (elem * plan_weight_rows).sum() / plan_weight_rows.sum().clamp(min=1.0)
+                loss = loss + float(step_plan_weight) * plan_loss
     return loss

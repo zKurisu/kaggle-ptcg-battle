@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 11:45 Asia/Shanghai.
+Last updated: 2026-08-08 11:55 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -4345,7 +4345,7 @@ Use `clean_teacher` rows as high-weight strategy data. Treat
 `mostly_opponent_brick` rows as low-weight evidence or exclude them from success
 BC subsets.
 
-Active remote teacher scan:
+Remote teacher scan completed:
 
 ```text
 script: /tmp/run_v12_matchup_teacher_scan_20260808.sh
@@ -4358,17 +4358,53 @@ score bands: 1200+, 1100-1199, 1000-1099, 900-999
 archetypes:
   Alakazam, Crustle Wall, Dragapult, Festival Lead, Marnie Grimmsnarl,
   Mega Lopunny, Mega Lucario, Teal Mask Ogerpon, Team Rocket Mewtwo
+status:
+  completed, pairs=81, teacher rows=1756
 ```
 
-At the last update it was still running, around `200/656` files scanned, and
-healthy. Monitor:
+Key first finding:
+
+- `Teal Mask Ogerpon=>Crustle Wall` is weak overall in the 900+ v12 corpus:
+  `82/458 = 17.9%`.
+- The best same-archetype teacher is not `5899c772bace`. It is
+  `2a5072194fdf / James Cox & Henry Chao`: `61/150 = 40.7%`, about 74% of all
+  Ogerpon wins into Crustle.
+- Initial strict quality logic wrongly marked these wins as mostly not clean
+  because it required primary Ogerpon/no-early-end and treated Crustle no-attack
+  as brick. This was fixed by tracking secondary/setup/engine routes and making
+  no-attack/early-end diagnostic rather than hard failure for wall/control
+  matchups.
+- With the revised quality gate, `2a5072194fdf / James Cox & Henry Chao` has
+  `58/61` clean wins and `brick_share=0.049` into Crustle. This is a strong
+  teacher seed for Ogerpon-vs-Crustle strategy data.
+
+New commits after the first teacher-tool commit:
+
+```text
+54251d5 Emit per-game teacher quality labels
+5c486f0 Track alternate strategy routes in teacher quality
+bf4cb5c Relax wall matchup quality gates
+```
+
+Active remote paired quality audit:
+
+```text
+script: /tmp/run_v12_matchup_quality_audit_20260808.sh
+runner log: logs/v12_matchup_teachers_20260808/quality_audit.runner.log
+out dir: logs/v12_matchup_teachers_20260808/quality_audit
+status at last update:
+  pair 1/18 Teal Mask Ogerpon=>Crustle Wall completed
+  pair 2/18 Marnie Grimmsnarl=>Teal Mask Ogerpon running
+```
+
+Monitor:
 
 ```bash
-ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/v12_matchup_teachers_20260808.runner.log'
-ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "find_matchup_teachers|run_v12_matchup_teacher_scan|run_matchup_quality_audits"'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/v12_matchup_teachers_20260808/quality_audit.runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "run_v12_matchup_quality_audit|run_matchup_quality_audits|build_trajectory_targets|audit_teacher_win_quality"'
 ```
 
-After the scan completes, run paired win-quality audits. Suggested first command:
+The running quality audit command is:
 
 ```bash
 python3 tools/run_matchup_quality_audits.py \
@@ -4383,8 +4419,13 @@ python3 tools/run_matchup_quality_audits.py \
   --max-pair-wr 0.45 \
   --min-pair-games 80 \
   --min-pair-wins 1 \
+  --min-clean-wins 3 \
+  --min-clean-share 0.15 \
+  --max-brick-share 0.55 \
   --limit 18 \
   --top 30 \
+  --progress-every 12 \
+  --force \
   --out-dir logs/v12_matchup_teachers_20260808/quality_audit
 ```
 

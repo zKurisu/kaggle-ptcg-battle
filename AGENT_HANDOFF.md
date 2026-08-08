@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-09 00:20 Asia/Shanghai.
+Last updated: 2026-08-09 00:43 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -98,6 +98,91 @@ Interpretation:
   trajectory-level invariants from these wins: setup milestones, cards held or
   preserved, Crustle engine disruption windows, prize-race timing, and only
   then use them as rules/options/reward shaping/plan labels.
+
+### Follow-Up: Pair Teacher And Contrast Mining
+
+`tools/mine_strategy_trajectories.py` now supports contrast labels:
+
+```text
+--label-csv PATH
+--positive-condition clean_win=1
+--negative-condition 'outcome=loss&opponent_normal=1'
+--label-missing-policy drop
+```
+
+Use this to compare clean wins against normal losses, not generic wins against
+generic losses. The tool writes `contrast_group` into `game_trajectories.csv`
+and computes metric/event/ngram gaps only between positive and negative groups.
+
+Remote Ogerpon vs Crustle contrast:
+
+```text
+out: logs/strategy_contrast_20260809/ogerpon_vs_crustle_clean_vs_normal_loss
+games: 615 total, 104 clean-win positives, 451 normal-loss negatives
+```
+
+Initial Ogerpon/Crustle interpretation:
+
+- Clean wins were not "Ogerpon active earlier and hit harder." Ogerpon active
+  turns were much lower in positives.
+- Clean wins overrepresent secondary route signals: Mega Kangaskhan ex,
+  Meowth ex, Ultra Ball, and attack-to-hand windows.
+- Losses overrepresent repeated Ogerpon ability/attach loops and Crustle being
+  active/on-board for longer. The likely counter-plan is "route around Crustle
+  with secondary attackers and close faster," not pure Ogerpon pressure.
+
+Remote all-pair contrast runner:
+
+```text
+script: /tmp/run_strategy_contrast_all_clean20_20260809.sh
+log: logs/strategy_contrast_20260809/all_clean20/runner.nohup.log
+out root: logs/strategy_contrast_20260809/all_clean20
+expected jobs: 17 weak pairs with clean_games >= 20
+summary when complete: logs/strategy_contrast_20260809/all_clean20/strategy_seed_summary.csv
+```
+
+At the time of this note, 15/17 pair contrast outputs had finished; the slow
+remaining jobs were `Marnie Grimmsnarl -> Teal Mask Ogerpon` and
+`Alakazam -> Team Rocket Mewtwo` because their corpora are large.
+
+Pair-teacher evaluation was also run:
+
+```text
+script: /tmp/run_pair_teacher_eval_20260809.sh
+log: logs/pair_teacher_eval_20260809/runner.nohup.log
+random: logs/pair_teacher_eval_20260809/pair_teacher_random_g200.csv
+target summary: logs/pair_teacher_eval_20260809/pair_teacher_target_matchup_summary.csv
+```
+
+Completed pair-teacher results all got worse against their intended target:
+
+```text
+Marnie vs Ogerpon:       baseline 0.110 -> teacher 0.005, delta -0.105
+Crustle vs Lopunny:      baseline 0.400 -> teacher 0.255, delta -0.145
+Festival vs Lopunny:     baseline 0.260 -> teacher 0.090, delta -0.170
+TR Mewtwo vs Lopunny:    baseline 0.350 -> teacher 0.150, delta -0.200
+Festival vs Dragapult:   baseline 0.565 -> teacher 0.160, delta -0.405
+```
+
+This confirms the pure Ogerpon/Crustle result across several archetypes: clean
+success trajectory imitation is not a viable standalone improvement method.
+Do not spend more GPU time on pure pair-teacher BC unless it is only used as a
+diagnostic or as input to explicit rule/plan extraction.
+
+The counter-mixture runner ended with zero checkpoints:
+
+```text
+log: logs/counter_mixture_20260808/post_eval_watcher.nohup.log
+result: checkpoints=0/8; post-eval aborted
+```
+
+Treat that path as obsolete for now. The next actionable direction is:
+
+1. Read `strategy_seed_summary.csv` and per-pair `metric_gaps.csv` /
+   `event_gaps.csv` / `ngram_gaps.csv`.
+2. Convert repeated high-confidence signals into explicit plan states and
+   guarded rules.
+3. Evaluate rules/options on W4 baselines before any new BC/RL training.
 
 Code added locally and synced to `ks`:
 

@@ -79,6 +79,7 @@ PRESSING_TYPES = {PLAY, ATTACH, EVOLVE, ABILITY, RETREAT, ATTACK}
 
 GAME_FIELDS = [
     "game_key",
+    "contrast_group",
     "episode_id",
     "player_index",
     "archetype",
@@ -197,11 +198,128 @@ def fnum(value, default: float = 0.0) -> float:
         return default
 
 
+def truthy(value) -> bool:
+    text = str(value).strip().lower()
+    if text in {"", "0", "0.0", "false", "no", "none", "nan"}:
+        return False
+    try:
+        return float(text) != 0.0
+    except Exception:
+        return True
+
+
 def inum(value, default: int = 0) -> int:
     try:
         return int(round(float(value)))
     except Exception:
         return default
+
+
+def parse_game_key(value: str) -> tuple[str, str] | None:
+    value = str(value or "").strip()
+    if not value or ":" not in value:
+        return None
+    episode, player = value.split(":", 1)
+    episode = episode.strip()
+    player = player.strip()
+    if not episode or player == "":
+        return None
+    return episode, player
+
+
+def row_key(row: dict) -> tuple[str, str] | None:
+    parsed = parse_game_key(str(row.get("game_key", "")))
+    if parsed:
+        return parsed
+    episode = str(row.get("episode_id", "")).strip()
+    player = str(row.get("player_index", "")).strip()
+    if episode and player != "":
+        return episode, player
+    return None
+
+
+def read_label_rows(paths: list[str]) -> dict[tuple[str, str], dict[str, str]]:
+    labels: dict[tuple[str, str], dict[str, str]] = {}
+    for path in paths:
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                key = row_key(row)
+                if key is None:
+                    continue
+                dst = labels.setdefault(key, {})
+                for col, value in row.items():
+                    if col is None:
+                        continue
+                    dst[str(col)] = value
+    return labels
+
+
+def attach_labels(row: dict, labels: dict[tuple[str, str], dict[str, str]]) -> bool:
+    key = row_key(row)
+    if key is None or key not in labels:
+        return False
+    for col, value in labels[key].items():
+        prefixed = f"label_{col}"
+        row[prefixed] = value
+        if col not in row:
+            row[col] = value
+    return True
+
+
+def condition_value(row: dict, key: str):
+    key = key.strip()
+    if key in row:
+        return row.get(key, "")
+    prefixed = f"label_{key}"
+    return row.get(prefixed, "")
+
+
+def condition_matches(row: dict, expr: str) -> bool:
+    expr = str(expr or "").strip()
+    if not expr:
+        return True
+    if "|" in expr:
+        return any(condition_matches(row, part) for part in expr.split("|"))
+    if "&" in expr:
+        return all(condition_matches(row, part) for part in expr.split("&"))
+    if expr.startswith("!"):
+        return not condition_matches(row, expr[1:])
+    for op in (">=", "<=", "!=", "==", "=", ">", "<"):
+        if op not in expr:
+            continue
+        left, right = expr.split(op, 1)
+        left_val = condition_value(row, left)
+        right = right.strip()
+        if op == "=":
+            op = "=="
+        try:
+            lv = float(left_val)
+            rv = float(right)
+            if op == "==":
+                return lv == rv
+            if op == "!=":
+                return lv != rv
+            if op == ">=":
+                return lv >= rv
+            if op == "<=":
+                return lv <= rv
+            if op == ">":
+                return lv > rv
+            if op == "<":
+                return lv < rv
+        except Exception:
+            lv_s = str(left_val).strip().lower()
+            rv_s = right.strip().lower()
+            if op == "==":
+                return lv_s == rv_s
+            if op == "!=":
+                return lv_s != rv_s
+            raise ValueError(f"non-numeric condition cannot use {op!r}: {expr!r}")
+    return truthy(condition_value(row, expr))
+
+
+def any_condition(row: dict, specs: list[str]) -> bool:
+    return any(condition_matches(row, spec) for spec in specs)
 
 
 def outcome_at(data: dict[str, np.ndarray], i: int) -> str:
@@ -552,14 +670,14 @@ def mean(values: list[float]) -> float:
 
 
 def metric_gap_rows(game_rows: list[dict], min_games: int) -> list[dict]:
-    wins = [r for r in game_rows if r["outcome"] == "win"]
-    losses = [r for r in game_rows if r["outcome"] == "loss"]
+    wins = [r for r in game_rows if r.get("contrast_group") == "positive"]
+    losses = [r for r in game_rows if r.get("contrast_group") == "negative"]
     if len(wins) < min_games or len(losses) < min_games:
         return []
     skip = {
         "game_key", "episode_id", "player_index", "archetype", "deck_sig", "team_name",
         "opponent_archetype", "opponent_deck_sig", "opponent_team_name", "outcome",
-        "first_token_sequence",
+        "contrast_group", "first_token_sequence",
     }
     metrics = []
     for key in game_rows[0]:
@@ -595,8 +713,8 @@ def event_gap_rows(
     min_games: int,
     min_rate_gap: float,
 ) -> list[dict]:
-    wins = [r for r in game_rows if r["outcome"] == "win"]
-    losses = [r for r in game_rows if r["outcome"] == "loss"]
+    wins = [r for r in game_rows if r.get("contrast_group") == "positive"]
+    losses = [r for r in game_rows if r.get("contrast_group") == "negative"]
     if len(wins) < min_games or len(losses) < min_games:
         return []
     win_keys = [r["game_key"] for r in wins]
@@ -726,6 +844,14 @@ def main() -> None:
     p.add_argument("--opponent-deck-sig", action="append", default=[])
     p.add_argument("--opponent-team-name", action="append", default=[])
     p.add_argument("--winner-only", action="store_true")
+    p.add_argument("--label-csv", action="append", default=[],
+                   help="optional per-game CSV keyed by game_key or episode_id/player_index; columns can be used in contrast conditions")
+    p.add_argument("--positive-condition", action="append", default=[],
+                   help="condition selecting positive games, e.g. clean_win=1. Repeat for OR. Default: outcome=win")
+    p.add_argument("--negative-condition", action="append", default=[],
+                   help="condition selecting negative games, e.g. outcome=loss&opponent_brick=0. Repeat for OR. Default: outcome=loss")
+    p.add_argument("--label-missing-policy", choices=["keep", "drop"], default="keep",
+                   help="when --label-csv is used, whether games missing labels are eligible for outcome-only grouping")
     p.add_argument("--track-card", action="append", default=[], help="CARD_ID or CARD_ID:label; repeats")
     p.add_argument("--track-opponent-card", action="append", default=[], help="opponent CARD_ID or CARD_ID:label; repeats")
     p.add_argument("--ngram", type=int, action="append", default=[3])
@@ -751,6 +877,7 @@ def main() -> None:
     if not paths:
         raise FileNotFoundError("no corpus .npz files found")
 
+    label_rows = read_label_rows(args.label_csv)
     groups: dict[tuple, list[tuple[dict[str, np.ndarray], int]]] = defaultdict(list)
     raw = kept = 0
     for path_i, path in enumerate(paths, 1):
@@ -786,6 +913,23 @@ def main() -> None:
         if args.limit_games and game_i > args.limit_games:
             break
         row, events, ngrams = summarize_game(key, indices, args, track_cards, track_opp_cards)
+        has_label = attach_labels(row, label_rows)
+        if args.label_csv and not has_label and args.label_missing_policy == "drop":
+            continue
+        if args.positive_condition:
+            positive = any_condition(row, args.positive_condition)
+        else:
+            positive = row["outcome"] == "win"
+        if args.negative_condition:
+            negative = any_condition(row, args.negative_condition)
+        else:
+            negative = row["outcome"] == "loss"
+        if positive and not negative:
+            row["contrast_group"] = "positive"
+        elif negative and not positive:
+            row["contrast_group"] = "negative"
+        else:
+            row["contrast_group"] = ""
         game_rows.append(row)
         event_by_game[row["game_key"]] = events
         ngram_by_game[row["game_key"]] = ngrams
@@ -793,6 +937,8 @@ def main() -> None:
     wins = sum(r["outcome"] == "win" for r in game_rows)
     losses = sum(r["outcome"] == "loss" for r in game_rows)
     draws = sum(r["outcome"] == "draw" for r in game_rows)
+    positives = sum(r.get("contrast_group") == "positive" for r in game_rows)
+    negatives = sum(r.get("contrast_group") == "negative" for r in game_rows)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -815,6 +961,10 @@ def main() -> None:
         ):
             if col not in dynamic_game_fields:
                 dynamic_game_fields.append(col)
+    extra_cols = sorted({k for r in game_rows for k in r if k not in dynamic_game_fields})
+    for col in extra_cols:
+        if col not in dynamic_game_fields:
+            dynamic_game_fields.append(col)
     write_csv(out / "game_trajectories.csv", game_rows, dynamic_game_fields)
 
     metric_rows = metric_gap_rows(game_rows, args.min_games)
@@ -831,6 +981,11 @@ def main() -> None:
     print(f"Filters: deck_sig={args.deck_sig} opponent_archetype={args.opponent_archetype} opponent_deck_sig={args.opponent_deck_sig}")
     print(f"Decisions kept: {kept}/{raw}")
     print(f"Games: {len(game_rows)} wins={wins} losses={losses} draws={draws} wr={wins / max(len(game_rows), 1):.3f}")
+    print(
+        f"Contrast: positives={positives} negatives={negatives} "
+        f"positive_condition={args.positive_condition or ['outcome=win']} "
+        f"negative_condition={args.negative_condition or ['outcome=loss']}"
+    )
     print(f"Wrote: {out}")
     print("\nTop metric gaps:")
     for row in metric_rows[: args.top]:

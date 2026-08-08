@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 15:30 Asia/Shanghai.
+Last updated: 2026-08-08 16:30 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -548,6 +548,41 @@ Update at 2026-08-08 15:30 Asia/Shanghai:
   `logs/v12_marnie_large_guarded_20260808.runner.log`, checkpoint
   `checkpoints/v12_history_pilots_20260807/bc2_marnie_b8f_v12hist_cross_init.npz`.
   At the check it was still in epoch 4/6 around step `2875/3331`.
+
+Update at 2026-08-08 16:30 Asia/Shanghai:
+
+- Non-Marnie v12 0701-0807 history-cross tests completed:
+  `logs/eval_v12_0701_0807_nonmarnie_20260808.runner.log`.
+- Random g500:
+  - Mega Lucario `43d6d8b0fce9`: `496/500 = 99.2%`.
+  - Festival Lead `e82dcbe62260`: `499/500 = 99.8%`.
+  - Team Rocket Mewtwo `06f0b265154c`: `500/500 = 100.0%`.
+  - Teal Mask Ogerpon `2a5072194fdf`: `426/500 = 85.2%`.
+- Mini RR against same-signature w4 controls plus the other v12 models:
+  `logs/eval_v12_0701_0807_nonmarnie_20260808/rr_v12_vs_w4_same_sig_g80.csv`.
+  Row-average order was:
+  `v12_trmewtwo=0.684`, `v12_festival=0.677`, `w4_trmewtwo=0.671`,
+  `w4_festival=0.593`, `v12_lucario=0.529`, `w4_lucario=0.430`,
+  `w4_ogerpon=0.211`, `v12_ogerpon=0.205`.
+- Baseline-delta vs `candidate_manifest_w4_random_ge097.csv`, 80 games per
+  opponent:
+  - Lucario v12 vs w4: candidate `0.406`, baseline `0.351`,
+    `avg_delta=+0.055`, `lost=3/17`; modest real improvement but still a low
+    absolute strong-pool win rate.
+  - Festival v12 vs w4: candidate `0.552`, baseline `0.543`,
+    `avg_delta=+0.009`, `lost=7/17`; effectively tied with w4.
+  - TR Mewtwo v12 vs w4: candidate `0.488`, baseline `0.503`,
+    `avg_delta=-0.015`, `lost=7/17`; do not replace w4 with this checkpoint.
+  - Ogerpon v12 2a507 vs w4: candidate `0.137`, baseline `0.208`,
+    `avg_delta=-0.071`, `lost=15/17`; failed both random and strong-pool
+    tests, do not submit.
+- Interpretation: v12 history-cross did not deliver a broad upgrade over the
+  w4 signature specialists. Random stability alone is insufficient; use
+  baseline-delta/RR as the submission gate. The only non-Marnie v12 checkpoint
+  worth deeper follow-up is Lucario `43d6d8b0fce9`, and even that is a modest
+  ablation candidate rather than a strong submission recommendation.
+- Marnie large guarded cross-attn history training was still active at the last
+  check, epoch 5/6 around step `3175/3331`.
 
 ## Episode Backfill
 

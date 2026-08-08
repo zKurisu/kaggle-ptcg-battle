@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 13:50 Asia/Shanghai.
+Last updated: 2026-08-08 14:05 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -402,6 +402,72 @@ Recommended next step after subset build completes:
   `Ogerpon 2a507 vs Crustle`, `Marnie b8f/2c22 vs Ogerpon`,
   `Lucario 43d vs Ogerpon/Crustle/Marnie`, and
   `Crustle 3cd/96d/b141 vs Team Rocket Mewtwo`.
+
+### 2026-08-08 0806/0807 Episode Incremental Refresh
+
+The user added Kaggle episode zips for `2026-08-06` and `2026-08-07`.
+
+Remote raw zips verified:
+
+```text
+/home/jie/Do/0_PTCG/workspace/episodes_raw/pokemon-tcg-ai-battle-episodes-2026-08-06.zip
+/home/jie/Do/0_PTCG/workspace/episodes_raw/pokemon-tcg-ai-battle-episodes-2026-08-07.zip
+zipfile -t: both passed
+```
+
+Active incremental extraction:
+
+```text
+script: /tmp/run_extract_v12_0701_0807_incremental_20260808.sh
+log: logs/extract_v12_0701_0807_incremental_20260808.log
+source corpus: data/bc_corpus_banded_v12_0701_0805_hist32_log128_board12
+new corpus root: data/bc_corpus_banded_v12_0701_0807_hist32_log128_board12
+method: cp -al hardlink clone of 0701-0805, then extract only 0806/0807
+workers: 1
+pid at launch: 2476807
+extract child observed: 2476816
+status at 14:05: processing 2026-08-06, bad=0, err=0
+```
+
+Important correction: the first launch incorrectly extracted `EN_Card_Data.csv`
+from `/home/jie/Do/0_PTCG/workspace/data/pokemon-tcg-ai-battle.zip` as if it
+were a leaderboard. It was stopped immediately; no `2026-08-06` or `2026-08-07`
+npz files had been written. The corrected script only accepts CSVs with
+`TeamName` and `Score`. It downloaded and used:
+
+```text
+/tmp/lb_0808_v12_extract/pokemon-tcg-ai-battle.zip
+pokemon-tcg-ai-battle-publicleaderboard-2026-08-08T05:57:06.csv
+Leaderboard: 6547 teams
+```
+
+Active downstream refresh waiting on extraction:
+
+```text
+script: /tmp/run_v12_0701_0807_teacher_refresh_20260808.sh
+runner log: logs/v12_matchup_teachers_20260808_0701_0807.runner.log
+output dir: logs/v12_matchup_teachers_20260808_0701_0807
+pid at launch: 2479153
+status at 14:05: waiting for bc_extract_v2.py to finish
+```
+
+When extraction finishes, this runner will:
+
+1. Validate `0806` and `0807` npz outputs and v12 schema.
+2. Run `tools/find_matchup_teachers.py` on
+   `data/bc_corpus_banded_v12_0701_0807_hist32_log128_board12`.
+3. Run `tools/run_matchup_quality_audits.py`.
+4. Run `tools/select_clean_teacher_games.py`.
+5. Build updated clean teacher subsets under
+   `data/bc_corpus_clean_teachers_v12_0701_0807_min10_brick010`.
+
+Monitor:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/extract_v12_0701_0807_incremental_20260808.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/v12_matchup_teachers_20260808_0701_0807.runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "bc_extract_v2.py.*ptcg_episodes_0806_0807|run_v12_0701_0807_teacher_refresh|find_matchup_teachers|run_matchup_quality_audits|select_clean_teacher_games"'
+```
 
 ## Episode Backfill
 

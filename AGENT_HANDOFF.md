@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 23:52 Asia/Shanghai.
+Last updated: 2026-08-09 00:20 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -33,6 +33,71 @@ interpretation:
 - Structural weaknesses need visible-state rules or teacher/counter policies.
   Pure BC cannot learn a counter-plan when same-sig clean wins are sparse or
   the deck list lacks the needed line.
+
+### Ogerpon vs Crustle Pure Success-Trajectory Test
+
+Direct causal test requested by the user: train Ogerpon only on clean games
+where Ogerpon beat Crustle, then fight the strong Crustle W4 model.
+
+Remote files:
+
+```text
+runner: /tmp/run_ogerpon_crustle_pure_teacher_20260808.sh
+log dir: logs/pure_teacher_ogerpon_vs_crustle_20260808
+subset corpus: data/bc_pure_teacher_ogerpon_vs_crustle_20260808
+checkpoints: checkpoints/pure_teacher_ogerpon_vs_crustle_20260808
+baseline Ogerpon: checkpoints/deck_sig_specialists_v11all35_20260806/w4/bc2_teal_mask_ogerpon_sig2_2a507219_v11all35_sigpure_top3_w4.npz
+strong Crustle: checkpoints/deck_sig_specialists_v11all35_20260806/w4/bc2_crustle_wall_sig1_3cd5039c_v11all35_sigpure_top3_w4.npz
+```
+
+Data:
+
+```text
+2a5072194fdf Ogerpon clean wins vs Crustle: 58 games, 4125 kept rows
+all Ogerpon sig clean wins vs Crustle: 104 games, 7436 kept rows
+```
+
+Models trained:
+
+```text
+bc2_ogerpon2a_vs_crustle_clean_scratch_w4.npz
+bc2_ogerpon2a_vs_crustle_clean_initpartial_w4.npz
+bc2_ogerpon_all_vs_crustle_clean_scratch_w4.npz
+```
+
+Training intentionally used a high-capacity cross-attn + history + hierarchical
+step-plan policy for 80 epochs to overfit the clean success trajectories. This
+did not help. The models memorized the small clean subset: training loss went
+near zero while validation loss exploded.
+
+Official 300-game results:
+
+```text
+random:
+  baseline Ogerpon 2a W4: 249/300 = 0.830
+  2a clean scratch:       151/300 = 0.503
+  2a clean initpartial:   183/300 = 0.610
+  all-sig clean scratch:  162/300 = 0.540
+
+vs strong Crustle W4:
+  baseline Ogerpon 2a W4: 35/300 = 0.117
+  2a clean scratch:       13/300 = 0.043, delta -0.073
+  2a clean initpartial:    8/300 = 0.027, delta -0.090
+  all-sig clean scratch:  11/300 = 0.037, delta -0.080
+```
+
+Interpretation:
+
+- Directly imitating clean success trajectories is not enough. It made the
+  weak matchup worse, not better.
+- The clean wins likely contain a lot of state, luck, and opponent-error bias.
+  Their per-action labels do not form a stable executable counter-plan under
+  the current one-step BC policy.
+- This is a strong negative result against "just mine weak-matchup wins and
+  train BC harder." The next useful direction is to extract explicit
+  trajectory-level invariants from these wins: setup milestones, cards held or
+  preserved, Crustle engine disruption windows, prize-race timing, and only
+  then use them as rules/options/reward shaping/plan labels.
 
 Code added locally and synced to `ks`:
 

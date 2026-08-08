@@ -211,7 +211,8 @@ Update at 2026-08-08 10:50 Asia/Shanghai:
   - `ogerpon_5899_v12nohist_pointer_refit`: random `296/300 = 98.7%`.
   - `marnie_b8f_v12hist_pointer_init`: random `300/300 = 100.0%`.
   - `lucario_43d_v12hist_cross_init` with `PTCG_DISABLE_CUDNN=1`: training
-    completed, best `val=1.0184`; CPU accuracy was still running at last check.
+    completed, best `val=1.0184`; CPU accuracy exact/first/top3 was
+    `0.672/0.687/0.924`; random was `296/300 = 98.7%`.
   - `marnie_b8f_v12hist_cross_init` with `PTCG_DISABLE_CUDNN=1`: killed by
     cgroup OOM during epoch 1, not a model/feature failure.
   - `marnie_b8f_v12nohist_pointer_refit`: killed by cgroup OOM before producing
@@ -224,6 +225,9 @@ Update at 2026-08-08 10:50 Asia/Shanghai:
   no-history and Marnie cross sequentially. This is intentional: Marnie big
   jobs should not be parallelized until the data loader is made streaming or
   memory-mapped.
+  At 2026-08-08 10:50, it started
+  `marnie_b8f_v12nohist_pointer_refit` on GPU0 after Lucario cross evaluation
+  finished.
 
 Monitor the guard:
 

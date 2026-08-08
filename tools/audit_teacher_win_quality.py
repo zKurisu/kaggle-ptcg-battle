@@ -122,7 +122,9 @@ def opponent_bricked(row: dict) -> bool:
     no_primary = inum(row, "primary_board_by_6") == 0 and inum(row, "setup_board_by_6") == 0
     early_end = inum(row, "no_early_end") == 0
     low_pressing = fnum(row, "pressing_main_rate") < 0.25
-    return no_attack or (no_primary and low_pressing) or (early_end and low_pressing)
+    # Wall/control decks may intentionally delay attacking. Treat no-attack as
+    # brick only when the board also failed to develop.
+    return (no_attack and no_primary) or (no_primary and low_pressing) or (early_end and low_pressing)
 
 
 def opponent_normal(row: dict) -> bool:
@@ -135,8 +137,13 @@ def opponent_normal(row: dict) -> bool:
         or inum(row, "setup_board_by_6") == 1
         or inum(row, "setup_success") == 1
     )
-    no_bad_end = inum(row, "no_early_end") == 1
-    return no_bad_end and (normal_tempo or normal_setup) and fnum(row, "pressing_main_rate") >= 0.25
+    no_attack = inum(row, "attack_by_8") == 0
+    no_board = (
+        inum(row, "primary_board_by_6") == 0
+        and inum(row, "secondary_board_by_6") == 0
+        and inum(row, "setup_board_by_6") == 0
+    )
+    return (normal_tempo or normal_setup) and fnum(row, "pressing_main_rate") >= 0.25 and not (no_attack and no_board)
 
 
 def candidate_strategy(row: dict) -> bool:
@@ -147,7 +154,6 @@ def candidate_strategy(row: dict) -> bool:
     )
     return (
         inum(row, "outcome_win") == 1
-        and inum(row, "no_early_end") == 1
         and fnum(row, "pressing_main_rate") >= 0.30
         and (inum(row, "setup_success") == 1 or inum(row, "tempo_success") == 1 or alternate_route)
     )

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 14:05 Asia/Shanghai.
+Last updated: 2026-08-08 14:25 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -468,6 +468,51 @@ ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tai
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/v12_matchup_teachers_20260808_0701_0807.runner.log'
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "bc_extract_v2.py.*ptcg_episodes_0806_0807|run_v12_0701_0807_teacher_refresh|find_matchup_teachers|run_matchup_quality_audits|select_clean_teacher_games"'
 ```
+
+Update at 2026-08-08 14:25 Asia/Shanghai:
+
+- Incremental extraction finished `2026-08-06`: `4631/4631 eps`,
+  `760263` decisions, `bad=0`, `err=0`.
+- It has started `2026-08-07`: `1000/4639 eps`, `159252` decisions,
+  `bad=0`, `err=0` in the latest checked log.
+- `2026-08-06` has written `39` npz files under
+  `data/bc_corpus_banded_v12_0701_0807_hist32_log128_board12`; `2026-08-07`
+  had not written final npz files yet at the check.
+
+Active waiting training runner:
+
+```text
+script: /tmp/run_v12_0701_0807_history_baselines_20260808.sh
+runner log: logs/v12_0701_0807_history_baselines_20260808.runner.log
+pid at launch: 2504196
+status at 14:25: waiting for 0806/0807 extraction to finish
+```
+
+This runner intentionally starts only after extraction is complete and cgroup
+memory is below `218GiB`. It runs two parallel waves of v12 `cross_attn`
+history-only baselines, then accuracy and random g300:
+
+```text
+wave1:
+  Mega Lucario 43d6d8b0fce9 on cuda:0
+  Teal Mask Ogerpon 2a5072194fdf on cuda:1
+
+wave2:
+  Festival Lead e82dcbe62260 on cuda:0
+  Team Rocket Mewtwo 06f0b265154c on cuda:1
+```
+
+Output:
+
+```text
+checkpoints/v12_0701_0807_history_baselines_20260808/
+logs/v12_0701_0807_history_baselines_20260808/
+```
+
+Rationale: GPU memory is available, but cgroup memory was around
+`214GiB / 256GiB` during extraction and Marnie cross training. Do not start
+Alakazam, Crustle, or another Marnie large-corpus job in parallel until memory
+pressure drops or the loader is made streaming/memmap.
 
 ## Episode Backfill
 

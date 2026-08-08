@@ -27,6 +27,7 @@ RULE_MODES = (
     "counter_plan_aggressive",
     "strategy_plan",
     "strategy_pair",
+    "resource_plan",
 )
 
 MARNIE_IMPIDIMP = 646

@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from ptcg_rl.numpy_policy import NumpyPolicy
 from ptcg_rl.deck_registry import registry_deck_for_policy
+from ptcg_rl.resource_planner import ResourcePlanner
 from ptcg_rl.rule_overlay import RULE_MODES, apply_rule_overlay
 
 _WORKER_A: "Entry | None" = None
@@ -41,6 +42,7 @@ class Entry:
     deck: list[int]
     rules: str = ""
     mcts: bool = False
+    planner: ResourcePlanner | None = None
 
 
 def read_deck(path: str) -> list[int]:
@@ -98,7 +100,12 @@ def policy_action(entry: Entry, obs: dict, use_mcts: bool, sims: int, time_budge
             picks = entry.policy.select(obs, greedy=True)
     except Exception:
         return legal_random(sel)
-    if entry.rules:
+    if entry.rules == "resource_plan" and entry.planner is not None:
+        try:
+            picks = entry.planner.decide(obs, picks, entry.deck).action
+        except Exception:
+            pass
+    elif entry.rules:
         try:
             picks = apply_rule_overlay(obs, picks, entry.deck, mode=entry.rules).action
         except Exception:
@@ -157,14 +164,16 @@ def load_entries(specs: list[str], default_deck: str, include_random: bool,
                 print(f"Skipping bad entry {name}: {exc}", flush=True)
                 continue
             raise
+        entry_rules = (rules_by_name or {}).get(name, "")
         entries.append(Entry(
             name,
             policy_path,
             deck_path,
             policy,
             deck,
-            (rules_by_name or {}).get(name, ""),
+            entry_rules,
             name in (mcts_by_name or set()),
+            ResourcePlanner(deck) if entry_rules == "resource_plan" else None,
         ))
     if len(entries) < 2:
         raise ValueError("need at least two entries; pass --include-random or multiple --entry values")
@@ -225,7 +234,8 @@ def entry_from_payload(payload: tuple[str, str, str, str, bool]) -> Entry:
     name, policy_path, deck_path, rules, mcts = payload
     deck = read_deck(deck_path)
     policy = None if policy_path == "random" else NumpyPolicy.load(policy_path)
-    return Entry(name, policy_path, deck_path, policy, deck, rules, bool(mcts))
+    planner = ResourcePlanner(deck) if rules == "resource_plan" else None
+    return Entry(name, policy_path, deck_path, policy, deck, rules, bool(mcts), planner)
 
 
 def play_game(a: Entry, b: Entry, swapped: bool, use_mcts: bool, sims: int,
@@ -239,6 +249,8 @@ def play_game(a: Entry, b: Entry, swapped: bool, use_mcts: bool, sims: int,
     for entry in (first, second):
         if entry.policy is not None and hasattr(entry.policy, "reset_history"):
             entry.policy.reset_history()
+        if entry.planner is not None:
+            entry.planner.reset(entry.deck)
     obs, sd = battle_start(first.deck, second.deck)
     if obs is None:
         return 2

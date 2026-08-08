@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from ptcg_rl.numpy_policy import NumpyPolicy
 from ptcg_rl.deck_registry import registry_deck_for_policy
+from ptcg_rl.resource_planner import ResourcePlanner
 from ptcg_rl.rule_overlay import RULE_MODES, apply_rule_overlay
 
 _WORKER_POLICY = None
@@ -36,7 +37,8 @@ def _legal_random(sel: dict) -> list[int]:
     k = random.randint(lo, hi)
     return random.sample(range(len(opts)), k) if k > 0 else []
 
-def _policy_action(policy, obs, deck, use_mcts=False, sims=48, time_budget=4.0, rules=""):
+def _policy_action(policy, obs, deck, use_mcts=False, sims=48, time_budget=4.0,
+                   rules="", planner=None):
     sel = obs.get('select') or {}
     n = len(sel.get('option', []))
     mn = int(sel.get('minCount', 0))
@@ -50,7 +52,12 @@ def _policy_action(policy, obs, deck, use_mcts=False, sims=48, time_budget=4.0, 
             act = policy.select(obs, greedy=True)
     except Exception:
         act = []
-    if rules:
+    if rules == "resource_plan" and planner is not None:
+        try:
+            act = planner.decide(obs, act, deck).action
+        except Exception:
+            pass
+    elif rules:
         try:
             act = apply_rule_overlay(obs, act, deck, mode=rules).action
         except Exception:
@@ -69,6 +76,7 @@ def _play_one_game(policy, deck, game_index, use_mcts=False, sims=48,
     our_side = 0 if game_index % 2 == 0 else 1
     if hasattr(policy, "reset_history"):
         policy.reset_history()
+    planner = ResourcePlanner(deck) if rules == "resource_plan" else None
     obs, sd = battle_start(deck, deck)
     if obs is None:
         return 0, 1
@@ -82,7 +90,7 @@ def _play_one_game(policy, deck, game_index, use_mcts=False, sims=48,
                 return 0, 1
             you = cur.get('yourIndex',0)
             if you == our_side:
-                act = _policy_action(policy, obs, deck, use_mcts, sims, time_budget, rules)
+                act = _policy_action(policy, obs, deck, use_mcts, sims, time_budget, rules, planner)
             else:
                 act = _legal_random(sel)
             obs = battle_select(act)

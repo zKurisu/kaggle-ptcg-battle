@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-09 02:05 Asia/Shanghai.
+Last updated: 2026-08-09 02:32 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -129,6 +129,87 @@ Current interpretation:
 - The next useful step is trace-level route synthesis: compare complete clean
   win traces against normal losses, then convert the route into finite-state
   plan guards with trigger counters. Single-action preferences are too weak.
+
+## 2026-08-09 Stateful Resource Planner
+
+User challenged that the previous rule/plan layer still did not handle multi-step
+resource planning. That was correct: `strategy_plan`/`strategy_pair` were mostly
+single-decision gates over the current observation.
+
+Implemented a first stateful explicit planner:
+
+- New `ptcg_rl/resource_planner.py`
+  - `ResourcePlanner` persists across a game.
+  - Tracks route, phase, per-reason override limits, current turn, known own
+    visible cards, and estimated unseen card counts from the actual 60-card deck.
+  - Routes currently covered: Ogerpon vs Crustle, Marnie vs Ogerpon, Lucario
+    engine-resource matchups.
+- `main.py`
+  - `PTCG_RULE_MODE=resource_plan` or packaged `rules.txt` now uses a persistent
+    planner instance and resets it at game start.
+- `tools/eval_bc.py`, `tools/eval_round_robin.py`, `tools/eval_rule_overlay_stats.py`
+  - all support `resource_plan`, so local random/RR/baseline-delta can evaluate
+    the stateful planner.
+
+Key finding from the first probe:
+
+```text
+5899 Ogerpon deck:
+  Ogerpon ex 96: 4
+  Lillie's Clefairy ex 272: 0
+  Mega Kangaskhan ex 756: 0
+  Meowth ex 1071: 0
+  Ultra Ball 1121: 0
+  Boss's Orders 1182: 2
+  Judge 1213: 4
+
+697 Ogerpon deck:
+  Ogerpon ex 96: 4
+  272/756/1071/1121: all 0
+  Boss's Orders 1182: 3
+  Judge 1213: 4
+```
+
+So the earlier "secondary route vs Crustle" idea does not apply to these two
+Ogerpon signatures. The stateful planner correctly enters `disrupt_fallback`,
+not `find_secondary`, for 5899/697.
+
+Probe logs:
+
+```text
+logs/resource_plan_20260809/random_ogerpon5899_resource_plan_g150.log
+logs/resource_plan_20260809/random_marnie_b8f_resource_plan_g150.log
+logs/resource_plan_20260809/random_crustle3cd_resource_plan_g150.log
+logs/resource_plan_20260809/random_lucario43d_resource_plan_g150.log
+  random stayed healthy:
+    Ogerpon 150/150
+    Marnie 150/150
+    Crustle 149/150
+    Lucario 147/150
+
+logs/resource_plan_20260809/ab_ogerpon5899_resource_plan_vs_crustle3cd_g200.csv
+  Ogerpon vs Crustle: 0.030 -> 0.030
+
+logs/resource_plan_20260809/ab_marnie_b8f_resource_plan_vs_ogerpon5899_g200.csv
+  Marnie vs Ogerpon: 0.180 -> 0.150
+
+logs/resource_plan_20260809/ab_ogerpon5899_resource_plan_fallback2_vs_crustle3cd_g300.csv
+  Ogerpon fallback2 vs Crustle: 0.027 -> 0.023
+
+logs/resource_plan_20260809/triggers_ogerpon5899_resource_plan_fallback2_vs_crustle3cd_g100.log
+  resource:ogerpon_attach_before_draw:route=ogerpon_secondary_vs_crustle:phase=disrupt_fallback: 476
+  Boss/Judge fallback did not trigger in this sample.
+```
+
+Current interpretation:
+
+- `resource_plan` is a real stateful/multi-step scaffold now, but the first
+  rules are still not strong enough for submission.
+- The most important immediate gain is diagnostic: it prevents planning around
+  cards not present in the actual deck signature.
+- For Ogerpon vs Crustle, 5899/697 likely need either a different deck sig with
+  real non-Crustle route resources, or a much deeper plan involving target
+  selection/prize race. Boss/Judge alone did not move the matchup.
 
 ## 2026-08-08 Aggressive Weak-Matchup Counter Work
 

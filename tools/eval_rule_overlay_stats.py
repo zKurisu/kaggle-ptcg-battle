@@ -15,6 +15,7 @@ _REPO = _HERE.parent
 sys.path.insert(0, str(_REPO))
 
 from ptcg_rl.numpy_policy import NumpyPolicy
+from ptcg_rl.resource_planner import ResourcePlanner
 from ptcg_rl.rule_overlay import RULE_MODES, apply_rule_overlay
 from tools.eval_round_robin import legal_random, read_deck
 
@@ -32,7 +33,7 @@ def _sanitize(action: list[int], sel: dict) -> list[int]:
 
 
 def _policy_action(policy: NumpyPolicy | None, obs: dict, deck: list[int],
-                   rules: str = "") -> tuple[list[int], str]:
+                   rules: str = "", planner: ResourcePlanner | None = None) -> tuple[list[int], str]:
     sel = obs.get("select") or {}
     if policy is None:
         return legal_random(sel), ""
@@ -42,7 +43,14 @@ def _policy_action(policy: NumpyPolicy | None, obs: dict, deck: list[int],
         return legal_random(sel), ""
     reason = ""
     action = raw
-    if rules:
+    if rules == "resource_plan" and planner is not None:
+        try:
+            decision = planner.decide(obs, raw, deck)
+            action = decision.action
+            reason = decision.reason if decision.action != raw else ""
+        except Exception:
+            action = raw
+    elif rules:
         try:
             decision = apply_rule_overlay(obs, raw, deck, mode=rules)
             action = decision.action
@@ -69,6 +77,7 @@ def _play_game(
     candidate_policy.reset_history()
     if opponent_policy is not None:
         opponent_policy.reset_history()
+    planner = ResourcePlanner(candidate_deck) if rules == "resource_plan" else None
 
     first_deck, second_deck = (
         (opponent_deck, candidate_deck) if swapped else (candidate_deck, opponent_deck)
@@ -91,7 +100,7 @@ def _play_game(
                 break
             side = int(cur.get("yourIndex", 0) or 0)
             if side == candidate_side:
-                action, reason = _policy_action(candidate_policy, obs, candidate_deck, rules)
+                action, reason = _policy_action(candidate_policy, obs, candidate_deck, rules, planner)
                 if reason:
                     reasons[reason] += 1
             else:

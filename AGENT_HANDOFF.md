@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 17:34 Asia/Shanghai.
+Last updated: 2026-08-08 17:51 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -359,6 +359,28 @@ ssh ks 'pgrep -af "bc2_train.py.*2a5072194fdf|bc2_train.py.*06f0b265154c|bc2_acc
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/v12_sequence_planner_20260808/ogerpon_2a507_w3.train.log'
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/v12_sequence_planner_20260808/trmewtwo_06f0_w3_b512.train.log'
 ```
+
+Update at 2026-08-08 17:51 Asia/Shanghai:
+
+- Marnie scratch sequence-planner training was queued but not allowed to start
+  immediately because cgroup memory was about `200GiB/256GiB`.
+- Guard runner:
+  `/tmp/run_marnie_seqplan_w3_b512_guard_20260808.sh`
+  with log
+  `logs/v12_sequence_planner_20260808/marnie_b8f_w3_b512.guard.log`
+  and wrapper log
+  `logs/v12_sequence_planner_20260808/marnie_b8f_w3_b512.runner.log`.
+- Save path when it starts:
+  `checkpoints/v12_sequence_planner_20260808/bc2_marnie_b8f_seqplan_scratch_w3_b512.npz`.
+- It waits until no active Ogerpon/TRM seqplan train/eval jobs remain and
+  cgroup memory is below `125GiB`. This is intentional. Previous Marnie b8f
+  runs imply Marnie can need roughly `110-130GiB` CPU/cgroup memory by itself,
+  so starting while the system baseline is around `160-200GiB` risks another
+  status-137 cgroup OOM kill.
+- Marnie recipe: scratch, no `--init`, `cross_attn width=3`,
+  `batch=512`, `--cuda-memory-gb 22`, `--step-plan`,
+  `--step-plan-loss-weight 0.30`, `--step-plan-teacher-forcing 0.50`,
+  `checkpoint_every=1`, `epochs=12`.
 
 ## 2026-08-08 Top-Player Strategy Mining
 

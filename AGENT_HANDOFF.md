@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 19:47 Asia/Shanghai.
+Last updated: 2026-08-08 19:59 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -17,6 +17,99 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## 2026-08-08 Aggressive Strategy-Conditioned BC
+
+Code change committed locally:
+
+```text
+3e08ebb Condition BC actions on trajectory strategy targets
+```
+
+Changed behavior:
+
+- `tools/bc2_train.py` now allows `--trajectory-target` and `--step-plan` in
+  the same run.
+- The model plan vector is now concatenated as:
+  `trajectory targets first`, then `step-plan labels`.
+- `ptcg_rl/bc2/losses.py` now teacher-forces any available trajectory/step
+  plan labels into the hierarchical action scorer during training. This is the
+  main behavioral change: game-level success/tempo/setup targets can directly
+  condition legal-action scoring, instead of being an auxiliary head that does
+  not affect action logits.
+
+This is still submittable because inference uses predicted plan values; no
+private opponent labels are required. The risk is exposure mismatch: at training
+time the scorer can see teacher-forced strategy labels, while at inference it
+must trust the predicted plan head.
+
+Remote pilot runner launched:
+
+```text
+script: /tmp/run_v12_strategy_conditioned_pilots_20260808.sh
+runner log: logs/v12_strategy_conditioned_20260808/runner.log
+target/log dir: logs/v12_strategy_conditioned_20260808
+checkpoint dir: checkpoints/v12_strategy_conditioned_20260808
+runner pids at launch/check: 2949894 wrapper, 2949896 bash runner
+```
+
+Pilot archetypes/sigs:
+
+```text
+ogerpon_697    Teal Mask Ogerpon 697a82e582d5
+ogerpon_5899   Teal Mask Ogerpon 5899c772bace
+crustle_3cd    Crustle Wall      3cd5039c59d2
+alakazam_7f9   Alakazam          7f9a538936e3
+```
+
+These are deliberately broader than the previous Lucario/Marnie/Ogerpon-only
+focus. Alakazam and other untrained archetypes still need to be folded into the
+same pipeline.
+
+Trajectory target CSVs generated so far at 2026-08-08 19:59:
+
+```text
+ogerpon_697:  games=2761 wins=1465 losses=1293 draws=3 wr=0.531
+ogerpon_5899: games=1102 wins=583 losses=519 draws=0 wr=0.529
+crustle_3cd:  still building, scanned 40/108 files
+alakazam_7f9: pending
+```
+
+The training command template uses:
+
+```text
+--hierarchical-plan
+--trajectory-target outcome_win
+--trajectory-target strategy_success
+--trajectory-target setup_success
+--trajectory-target tempo_success
+--trajectory-target attack_by_6
+--trajectory-target primary_board_by_4
+--trajectory-target engine_board_by_4
+--trajectory-target no_early_end
+--trajectory-target pressing_main_rate
+--trajectory-target attack_turn_norm
+--trajectory-target primary_board_turn_norm
+--trajectory-target primary_active_turn_norm
+--trajectory-target-loss-weight 0.40
+--step-plan --step-plan-loss-weight 0.20 --step-plan-teacher-forcing 0.75
+```
+
+Monitor:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 160 logs/v12_strategy_conditioned_20260808/runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "run_v12_strategy_conditioned_pilots|bc2_train.py|build_trajectory_targets.py"'
+ssh ks 'free -h && nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader,nounits'
+```
+
+Old Marnie seqplan note:
+
+- `bc2_marnie_b8f_seqplan_scratch_w3_b512` did not finish. It was killed by
+  the memory watchdog at `2026-08-08 19:47:20`, cgroup memory `246.4GiB`,
+  limit `246.0GiB`, rc `143`.
+- Last useful checkpoint is epoch 2:
+  `checkpoints/v12_sequence_planner_20260808/bc2_marnie_b8f_seqplan_scratch_w3_b512.npz`.
 
 ## 2026-08-08 Packaged v12 Sequence Planner Candidates
 

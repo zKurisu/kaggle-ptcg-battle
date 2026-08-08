@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 21:17 Asia/Shanghai.
+Last updated: 2026-08-08 21:35 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -405,6 +405,92 @@ Actionable follow-up:
 - Revisit `--step-plan-teacher-forcing 0.75`; the policy can see clean plan
   labels during training but must use predicted plan labels at inference, which
   creates exposure mismatch unless the plan head is itself reliable.
+
+## 2026-08-08 Failure-Trajectory Filtering
+
+Code change:
+
+- `tools/bc2_train.py` now supports trajectory-level filtering:
+  - `--trajectory-keep CONDITION`: keep only games satisfying all keep
+    conditions from `--trajectory-csv`.
+  - `--trajectory-drop CONDITION`: drop games satisfying any drop condition.
+  - `--trajectory-filter-missing-policy keep|drop`: controls corpus games not
+    present in the trajectory CSV.
+  - Conditions now support simple boolean syntax: `A&B`, `A|B`, and `!A`.
+    Example: `outcome_loss&setup_success==0&tempo_success==0`.
+- `ptcg_rl/bc2/data.py` now applies that filter while indexing the corpus, so
+  dropped trajectories do not occupy training batches or host memory. This is
+  different from setting `--loss-weight 0`, which still indexes the rows.
+
+Local and remote checks passed:
+
+```text
+python3 -m py_compile ptcg_rl/bc2/data.py tools/bc2_train.py
+composite condition smoke ok
+remote py_compile passed
+remote `tools/bc2_train.py --help` shows --trajectory-keep/drop/filter-missing-policy
+```
+
+Active remote runner:
+
+```text
+script: /tmp/run_v12_failure_filtered_20260808.sh
+runner log: logs/v12_failure_filtered_20260808/runner.log
+checkpoint dir: checkpoints/v12_failure_filtered_20260808
+eval dir: logs/v12_failure_filtered_20260808/eval
+```
+
+Purpose: test whether removing only hard-failure trajectories is better than
+generic trajectory-conditioned BC. This is not winner-only. The current drop
+condition is:
+
+```text
+outcome_loss&setup_success==0&tempo_success==0
+```
+
+It removes losses that have neither setup nor tempo success, while retaining
+wins and retaining losses that still contain potentially useful setup/tempo
+lines.
+
+Two Ogerpon pilots were started from v12 corpus, using cross-sig teacher data
+from `2a5072194fdf`:
+
+```text
+Ogerpon 697 + 2a507:
+  targets: logs/v12_failure_filtered_20260808/ogerpon697_2a507.trajectory_targets.csv
+  target games=4203 wins=2308 losses=1892 draws=3 wr=0.549
+  trajectory filter allowed=2721 dropped=1482 games
+  corpus kept=179734 decisions
+  save: checkpoints/v12_failure_filtered_20260808/bc2_ogerpon697_2a507_drop_hardfail_seqplan_w3.npz
+
+Ogerpon 5899 + 2a507:
+  targets: logs/v12_failure_filtered_20260808/ogerpon5899_2a507.trajectory_targets.csv
+  target games=2544 wins=1426 losses=1118 draws=0 wr=0.561
+  trajectory filter allowed=1567 dropped=977 games
+  corpus kept=111298 decisions
+  save: checkpoints/v12_failure_filtered_20260808/bc2_ogerpon5899_2a507_drop_hardfail_seqplan_w3.npz
+```
+
+Training config:
+
+```text
+--arch cross_attn --width 3 --state-layers 2
+--history-k 32 --log-history-k 128 --board-history-k 12
+--hierarchical-plan --step-plan
+--step-plan-teacher-forcing 0.35
+--trajectory-target-loss-weight 0.35
+--step-plan-loss-weight 0.18
+--cuda-memory-gb 24 --batch-size 1024 --epochs 8 --lr 3e-5
+```
+
+The runner will automatically evaluate random g300 for both candidates and a
+focused RR against old Crustle 3cd g120 after training. Monitor with:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "run_v12_failure_filtered|bc2_train.py"'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/v12_failure_filtered_20260808/train_ogerpon697_2a507_drop_hardfail.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/v12_failure_filtered_20260808/train_ogerpon5899_2a507_drop_hardfail.log'
+```
 
 ## 2026-08-08 Packaged v12 Sequence Planner Candidates
 

@@ -178,6 +178,8 @@ class BCCorpus:
         type_weights: dict[int, float] | None = None,
         card_weights: dict[int, float] | None = None,
         multi_select_weight: float = 1.0,
+        trajectory_filter_keys: set[str] | None = None,
+        trajectory_filter_missing: str = "drop",
         trajectory_weights: dict[str, float] | None = None,
         trajectory_default_weight: float = 1.0,
         trajectory_missing: str = "default",
@@ -218,6 +220,10 @@ class BCCorpus:
         self.type_weights = {int(k): float(v) for k, v in (type_weights or {}).items()}
         self.card_weights = {int(k): float(v) for k, v in (card_weights or {}).items()}
         self.multi_select_weight = float(multi_select_weight)
+        self.trajectory_filter_keys = set(trajectory_filter_keys) if trajectory_filter_keys is not None else None
+        self.trajectory_filter_missing = str(trajectory_filter_missing)
+        if self.trajectory_filter_missing not in {"keep", "drop"}:
+            raise ValueError("trajectory_filter_missing must be 'keep' or 'drop'")
         self.trajectory_weights = {
             str(k): float(v) for k, v in (trajectory_weights or {}).items() if str(k)
         }
@@ -266,6 +272,8 @@ class BCCorpus:
             "opponent_archetype_filtered": 0,
             "opponent_team_filtered": 0,
             "outcome_filtered": 0,
+            "trajectory_keep_filtered": 0,
+            "trajectory_filter_matched": 0,
             "trajectory_filtered": 0,
             "trajectory_matched": 0,
             "trajectory_defaulted": 0,
@@ -306,7 +314,12 @@ class BCCorpus:
                     "Corpus does not contain outcome metadata. Re-extract with the updated "
                     "tools/bc_extract_v2.py before using --winner-only."
                 )
-            if (self.trajectory_weights or self.trajectory_targets or self.split_by_game) and (
+            if (
+                self.trajectory_filter_keys is not None
+                or self.trajectory_weights
+                or self.trajectory_targets
+                or self.split_by_game
+            ) and (
                 "episode_id" not in data or "player_index" not in data
             ):
                 raise ValueError(
@@ -355,9 +368,21 @@ class BCCorpus:
                     continue
                 game_key = (
                     _trajectory_game_key(data, i)
-                    if (self.trajectory_weights or self.trajectory_targets or self.split_by_game)
+                    if (
+                        self.trajectory_filter_keys is not None
+                        or self.trajectory_weights
+                        or self.trajectory_targets
+                        or self.split_by_game
+                    )
                     else ""
                 )
+                if self.trajectory_filter_keys is not None:
+                    in_filter = game_key in self.trajectory_filter_keys
+                    if not in_filter and self.trajectory_filter_missing == "drop":
+                        self.stats["trajectory_keep_filtered"] += 1
+                        continue
+                    if in_filter:
+                        self.stats["trajectory_filter_matched"] += 1
                 trajectory_has_weight = bool(self.trajectory_weights) and game_key in self.trajectory_weights
                 if self.trajectory_weights and not trajectory_has_weight and self.trajectory_missing == "drop":
                     self.stats["trajectory_filtered"] += 1

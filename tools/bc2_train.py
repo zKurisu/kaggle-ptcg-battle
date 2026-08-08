@@ -153,6 +153,14 @@ def _trajectory_key(row: dict[str, str]) -> str:
 
 def _trajectory_condition(row: dict[str, str], expr: str) -> bool:
     expr = expr.strip()
+    if not expr:
+        return False
+    if "|" in expr:
+        return any(_trajectory_condition(row, part) for part in expr.split("|"))
+    if "&" in expr:
+        return all(_trajectory_condition(row, part) for part in expr.split("&"))
+    if expr.startswith("!"):
+        return not _trajectory_condition(row, expr[1:])
     for op in (">=", "<=", "==", "!=", ">", "<"):
         if op not in expr:
             continue
@@ -185,7 +193,7 @@ def _trajectory_condition(row: dict[str, str], expr: str) -> bool:
 
 
 def _is_trajectory_condition(expr: str) -> bool:
-    return any(op in expr for op in (">=", "<=", "==", "!=", ">", "<"))
+    return any(op in expr for op in (">=", "<=", "==", "!=", ">", "<", "&", "|", "!"))
 
 
 def _parse_trajectory_weight_specs(specs: list[str]) -> list[tuple[str, float]]:
@@ -290,6 +298,55 @@ def _load_trajectory_targets(
                     targets[key] = arr
     stats["keys"] = float(len(targets))
     return targets, stats
+
+
+def _load_trajectory_filter(
+    paths: list[str],
+    keep_specs: list[str],
+    drop_specs: list[str],
+) -> tuple[set[str] | None, dict[str, float]]:
+    keep_specs = [str(x).strip() for x in keep_specs if str(x).strip()]
+    drop_specs = [str(x).strip() for x in drop_specs if str(x).strip()]
+    if not keep_specs and not drop_specs:
+        return None, {}
+    if not paths:
+        raise ValueError("--trajectory-keep/--trajectory-drop requires at least one --trajectory-csv")
+    allowed: set[str] = set()
+    seen: set[str] = set()
+    stats = {
+        "files": float(len(paths)),
+        "rows": 0.0,
+        "seen_keys": 0.0,
+        "allowed_keys": 0.0,
+        "kept_rows": 0.0,
+        "dropped_rows": 0.0,
+        "duplicates": 0.0,
+        "keep_conditions": float(len(keep_specs)),
+        "drop_conditions": float(len(drop_specs)),
+    }
+    for path in paths:
+        with open(path, newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                stats["rows"] += 1.0
+                key = _trajectory_key(row)
+                if key in seen:
+                    stats["duplicates"] += 1.0
+                seen.add(key)
+                keep_ok = all(_trajectory_condition(row, expr) for expr in keep_specs)
+                drop_ok = any(_trajectory_condition(row, expr) for expr in drop_specs)
+                if keep_ok and not drop_ok:
+                    allowed.add(key)
+                    stats["kept_rows"] += 1.0
+                else:
+                    stats["dropped_rows"] += 1.0
+    stats["seen_keys"] = float(len(seen))
+    stats["allowed_keys"] = float(len(allowed))
+    if not allowed:
+        raise RuntimeError(
+            "trajectory filter kept no games; relax --trajectory-keep/--trajectory-drop conditions"
+        )
+    return allowed, stats
 
 
 def _save_npz(model: torch.nn.Module, path: str) -> None:
@@ -558,6 +615,23 @@ def main() -> None:
                         ))
     parser.add_argument("--trajectory-target-loss-weight", type=float, default=0.0,
                         help="BCE loss multiplier for --trajectory-target auxiliary heads; 0 disables")
+    parser.add_argument("--trajectory-keep", action="append", default=[],
+                        help=(
+                            "repeatable whole-game filter condition. Games must satisfy all keep "
+                            "conditions from --trajectory-csv to be used, e.g. outcome_win or "
+                            "strategy_success>=1. Conditions support simple A&B, A|B, and !A."
+                        ))
+    parser.add_argument("--trajectory-drop", action="append", default=[],
+                        help=(
+                            "repeatable whole-game drop condition. Games satisfying any drop "
+                            "condition from --trajectory-csv are removed, e.g. outcome_loss or "
+                            "outcome_loss&setup_success==0."
+                        ))
+    parser.add_argument("--trajectory-filter-missing-policy", choices=["keep", "drop"], default="drop",
+                        help=(
+                            "for --trajectory-keep/drop, whether corpus games not present in "
+                            "--trajectory-csv are kept or dropped"
+                        ))
     parser.add_argument("--trajectory-base-weight", type=float, default=1.0,
                         help="base multiplier for each trajectory CSV game before --trajectory-weight rules")
     parser.add_argument("--trajectory-weight-cap", type=float, default=8.0,
@@ -619,6 +693,11 @@ def main() -> None:
         args.trajectory_weight,
         base_weight=args.trajectory_base_weight,
         cap=args.trajectory_weight_cap,
+    )
+    trajectory_filter_keys, trajectory_filter_stats = _load_trajectory_filter(
+        args.trajectory_csv,
+        args.trajectory_keep,
+        args.trajectory_drop,
     )
     trajectory_targets, trajectory_target_stats = _load_trajectory_targets(
         args.trajectory_csv,
@@ -685,6 +764,8 @@ def main() -> None:
         type_weights=type_weights,
         card_weights=card_weights,
         multi_select_weight=args.multi_select_weight,
+        trajectory_filter_keys=trajectory_filter_keys,
+        trajectory_filter_missing=args.trajectory_filter_missing_policy,
         trajectory_weights=trajectory_weights,
         trajectory_default_weight=args.trajectory_missing_weight,
         trajectory_missing=args.trajectory_missing_policy,
@@ -700,6 +781,7 @@ def main() -> None:
         split_by_game=(
             args.split_by_game
             or bool(trajectory_weights)
+            or bool(trajectory_filter_keys)
             or bool(trajectory_targets)
             or args.step_plan
             or history_k > 0
@@ -807,6 +889,9 @@ def main() -> None:
         f"multi_select_weight={args.multi_select_weight} "
         f"trajectory_csv={args.trajectory_csv or 'none'} "
         f"trajectory_weight={args.trajectory_weight or 'none'} "
+        f"trajectory_keep={args.trajectory_keep or 'none'} "
+        f"trajectory_drop={args.trajectory_drop or 'none'} "
+        f"trajectory_filter_missing={args.trajectory_filter_missing_policy} "
         f"trajectory_target={args.trajectory_target or 'none'} "
         f"trajectory_target_loss_weight={args.trajectory_target_loss_weight} "
         f"trajectory_target_dim={trajectory_target_dim} plan_target_dim={plan_target_dim} "
@@ -823,6 +908,8 @@ def main() -> None:
     )
     if trajectory_stats:
         print(f"Trajectory weights: {trajectory_stats}", flush=True)
+    if trajectory_filter_stats:
+        print(f"Trajectory filter: {trajectory_filter_stats}", flush=True)
     if trajectory_target_stats:
         print(f"Trajectory targets: {trajectory_target_stats}", flush=True)
     if args.step_plan:

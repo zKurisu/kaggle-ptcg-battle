@@ -68,6 +68,10 @@ Code added locally and synced to `ks`:
     keep base corpus as anchor, drop selected weak failures, repeat clean
     teacher aux data heavily, and train a trajectory/step-plan conditioned
     cross-attention model from scratch.
+- `tools/select_manifest_top_per_archetype.py`
+  - Selects top rows per archetype from an existing policy/deck manifest. Used
+    by the counter-mixture post-eval watcher to build a compact W4 opponent
+    pool.
 
 Active remote runner:
 
@@ -179,6 +183,9 @@ pair teacher checkpoints: checkpoints/pair_teachers_v12_0701_0807_allquality_cle
 pair teacher subset corpus: data/bc_pair_teachers_v12_0701_0807_allquality_clean20
 teacher source: logs/v12_matchup_teachers_20260808_0701_0807/quality_audit/game_quality_all_pairs.csv
 min clean games: 20
+
+post-eval launcher: /tmp/run_counter_mixture_post_eval_20260808.sh
+post-eval nohup log: logs/counter_mixture_20260808/post_eval_watcher.nohup.log
 ```
 
 Counter-mixture planned archetypes:
@@ -204,7 +211,23 @@ Monitor active aggressive jobs:
 ```bash
 ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/counter_mixture_20260808/counter_mixture_clean20_train.nohup.log'
 ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/aggressive_counter_20260808/pair_teacher_allquality_clean20_train.nohup.log'
+ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/counter_mixture_20260808/post_eval_watcher.nohup.log'
 ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && ps -eo pid,ppid,stat,pcpu,pmem,etime,cmd | grep -E "counter_mixture_clean20|pair_teacher_allquality|build_trajectory_targets|build_bc_subset|bc2_train.py" | grep -v grep'
+```
+
+Post-eval watcher behavior after counter-mixture training exits:
+
+```text
+1. build logs/counter_mixture_20260808/counter_mixture_clean20_eval_manifest.csv
+   by mapping checkpoints to logs/ladder_pool_0805_all/pool_manifest.csv.
+2. build logs/counter_mixture_20260808/w4_top1_by_arch_manifest.csv from
+   logs/eval_deck_sig_specialists_v11all35_20260806/candidate_manifest_w4_random_ge097.csv.
+3. run random 300:
+   logs/counter_mixture_20260808/counter_mixture_clean20_random_g300.csv
+4. run counter internal RR g80:
+   logs/counter_mixture_20260808/counter_mixture_clean20_internal_rr_g80.csv
+5. run counter + W4 top1 RR g60:
+   logs/counter_mixture_20260808/counter_mixture_clean20_vs_w4top1_rr_g60.csv
 ```
 
 Do not use `counter_plan_aggressive` for submission. If testing rules, use

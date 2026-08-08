@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 19:15 Asia/Shanghai.
+Last updated: 2026-08-08 19:38 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -17,6 +17,39 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## 2026-08-08 Packaged v12 Sequence Planner Candidates
+
+The user asked to package the two most worthwhile completed non-Marnie
+sequence-planner candidates. Selected:
+
+- `Mega Lucario 43d6d8b0fce9`: clearest positive sequence-planner result.
+  Random g500 `493/500`, same-sig RR row mean `0.536` vs w4 Lucario `0.452`,
+  and baseline-delta vs w4 random-ge097 pool `+0.124`, lost `1/17`.
+- `Festival Lead e82dcbe62260`: second-best current ablation candidate.
+  Random g500 `500/500`, baseline-delta vs w4 random-ge097 pool `+0.046`.
+  Same-sig RR is weaker than w4 Festival (`0.632` vs `0.679`), so treat this
+  as a useful probe rather than a guaranteed ladder upgrade.
+
+Do not submit current `Ogerpon 2a507` sequence-planner checkpoint; random g500
+was only `382/500` and broad delta was negative. This may be partly a deck-sig
+issue, but this exact packaged candidate was rejected.
+
+Remote packaged tarballs:
+
+```text
+/home/jie/Do/0_PTCG/submission/v12_seqplan_candidates_20260808/v12_seqplan_lucario_43d6_scratch_w3.tar.gz
+  sha256: 04d1e82fcb0f506e2f69fd64b7510d694be382675cbad5478a3f6ed082aff4e0
+
+/home/jie/Do/0_PTCG/submission/v12_seqplan_candidates_20260808/v12_seqplan_festival_e82_scratch_w3.tar.gz
+  sha256: d4bdb8487350bbbefe461ec7357d3f87772352b4de2caf7afb3557249d2348c9
+```
+
+Packaging script used:
+
+```text
+/tmp/package_v12_seqplan_candidates_20260808.sh
+```
 
 ## 2026-08-07 v12 Multi-Stream History Extraction
 

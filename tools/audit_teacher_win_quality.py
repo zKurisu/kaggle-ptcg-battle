@@ -62,6 +62,8 @@ GAME_FIELDS = [
     "paired",
     "candidate_setup",
     "candidate_tempo",
+    "candidate_secondary",
+    "candidate_engine",
     "candidate_strategy",
     "candidate_no_early_end",
     "opponent_normal",
@@ -117,7 +119,7 @@ def opponent_bricked(row: dict) -> bool:
     if not row:
         return False
     no_attack = inum(row, "attack_by_8") == 0
-    no_primary = inum(row, "primary_board_by_6") == 0
+    no_primary = inum(row, "primary_board_by_6") == 0 and inum(row, "setup_board_by_6") == 0
     early_end = inum(row, "no_early_end") == 0
     low_pressing = fnum(row, "pressing_main_rate") < 0.25
     return no_attack or (no_primary and low_pressing) or (early_end and low_pressing)
@@ -127,16 +129,27 @@ def opponent_normal(row: dict) -> bool:
     if not row:
         return False
     normal_tempo = inum(row, "attack_by_8") == 1 or inum(row, "tempo_success") == 1
-    normal_setup = inum(row, "primary_board_by_6") == 1 or inum(row, "setup_success") == 1
+    normal_setup = (
+        inum(row, "primary_board_by_6") == 1
+        or inum(row, "secondary_board_by_6") == 1
+        or inum(row, "setup_board_by_6") == 1
+        or inum(row, "setup_success") == 1
+    )
     no_bad_end = inum(row, "no_early_end") == 1
     return no_bad_end and (normal_tempo or normal_setup) and fnum(row, "pressing_main_rate") >= 0.25
 
 
 def candidate_strategy(row: dict) -> bool:
+    alternate_route = (
+        inum(row, "secondary_board_by_6") == 1
+        or inum(row, "secondary_active_by_6") == 1
+        or inum(row, "engine_board_by_4") == 1
+    )
     return (
         inum(row, "outcome_win") == 1
         and inum(row, "no_early_end") == 1
-        and (inum(row, "setup_success") == 1 or inum(row, "tempo_success") == 1)
+        and fnum(row, "pressing_main_rate") >= 0.30
+        and (inum(row, "setup_success") == 1 or inum(row, "tempo_success") == 1 or alternate_route)
     )
 
 
@@ -275,12 +288,23 @@ def main() -> None:
                     "paired": int(bool(opp)),
                     "candidate_setup": int(inum(row, "setup_success") == 1),
                     "candidate_tempo": int(inum(row, "tempo_success") == 1),
+                    "candidate_secondary": int(
+                        inum(row, "secondary_board_by_6") == 1 or inum(row, "secondary_active_by_6") == 1
+                    ),
+                    "candidate_engine": int(inum(row, "engine_board_by_4") == 1),
                     "candidate_strategy": int(row_strategy),
                     "candidate_no_early_end": int(inum(row, "no_early_end") == 1),
                     "opponent_normal": int(row_opp_normal),
                     "opponent_brick": int(row_opp_brick),
                     "opponent_no_attack": int(bool(opp and inum(opp, "attack_by_8") == 0)),
-                    "opponent_no_primary": int(bool(opp and inum(opp, "primary_board_by_6") == 0)),
+                    "opponent_no_primary": int(
+                        bool(
+                            opp
+                            and inum(opp, "primary_board_by_6") == 0
+                            and inum(opp, "secondary_board_by_6") == 0
+                            and inum(opp, "setup_board_by_6") == 0
+                        )
+                    ),
                     "opponent_early_end": int(bool(opp and inum(opp, "no_early_end") == 0)),
                     "clean_win": int(row_clean),
                     "first_attack_turn": min(fnum(row, "first_attack_turn", 999.0), 30.0),

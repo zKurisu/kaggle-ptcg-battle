@@ -60,12 +60,30 @@ FIELDS = [
     "bench_primary_turns",
     "first_primary_active_turn",
     "first_primary_board_turn",
+    "active_secondary_turns",
+    "bench_secondary_turns",
+    "first_secondary_active_turn",
+    "first_secondary_board_turn",
+    "first_setup_board_turn",
+    "first_engine_board_turn",
     "primary_active_by_2",
     "primary_active_by_4",
     "primary_active_by_6",
     "primary_board_by_2",
     "primary_board_by_4",
     "primary_board_by_6",
+    "secondary_active_by_2",
+    "secondary_active_by_4",
+    "secondary_active_by_6",
+    "secondary_board_by_2",
+    "secondary_board_by_4",
+    "secondary_board_by_6",
+    "setup_board_by_2",
+    "setup_board_by_4",
+    "setup_board_by_6",
+    "engine_board_by_2",
+    "engine_board_by_4",
+    "engine_board_by_6",
     "outcome_win",
     "outcome_loss",
     "outcome_draw",
@@ -203,6 +221,12 @@ def new_row(args: argparse.Namespace, data: dict[str, np.ndarray], i: int) -> di
         "bench_primary_turns": 0,
         "first_primary_active_turn": 999,
         "first_primary_board_turn": 999,
+        "active_secondary_turns": 0,
+        "bench_secondary_turns": 0,
+        "first_secondary_active_turn": 999,
+        "first_secondary_board_turn": 999,
+        "first_setup_board_turn": 999,
+        "first_engine_board_turn": 999,
     }
 
 
@@ -216,6 +240,18 @@ def finalize(row: dict) -> dict:
     row["primary_board_by_2"] = int(row["first_primary_board_turn"] <= 2)
     row["primary_board_by_4"] = int(row["first_primary_board_turn"] <= 4)
     row["primary_board_by_6"] = int(row["first_primary_board_turn"] <= 6)
+    row["secondary_active_by_2"] = int(row["first_secondary_active_turn"] <= 2)
+    row["secondary_active_by_4"] = int(row["first_secondary_active_turn"] <= 4)
+    row["secondary_active_by_6"] = int(row["first_secondary_active_turn"] <= 6)
+    row["secondary_board_by_2"] = int(row["first_secondary_board_turn"] <= 2)
+    row["secondary_board_by_4"] = int(row["first_secondary_board_turn"] <= 4)
+    row["secondary_board_by_6"] = int(row["first_secondary_board_turn"] <= 6)
+    row["setup_board_by_2"] = int(row["first_setup_board_turn"] <= 2)
+    row["setup_board_by_4"] = int(row["first_setup_board_turn"] <= 4)
+    row["setup_board_by_6"] = int(row["first_setup_board_turn"] <= 6)
+    row["engine_board_by_2"] = int(row["first_engine_board_turn"] <= 2)
+    row["engine_board_by_4"] = int(row["first_engine_board_turn"] <= 4)
+    row["engine_board_by_6"] = int(row["first_engine_board_turn"] <= 6)
     row["outcome_win"] = int(row.get("outcome") == "win")
     row["outcome_loss"] = int(row.get("outcome") == "loss")
     row["outcome_draw"] = int(row.get("outcome") == "draw")
@@ -236,7 +272,7 @@ def finalize(row: dict) -> dict:
     row["primary_active_turn_norm"] = max(0.0, 1.0 - min(int(row["first_primary_active_turn"]), 12) / 12.0)
     row["attack_turn_norm"] = max(0.0, 1.0 - min(int(row["first_attack_turn"]), 12) / 12.0)
     row["setup_success"] = int(
-        int(row["primary_board_by_4"]) == 1
+        (int(row["primary_board_by_4"]) == 1 or int(row["setup_board_by_4"]) == 1)
         and int(row["no_early_end"]) == 1
         and float(row["pressing_main_rate"]) >= 0.35
     )
@@ -293,6 +329,9 @@ def main() -> None:
     opponent_team_names = lower_set(args.opponent_team_name)
     plan = PLANS.get(args.archetype)
     primary = set(int(x) for x in (plan.primary_attackers if plan else []))
+    secondary = set(int(x) for x in (plan.secondary_attackers if plan else []))
+    setup_basics = set(int(x) for x in (plan.setup_basics if plan else []))
+    engine_cards = set(int(x) for x in (plan.engine_cards if plan else []))
 
     rows: dict[str, dict] = {}
     raw = kept = 0
@@ -347,10 +386,12 @@ def main() -> None:
             elif typ == END:
                 row["end_count"] += 1
 
+            board = np.asarray(data["board"][i], dtype=np.int64)
+            active = int(board[0]) if len(board) > 0 else 0
+            bench = [int(x) for x in board[1:6].tolist() if int(x) > 0]
+            board_set = {active, *bench}
+            board_set.discard(0)
             if primary:
-                board = np.asarray(data["board"][i], dtype=np.int64)
-                active = int(board[0]) if len(board) > 0 else 0
-                bench = [int(x) for x in board[1:6].tolist() if int(x) > 0]
                 if active in primary:
                     row["active_primary_turns"] += 1
                     row["first_primary_active_turn"] = min(int(row["first_primary_active_turn"]), turn)
@@ -358,6 +399,18 @@ def main() -> None:
                     row["bench_primary_turns"] += 1
                 if active in primary or any(x in primary for x in bench):
                     row["first_primary_board_turn"] = min(int(row["first_primary_board_turn"]), turn)
+            if secondary:
+                if active in secondary:
+                    row["active_secondary_turns"] += 1
+                    row["first_secondary_active_turn"] = min(int(row["first_secondary_active_turn"]), turn)
+                if any(x in secondary for x in bench):
+                    row["bench_secondary_turns"] += 1
+                if board_set & secondary:
+                    row["first_secondary_board_turn"] = min(int(row["first_secondary_board_turn"]), turn)
+            if setup_basics and board_set & setup_basics:
+                row["first_setup_board_turn"] = min(int(row["first_setup_board_turn"]), turn)
+            if engine_cards and board_set & engine_cards:
+                row["first_engine_board_turn"] = min(int(row["first_engine_board_turn"]), turn)
         if args.progress_every and (path_i == 1 or path_i % args.progress_every == 0 or path_i == len(paths)):
             rate = raw / max(time.time() - t0, 1e-9)
             print(

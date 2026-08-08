@@ -89,7 +89,15 @@ def build_targets(args: argparse.Namespace, archetype: str, opponent: str, out_c
     run(cmd, dry_run=args.dry_run)
 
 
-def audit_pair(args: argparse.Namespace, archetype: str, opponent: str, cand_csv: Path, opp_csv: Path, out_csv: Path) -> None:
+def audit_pair(
+    args: argparse.Namespace,
+    archetype: str,
+    opponent: str,
+    cand_csv: Path,
+    opp_csv: Path,
+    out_csv: Path,
+    out_game_csv: Path,
+) -> None:
     if out_csv.exists() and not args.force:
         print(f"reuse {out_csv}", flush=True)
         return
@@ -112,16 +120,18 @@ def audit_pair(args: argparse.Namespace, archetype: str, opponent: str, cand_csv
         str(args.max_brick_share),
         "--out-csv",
         str(out_csv),
+        "--out-game-csv",
+        str(out_game_csv),
     ]
     if args.top:
         cmd.extend(["--top", str(args.top)])
     run(cmd, dry_run=args.dry_run)
 
 
-def merge_quality(out_dir: Path, quality_files: list[Path]) -> None:
+def merge_csv(out_path: Path, paths: list[Path]) -> None:
     rows: list[dict] = []
     fields: list[str] | None = None
-    for path in quality_files:
+    for path in paths:
         if not path.exists():
             continue
         with path.open(newline="") as f:
@@ -132,19 +142,28 @@ def merge_quality(out_dir: Path, quality_files: list[Path]) -> None:
                 rows.append(row)
     if not fields:
         return
-    rows.sort(
-        key=lambda r: (
-            str(r.get("archetype", "")),
-            str(r.get("opponent_archetype", "")),
-            -float(r.get("quality_score", 0.0) or 0.0),
+    if "quality_score" in fields:
+        rows.sort(
+            key=lambda r: (
+                str(r.get("archetype", "")),
+                str(r.get("opponent_archetype", "")),
+                -float(r.get("quality_score", 0.0) or 0.0),
+            )
         )
-    )
-    merged = out_dir / "quality_all_pairs.csv"
-    with merged.open("w", newline="") as f:
+    else:
+        rows.sort(
+            key=lambda r: (
+                str(r.get("archetype", "")),
+                str(r.get("opponent_archetype", "")),
+                str(r.get("episode_id", "")),
+                int(float(r.get("player_index", 0) or 0)),
+            )
+        )
+    with out_path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
-    print(f"wrote {merged} rows={len(rows)}", flush=True)
+    print(f"wrote {out_path} rows={len(rows)}", flush=True)
 
 
 def main() -> None:
@@ -173,25 +192,31 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     target_dir = out_dir / "targets"
     quality_dir = out_dir / "quality"
+    game_dir = out_dir / "game_quality"
     target_dir.mkdir(parents=True, exist_ok=True)
     quality_dir.mkdir(parents=True, exist_ok=True)
+    game_dir.mkdir(parents=True, exist_ok=True)
     print(f"selected pairs={len(pairs)}", flush=True)
 
     quality_files: list[Path] = []
+    game_files: list[Path] = []
     for idx, (arch, opp) in enumerate(pairs, 1):
         stem = f"{safe_name(arch)}__vs__{safe_name(opp)}"
         rev_stem = f"{safe_name(opp)}__vs__{safe_name(arch)}"
         cand_csv = target_dir / f"{stem}.csv"
         opp_csv = target_dir / f"{rev_stem}.csv"
         out_csv = quality_dir / f"{stem}.csv"
+        out_game_csv = game_dir / f"{stem}.games.csv"
         print(f"[{idx}/{len(pairs)}] {arch} vs {opp}", flush=True)
         build_targets(args, arch, opp, cand_csv)
         build_targets(args, opp, arch, opp_csv)
-        audit_pair(args, arch, opp, cand_csv, opp_csv, out_csv)
+        audit_pair(args, arch, opp, cand_csv, opp_csv, out_csv, out_game_csv)
         quality_files.append(out_csv)
+        game_files.append(out_game_csv)
 
     if not args.dry_run:
-        merge_quality(out_dir, quality_files)
+        merge_csv(out_dir / "quality_all_pairs.csv", quality_files)
+        merge_csv(out_dir / "game_quality_all_pairs.csv", game_files)
 
 
 if __name__ == "__main__":

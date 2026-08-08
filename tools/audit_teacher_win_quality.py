@@ -48,6 +48,36 @@ FIELDS = [
     "recommendation",
 ]
 
+GAME_FIELDS = [
+    "game_key",
+    "episode_id",
+    "player_index",
+    "archetype",
+    "opponent_archetype",
+    "deck_sig",
+    "team_name",
+    "opponent_deck_sig",
+    "opponent_team_name",
+    "outcome",
+    "paired",
+    "candidate_setup",
+    "candidate_tempo",
+    "candidate_strategy",
+    "candidate_no_early_end",
+    "opponent_normal",
+    "opponent_brick",
+    "opponent_no_attack",
+    "opponent_no_primary",
+    "opponent_early_end",
+    "clean_win",
+    "first_attack_turn",
+    "opp_first_attack_turn",
+    "first_primary_board_turn",
+    "opp_first_primary_board_turn",
+    "pressing_main_rate",
+    "opp_pressing_main_rate",
+]
+
 
 def fnum(row: dict, key: str, default: float = 0.0) -> float:
     try:
@@ -198,11 +228,13 @@ def main() -> None:
     p.add_argument("--max-brick-share", type=float, default=0.55)
     p.add_argument("--top", type=int, default=0)
     p.add_argument("--out-csv", required=True)
+    p.add_argument("--out-game-csv", default="", help="optional per-game quality labels for subset construction")
     args = p.parse_args()
 
     cand_rows = read_rows(args.candidate_csv)
     opp_index = build_opponent_index(read_rows(args.opponent_csv))
     groups: dict[tuple[str, str, str, str], dict] = defaultdict(lambda: defaultdict(float))
+    game_rows: list[dict] = []
 
     for row in cand_rows:
         key = (
@@ -221,13 +253,50 @@ def main() -> None:
         else:
             stats["draws"] += 1
 
-        if inum(row, "outcome_win") != 1:
-            continue
         episode, player = player_key(row)
         opp = opp_index.get((episode, other_player(player)))
+        row_strategy = candidate_strategy(row)
+        row_opp_normal = bool(opp and opponent_normal(opp))
+        row_opp_brick = bool(opp and opponent_bricked(opp))
+        row_clean = bool(inum(row, "outcome_win") == 1 and opp and clean_win(row, opp))
+        if args.out_game_csv:
+            game_rows.append(
+                {
+                    "game_key": str(row.get("game_key", f"{episode}:{player}")),
+                    "episode_id": episode,
+                    "player_index": player,
+                    "archetype": row.get("archetype", ""),
+                    "opponent_archetype": row.get("opponent_archetype", ""),
+                    "deck_sig": row.get("deck_sig", ""),
+                    "team_name": row.get("team_name", ""),
+                    "opponent_deck_sig": row.get("opponent_deck_sig", ""),
+                    "opponent_team_name": row.get("opponent_team_name", ""),
+                    "outcome": row.get("outcome", ""),
+                    "paired": int(bool(opp)),
+                    "candidate_setup": int(inum(row, "setup_success") == 1),
+                    "candidate_tempo": int(inum(row, "tempo_success") == 1),
+                    "candidate_strategy": int(row_strategy),
+                    "candidate_no_early_end": int(inum(row, "no_early_end") == 1),
+                    "opponent_normal": int(row_opp_normal),
+                    "opponent_brick": int(row_opp_brick),
+                    "opponent_no_attack": int(bool(opp and inum(opp, "attack_by_8") == 0)),
+                    "opponent_no_primary": int(bool(opp and inum(opp, "primary_board_by_6") == 0)),
+                    "opponent_early_end": int(bool(opp and inum(opp, "no_early_end") == 0)),
+                    "clean_win": int(row_clean),
+                    "first_attack_turn": min(fnum(row, "first_attack_turn", 999.0), 30.0),
+                    "opp_first_attack_turn": min(fnum(opp, "first_attack_turn", 999.0), 30.0) if opp else "",
+                    "first_primary_board_turn": min(fnum(row, "first_primary_board_turn", 999.0), 30.0),
+                    "opp_first_primary_board_turn": min(fnum(opp, "first_primary_board_turn", 999.0), 30.0) if opp else "",
+                    "pressing_main_rate": f"{fnum(row, 'pressing_main_rate'):.6f}",
+                    "opp_pressing_main_rate": f"{fnum(opp, 'pressing_main_rate'):.6f}" if opp else "",
+                }
+            )
+
+        if inum(row, "outcome_win") != 1:
+            continue
         if opp:
             stats["paired_wins"] += 1
-        if candidate_strategy(row):
+        if row_strategy:
             stats["strategy_wins"] += 1
         if inum(row, "setup_success") == 1:
             stats["candidate_setup_wins"] += 1
@@ -235,9 +304,9 @@ def main() -> None:
             stats["candidate_tempo_wins"] += 1
         if inum(row, "no_early_end") == 1:
             stats["candidate_no_early_end_wins"] += 1
-        if opp and opponent_normal(opp):
+        if row_opp_normal:
             stats["opponent_normal_wins"] += 1
-        if opp and opponent_bricked(opp):
+        if row_opp_brick:
             stats["opponent_brick_wins"] += 1
         if opp and inum(opp, "attack_by_8") == 0:
             stats["opponent_no_attack_wins"] += 1
@@ -245,7 +314,7 @@ def main() -> None:
             stats["opponent_no_primary_wins"] += 1
         if opp and inum(opp, "no_early_end") == 0:
             stats["opponent_early_end_wins"] += 1
-        if opp and clean_win(row, opp):
+        if row_clean:
             stats["clean_wins"] += 1
         if opp:
             add_sum(stats, "avg_first_attack_turn_win_sum", min(fnum(row, "first_attack_turn", 999.0), 30.0))
@@ -280,6 +349,14 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(rows)
     print(f"wrote {out} rows={len(rows)}")
+    if args.out_game_csv:
+        game_out = Path(args.out_game_csv)
+        game_out.parent.mkdir(parents=True, exist_ok=True)
+        with game_out.open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=GAME_FIELDS)
+            writer.writeheader()
+            writer.writerows(game_rows)
+        print(f"wrote {game_out} rows={len(game_rows)}")
     for row in rows[: min(20, len(rows))]:
         print(
             f"{row['archetype']} vs {row['opponent_archetype']} "

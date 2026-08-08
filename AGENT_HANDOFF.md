@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 20:10 Asia/Shanghai.
+Last updated: 2026-08-08 21:17 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -358,6 +358,53 @@ Interpretation:
   archetypes and to old Crustle mirror.
 - `new_alakazam7f9` gained anti-Ogerpon behavior but regressed against old
   Alakazam/Crustle, so it is also not a broad upgrade.
+
+Diagnosis added after checking the latest run:
+
+- This pilot did not actually consume the previously mined clean-teacher or
+  weak-matchup success subsets. It trained generic trajectory-conditioned BC
+  from `data/bc_corpus_banded_v12_0701_0807_hist32_log128_board12`, with
+  cross-attention/history/board-history inputs, `--hierarchical-plan`, generic
+  trajectory targets, and step-plan teacher forcing. It did not pass
+  `--aux-corpus`, explicit clean-teacher subset paths, or opponent-specific
+  training filters/weights.
+- Ogerpon failed against Crustle because the supervised signal is almost absent
+  for the target sigs. In the trajectory targets, Ogerpon 697 had `178` games
+  vs Crustle with only `8` wins (`4.5%`), and Ogerpon 5899 had `77` games vs
+  Crustle with only `2` wins (`2.6%`). These rows are also downweighted by the
+  generic outcome/strategy weighting because they are mostly losses.
+- Ogerpon's high-weight data is dominated by already-good matchups, especially
+  Marnie (`~85%` win rate, roughly `39%` decision share, average strategy
+  weight around `1.5`). The model therefore learns "how Ogerpon wins normal
+  matchups", not "how Ogerpon should answer Crustle".
+- Crustle 3cd improved in exactly the supported direction: it had `115` games
+  vs Ogerpon with `100` wins (`87%`), so the new checkpoint strongly beats old
+  Ogerpon candidates. This confirms that the evaluator is seeing the changed
+  supervision; the issue is the target supervision, not a completely inert
+  architecture.
+- Earlier success-only fine-tunes were diagnostic and mostly not broad fixes.
+  `ogerpon_xsig_vs_crustle_success_ft` was random-stable (`0.993`) but had
+  worse focused delta (`avg_delta=-0.0167`, `candidate=0.0283`,
+  `baseline=0.0450`). It should be treated as evidence that Ogerpon-vs-Crustle
+  needs explicit teacher/rule/search construction, not as a finished solution.
+
+Actionable follow-up:
+
+- Make clean teachers first-class training data. Current clean-teacher outputs
+  live under
+  `logs/v12_matchup_teachers_20260808_0701_0807/clean_teacher_selection_min10_brick010/`
+  and subset corpora under
+  `data/bc_corpus_clean_teachers_v12_0701_0807_min10_brick010`.
+- For Ogerpon-vs-Crustle, do not rely on same-sig 697/5899 successes. Use
+  cross-sig teacher `2a5072194fdf` and/or generated teacher rollouts because
+  same-sig positive examples are too sparse.
+- Replace generic trajectory labels with matchup-specific plan labels such as
+  anti-Crustle setup, resource preservation, pressure maintenance, or key
+  target disruption. Generic `strategy_success/setup_success/tempo_success`
+  is too coarse for structural weak matchups.
+- Revisit `--step-plan-teacher-forcing 0.75`; the policy can see clean plan
+  labels during training but must use predicted plan labels at inference, which
+  creates exposure mismatch unless the plan head is itself reliable.
 
 ## 2026-08-08 Packaged v12 Sequence Planner Candidates
 

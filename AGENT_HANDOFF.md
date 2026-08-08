@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 22:01 Asia/Shanghai.
+Last updated: 2026-08-08 23:52 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -17,6 +17,154 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## 2026-08-08 Aggressive Weak-Matchup Counter Work
+
+User explicitly rejected small/filter-only changes after the Ogerpon vs Crustle
+failure-filter pilot only reached about 2.5-4.2% local win rate. Current working
+interpretation:
+
+- Generic BC data is likely drowning the useful weak-matchup success signal.
+  A win/loss filter across all opponents mostly preserves easy/general wins,
+  not the specific counter-plan for a hard pair.
+- `setup_success/tempo_success/strategy_success` are not enough unless they are
+  matchup-conditioned. A successful generic Marnie or Ogerpon trajectory may
+  teach the wrong plan into Ogerpon/Crustle.
+- Structural weaknesses need visible-state rules or teacher/counter policies.
+  Pure BC cannot learn a counter-plan when same-sig clean wins are sparse or
+  the deck list lacks the needed line.
+
+Code added locally and synced to `ks`:
+
+- `ptcg_rl/rule_overlay.py`
+  - new `counter_plan` mode.
+  - Uses visible opponent active/bench/discard card IDs, not only opponent
+    active.
+  - Aggressively forces core evolution/setup for stage decks, Marnie setup vs
+    visible Ogerpon, Ogerpon no-blank-ex-attack/attach discipline vs Crustle,
+    Cynthia Spiritomb routing vs Crustle, Team Rocket board setup, Lucario
+    engine setup, no-early-end, and late attack-window guard.
+- `tools/audit_weak_pair_signal.py`
+  - Scans v12 corpus and reports weak-pair decision share, weak-win decision
+    share, and clean-teacher decision share for top weak pairs.
+- `tools/build_counter_rule_eval_script.py`
+  - Generates RR scripts comparing plain BC vs same BC with `counter_plan`
+    across weak archetype pairs using existing candidate manifests.
+- `tools/summarize_counter_rule_eval.py`
+  - Summarizes base/rule win-rate delta per weak pair.
+- `tools/build_pair_teacher_pipeline.py`
+  - Generates clean teacher subsets and optional pair-specialist training
+    commands for weak matchup pairs. This is the training-side answer to data
+    drowning; do not use tiny aux weights here.
+
+Active remote runner:
+
+```text
+remote script: /tmp/run_aggressive_counter_20260808.sh
+repo: /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+out dir: logs/aggressive_counter_20260808
+corpus: data/bc_corpus_banded_v12_0701_0807_hist32_log128_board12
+weak pairs: logs/eval_next_v11_specialists_20260805/rr_weak_archetype_pairs.csv
+teacher games: logs/v12_matchup_teachers_20260808_0701_0807/clean_teacher_selection_min10_brick010/selected_clean_teacher_games.csv
+```
+
+Runner stages:
+
+1. `weak_pair_signal_v12_0701_0807_top60.csv`
+   - confirms/denies whether clean teacher decisions are tiny relative to all
+     BC decisions.
+2. `rule_rr_top36_g100/` and `rule_rr_top36_g100_summary.csv`
+   - evaluates plain vs `counter_plan` for top weak archetype pairs, not one
+     hand-picked pair.
+3. Builds `/tmp/pair_teacher_top24_clean_pipeline.sh`
+   - does not auto-run training yet in this runner. Inspect the audit/RR first,
+     then run it or regenerate with `--train` for specific pairs.
+
+Completed results:
+
+```text
+signal: logs/aggressive_counter_20260808/weak_pair_signal_v12_0701_0807_top60.csv
+aggressive rule RR: logs/aggressive_counter_20260808/rule_rr_top36_g100_summary.csv
+guard rule RR: logs/aggressive_counter_20260808/rule_guard_rr_top36_g100_summary.csv
+```
+
+Interpretation:
+
+- Clean-teacher signal is tiny in the current generic BC view:
+  `clean_teacher_decision_share` mean `0.00309`, median `0.0`, max `0.0953`.
+  Caveat: many zeros mean the quality audit has not mined that pair yet, not
+  necessarily that no clean wins exist.
+- Broad/aggressive `counter_plan` was a failure: `36` weak pairs, `7` improved,
+  `29` worsened, average delta `-0.0661`, worst `-0.33`.
+- This confirms the user's concern: small weighting/filtering and blunt rules
+  do not solve structural weaknesses. Broad rules break the model's learned
+  tempo.
+- Default `counter_plan` was changed after the failed RR to a narrow high-
+  confidence guard. The broad version remains available as
+  `counter_plan_aggressive` only for reproduction.
+- Guard RR is roughly neutral: `36` weak pairs, `17` improved, `18` worsened,
+  average delta `-0.0094`, best `+0.13`, worst `-0.13`. Do not expect this to
+  fix weak matchups by itself.
+- Therefore the next real improvement path is pair-specific clean trajectory
+  training / teacher rollout, then evaluate those specialists against the weak
+  opponent and random. Use rules only as hard safety guards.
+
+Active pair-teacher job:
+
+```text
+launcher: /tmp/pair_teacher_top60_clean10_train.sh
+nohup log: logs/aggressive_counter_20260808/pair_teacher_top60_clean10_train.nohup.log
+manifest: /tmp/pair_teacher_top60_clean10_train.manifest.csv
+out corpus: data/bc_pair_teachers_v12_0701_0807_top60_clean10
+checkpoints: checkpoints/pair_teachers_v12_0701_0807_top60_clean10
+planned_train pairs: 12
+skipped_low_clean_games pairs: 48
+min clean games: 10
+```
+
+The 12 planned clean teacher pair specialists are:
+
+```text
+Teal Mask Ogerpon -> Crustle Wall, clean_games=68
+Mega Lucario -> Crustle Wall, clean_games=32
+Mega Lucario -> Marnie Grimmsnarl, clean_games=268
+Marnie Grimmsnarl -> Teal Mask Ogerpon, clean_games=283
+Team Rocket Mewtwo -> Teal Mask Ogerpon, clean_games=25
+Festival Lead -> Mega Lopunny, clean_games=12
+Alakazam -> Team Rocket Mewtwo, clean_games=861
+Teal Mask Ogerpon -> Mega Lopunny, clean_games=99
+Crustle Wall -> Mega Lopunny, clean_games=27
+Mega Lucario -> Teal Mask Ogerpon, clean_games=38
+Teal Mask Ogerpon -> Alakazam, clean_games=20
+Crustle Wall -> Team Rocket Mewtwo, clean_games=405
+```
+
+Monitor pair-teacher:
+
+```bash
+ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/aggressive_counter_20260808/pair_teacher_top60_clean10_train.nohup.log'
+ssh -F /home/jie/.ssh/config ks 'ps -eo pid,ppid,stat,pcpu,pmem,etime,cmd | grep -E "pair_teacher_top60|bc2_.*clean_teacher|build_bc_subset|bc2_train.py" | grep -v grep'
+```
+
+Do not use `counter_plan_aggressive` for submission. If testing rules, use
+default `counter_plan` and only after RR confirms it is not harming the target
+pool. If testing strategy improvement, evaluate the pair-teacher checkpoints
+directly against their target opponent and random; expect overfit because these
+are pure clean-win specialists.
+
+Monitor:
+
+```bash
+ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/aggressive_counter_20260808/audit_weak_pair_signal_top60.log'
+ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/aggressive_counter_20260808/counter_rule_rr_top36_g100.runner.log'
+ssh -F /home/jie/.ssh/config ks 'pgrep -af "run_aggressive_counter_20260808|counter_rule_rr_top36"'
+```
+
+Local ssh note:
+
+- Plain `ssh ks` currently failed on this machine because a system ssh config
+  include had bad permissions. Use `ssh -F /home/jie/.ssh/config ks ...` and
+  `scp -F /home/jie/.ssh/config ...`.
 
 ## 2026-08-08 BC Memory Reduction And Adaptive Date Windows
 

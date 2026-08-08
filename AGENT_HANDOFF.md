@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 21:35 Asia/Shanghai.
+Last updated: 2026-08-08 22:01 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -491,6 +491,35 @@ ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgr
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/v12_failure_filtered_20260808/train_ogerpon697_2a507_drop_hardfail.log'
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/v12_failure_filtered_20260808/train_ogerpon5899_2a507_drop_hardfail.log'
 ```
+
+Completed result:
+
+```text
+Train:
+  697+2a best epoch 8, val=1.0222
+  5899+2a best epoch 8, val=1.0254
+
+Random g300:
+  697 deck:  298/300 = 99.3%
+  5899 deck: 297/300 = 99.0%
+
+Focused vs old Crustle 3cd:
+  697 drop-hardfail vs old Crustle: 3/120 = 2.5%
+  5899 drop-hardfail vs old Crustle: 5/120 = 4.2%
+```
+
+Interpretation:
+
+- Failure-trajectory filtering worked technically and did not cause a basic
+  play collapse.
+- It did not repair the structural Ogerpon-vs-Crustle weakness. This matches
+  the earlier diagnosis: removing bad losses improves label hygiene, but does
+  not create the missing anti-Crustle plan.
+- Use this filter as a hygiene primitive for future clean-teacher/rollout
+  training, not as the main fix. The next meaningful step is explicit
+  matchup-teacher data: e.g. keep Ogerpon-vs-Crustle clean wins from
+  `2a5072194fdf`, add matchup-specific plan labels, or generate teacher
+  rollouts with an anti-Crustle policy.
 
 ## 2026-08-08 Packaged v12 Sequence Planner Candidates
 

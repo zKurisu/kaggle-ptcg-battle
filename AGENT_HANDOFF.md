@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 19:38 Asia/Shanghai.
+Last updated: 2026-08-08 19:47 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -50,6 +50,54 @@ Packaging script used:
 ```text
 /tmp/package_v12_seqplan_candidates_20260808.sh
 ```
+
+## 2026-08-08 Ogerpon v12 Sequence Planner Diagnosis
+
+The current `Ogerpon 2a5072194fdf` sequence-planner checkpoint is weak, but
+this should not be generalized to all Ogerpon.
+
+Observed random results:
+
+```text
+v12 seqplan 2a507: 382/500 = 76.4%
+v12 history-init 2a507: 426/500 = 85.2%
+older cross-attn 697: 496/500 = 99.2%
+older cross-attn 5899: 497/500 = 99.4%
+w4 sigpure 697: 197/200 = 98.5%
+w4 sigpure 2a507: 177/200 = 88.5%
+w4 sigpure 5899: 200/200 = 100.0%
+```
+
+Training-band v12 corpus rows for Ogerpon sigs using bands
+`900-999`, `1000-1099`, `1100-1199`, `1200+`:
+
+```text
+697a82e582d5: rows=180406, row_win_share=0.552,
+  bands={1000-1099:93297, 1100-1199:33439, 1200+:41403, 900-999:12267}
+
+2a5072194fdf: rows=98683, row_win_share=0.610,
+  bands={1000-1099:98441, 1100-1199:242}
+
+5899c772bace: rows=78444, row_win_share=0.568,
+  bands={1000-1099:27456, 1100-1199:40535, 900-999:10453}
+```
+
+Important interpretation:
+
+- The `2a507` sequence-planner model was not trained on low-band `600-699`
+  rows because the training command filtered to `900+`, but it also has almost
+  no `1100+` training signal and no `1200+` rows. It is effectively a
+  1000-band imitation target, not a top-player Ogerpon target.
+- `697` and `5899` remain much stronger Ogerpon candidates. If testing Ogerpon
+  with v12/sequence planner, train/evaluate those sigs first.
+- The v12 seqplan architecture is active: checkpoints contain history/log/board
+  history and hierarchical `plan_*` weights. The conservative part is the
+  objective: it is still mainly next-action BC. `trajectory_csv=none` and
+  `trajectory_target_loss_weight=0.0` in the current seqplan run.
+- Opponent action history is disabled (`opp_history_k=0`) for submittable
+  models. Own action history at inference is self-generated, while training
+  history is teacher/episode history; this exposure mismatch can hurt sequence
+  models if early decisions go off-policy.
 
 ## 2026-08-07 v12 Multi-Stream History Extraction
 

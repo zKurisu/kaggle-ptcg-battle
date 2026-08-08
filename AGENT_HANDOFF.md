@@ -141,9 +141,13 @@ expected jobs: 17 weak pairs with clean_games >= 20
 summary when complete: logs/strategy_contrast_20260809/all_clean20/strategy_seed_summary.csv
 ```
 
-At the time of this note, 15/17 pair contrast outputs had finished; the slow
-remaining jobs were `Marnie Grimmsnarl -> Teal Mask Ogerpon` and
-`Alakazam -> Team Rocket Mewtwo` because their corpora are large.
+The all-pair contrast runner completed and wrote
+`logs/strategy_contrast_20260809/all_clean20/strategy_seed_summary.csv`.
+Top repeated signals are mostly "opponent key engine is already active/on
+board" loss-overrepresented events: Crustle vs Ogerpon/Lucario, Lopunny vs
+Festival/TRM, Dragapult vs Festival, and Mega Lucario engine pieces. This means
+the next rule/planner work should focus on preventing, delaying, or routing
+around key engine completion windows, not on replaying clean-win action labels.
 
 Pair-teacher evaluation was also run:
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -13,6 +14,9 @@ import torch
 from ptcg_rl.encoder import OPT_FEAT_DIM, STATE_FEAT_DIM
 from ptcg_rl.history_features import BOARD_HISTORY_FEAT_DIM
 from ptcg_rl.plan_labels import PLAN_DIM, PLAN_LABELS, label_decision_plan
+
+
+_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 
 @dataclass
@@ -44,12 +48,41 @@ class BCBatch:
     max_options: int
 
 
-def discover_npz_paths(corpus: str, archetype: str, score_bands: Iterable[str]) -> list[str]:
+def filter_npz_paths_by_date(
+    paths: Iterable[str],
+    *,
+    date_from: str = "",
+    date_to: str = "",
+) -> list[str]:
+    date_from = str(date_from or "").strip()
+    date_to = str(date_to or "").strip()
+    if not date_from and not date_to:
+        return list(paths)
+    out: list[str] = []
+    for path in paths:
+        m = _DATE_RE.search(os.path.basename(path))
+        day = m.group(1) if m else ""
+        if date_from and day and day < date_from:
+            continue
+        if date_to and day and day > date_to:
+            continue
+        out.append(path)
+    return out
+
+
+def discover_npz_paths(
+    corpus: str,
+    archetype: str,
+    score_bands: Iterable[str],
+    *,
+    date_from: str = "",
+    date_to: str = "",
+) -> list[str]:
     arch = archetype.replace(" ", "_")
     paths: list[str] = []
     for band in score_bands:
         paths.extend(sorted(glob.glob(os.path.join(corpus, arch, band.replace(" ", "_"), "*.npz"))))
-    return paths
+    return filter_npz_paths_by_date(paths, date_from=date_from, date_to=date_to)
 
 
 def _label_status(data: dict[str, np.ndarray], i: int, include_empty: bool) -> str:
@@ -355,7 +388,7 @@ class BCCorpus:
                         f"file={file_rate:.0f}/s total={rate:.0f}/s",
                         flush=True,
                     )
-            self.npz_data.append(data)
+            file_groups: list[list[tuple[int, int]]] = []
             if self.split_by_game and game_groups:
                 for rows in game_groups.values():
                     rows = sorted(rows, key=lambda x: x[1])
@@ -377,9 +410,50 @@ class BCCorpus:
                             for label_i, label_name in enumerate(PLAN_LABELS):
                                 if float(target[label_i]) > 0.0:
                                     self.step_plan_counts[label_name] += 1
-                    self.groups.append(rows)
+                    file_groups.append(rows)
             elif group:
-                self.groups.append(group)
+                file_groups.append(group)
+
+            if not file_groups:
+                if load_progress_every:
+                    print(
+                        f"  loaded {path_i}/{len(paths)} {os.path.basename(path)} "
+                        f"raw={self.stats['raw']-file_raw0} kept={self.stats['kept']-file_kept0} "
+                        f"stored=0 {time.time()-file_t0:.1f}s",
+                        flush=True,
+                    )
+                continue
+
+            kept_rows = sorted({int(si) for rows in file_groups for _, si in rows})
+            if kept_rows and len(kept_rows) < n_rows:
+                old_to_new = {old: new for new, old in enumerate(kept_rows)}
+                idx = np.asarray(kept_rows, dtype=np.int64)
+                compacted: dict[str, np.ndarray] = {}
+                for key, value in data.items():
+                    arr = np.asarray(value)
+                    if arr.ndim > 0 and arr.shape[0] == n_rows:
+                        compacted[key] = arr[idx]
+                    else:
+                        compacted[key] = value
+                data = compacted
+                file_groups = [
+                    [(di, old_to_new[int(si)]) for _, si in rows if int(si) in old_to_new]
+                    for rows in file_groups
+                ]
+                if self.history_k > 0:
+                    prev_old = file_history_prev[idx]
+                    prev_new = np.full(prev_old.shape, -1, dtype=np.int32)
+                    for r in range(prev_old.shape[0]):
+                        for c in range(prev_old.shape[1]):
+                            old = int(prev_old[r, c])
+                            if old >= 0:
+                                prev_new[r, c] = old_to_new.get(old, -1)
+                    file_history_prev = prev_new
+                if self.step_plan:
+                    file_step_plan = file_step_plan[idx]
+
+            self.npz_data.append(data)
+            self.groups.extend(rows for rows in file_groups if rows)
             if self.history_k > 0:
                 self.history_prev.append(file_history_prev)
             if self.step_plan:
@@ -388,7 +462,7 @@ class BCCorpus:
                 print(
                     f"  loaded {path_i}/{len(paths)} {os.path.basename(path)} "
                     f"raw={self.stats['raw']-file_raw0} kept={self.stats['kept']-file_kept0} "
-                    f"{time.time()-file_t0:.1f}s",
+                    f"stored={len(kept_rows)} {time.time()-file_t0:.1f}s",
                     flush=True,
                 )
 

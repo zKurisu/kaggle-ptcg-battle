@@ -6,6 +6,7 @@ import argparse
 import csv
 import glob
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -27,6 +28,7 @@ RETREAT = 12
 ATTACK = 13
 END = 14
 PRESSING_TYPES = {PLAY, ATTACH, EVOLVE, ABILITY, RETREAT, ATTACK}
+DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 FIELDS = [
     "game_key",
@@ -103,7 +105,31 @@ def clean_arch(name: str) -> str:
     return name.replace(" ", "_")
 
 
-def discover_paths(corpus: str, archetype: str, score_bands: list[str]) -> list[str]:
+def filter_paths_by_date(paths: list[str], *, date_from: str = "", date_to: str = "") -> list[str]:
+    date_from = str(date_from or "").strip()
+    date_to = str(date_to or "").strip()
+    if not date_from and not date_to:
+        return paths
+    out: list[str] = []
+    for path in paths:
+        m = DATE_RE.search(os.path.basename(path))
+        day = m.group(1) if m else ""
+        if date_from and day and day < date_from:
+            continue
+        if date_to and day and day > date_to:
+            continue
+        out.append(path)
+    return out
+
+
+def discover_paths(
+    corpus: str,
+    archetype: str,
+    score_bands: list[str],
+    *,
+    date_from: str = "",
+    date_to: str = "",
+) -> list[str]:
     root = Path(corpus) / clean_arch(archetype)
     if not root.exists():
         return []
@@ -112,7 +138,7 @@ def discover_paths(corpus: str, archetype: str, score_bands: list[str]) -> list[
         paths.extend(sorted(glob.glob(str(root / band.replace(" ", "_") / "*.npz"))))
     if not score_bands:
         paths = sorted(glob.glob(str(root / "*" / "*.npz")))
-    return paths
+    return filter_paths_by_date(paths, date_from=date_from, date_to=date_to)
 
 
 def fnum(value, default: float = 0.0) -> float:
@@ -310,6 +336,10 @@ def main() -> None:
     p.add_argument("--corpus", required=True)
     p.add_argument("--archetype", required=True)
     p.add_argument("--score-bands", nargs="*", default=[])
+    p.add_argument("--date-from", default="",
+                   help="keep only corpus npz files whose filename date is >= YYYY-MM-DD")
+    p.add_argument("--date-to", default="",
+                   help="keep only corpus npz files whose filename date is <= YYYY-MM-DD")
     p.add_argument("--deck-sig", action="append", default=[])
     p.add_argument("--team-name", action="append", default=[])
     p.add_argument("--opponent-archetype", action="append", default=[])
@@ -319,7 +349,13 @@ def main() -> None:
     p.add_argument("--out-csv", required=True)
     args = p.parse_args()
 
-    paths = discover_paths(args.corpus, args.archetype, args.score_bands)
+    paths = discover_paths(
+        args.corpus,
+        args.archetype,
+        args.score_bands,
+        date_from=args.date_from,
+        date_to=args.date_to,
+    )
     if not paths:
         raise FileNotFoundError("no corpus .npz files found")
     deck_sigs = {str(x) for x in args.deck_sig if str(x)}

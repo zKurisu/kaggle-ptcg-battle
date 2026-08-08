@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 19:59 Asia/Shanghai.
+Last updated: 2026-08-08 20:10 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -17,6 +17,107 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## 2026-08-08 BC Memory Reduction And Adaptive Date Windows
+
+Code change committed after the strategy-conditioned pilot:
+
+- `ptcg_rl/bc2/data.py`
+  - Added `filter_npz_paths_by_date` and optional `date_from/date_to` to
+    `discover_npz_paths`.
+  - `BCCorpus` now skips files with zero kept rows.
+  - `BCCorpus` now stores only kept rows for each loaded npz, remapping
+    groups and history indices after filtering. This is the main memory fix.
+- `tools/bc2_train.py`
+  - Added `--date-from YYYY-MM-DD` and `--date-to YYYY-MM-DD`.
+- `tools/build_trajectory_targets.py`
+  - Added matching `--date-from` and `--date-to`.
+
+Local smoke tests passed:
+
+```text
+python3 -m py_compile ptcg_rl/bc2/data.py tools/bc2_train.py tools/build_trajectory_targets.py
+compact smoke ok: 6 synthetic rows, 3 kept rows, stored 3 rows, history/group collation passed
+```
+
+Reasoning:
+
+- Old `BCCorpus` loaded whole npz arrays even when a `deck_sig` filter kept only
+  a subset, and it also stored files with zero kept rows.
+- For large sigs like `Alakazam 7f9`, all-date rows were `2,484,992`; this was
+  the memory risk.
+- Recommended default for low-memory strategy pilots is `--date-from
+  2026-08-01`. It keeps:
+  - `Ogerpon 697`: `154,339/180,406` rows, 85.6%.
+  - `Ogerpon 5899`: `78,444/78,444` rows, 100%.
+  - `Crustle 3cd`: `49,155/548,969` rows, 9.0%.
+  - `Alakazam 7f9`: `398,860/2,484,992` rows, 16.1%.
+- For Crustle, `2026-08-01+` was judged too small for this pilot, so the active
+  adaptive runner uses `2026-07-18+`.
+
+Old all-date strategy runner was stopped because the Alakazam process was still
+using old full-memory code and had reached roughly `106GiB` host memory used.
+
+The first uniform low-memory runner used `--date-from 2026-08-01` for every
+deck:
+
+```text
+script: /tmp/run_v12_strategy_conditioned_recent0801_20260808.sh
+runner log: logs/v12_strategy_conditioned_recent0801_20260808/runner.log
+checkpoint dir: checkpoints/v12_strategy_conditioned_recent0801_20260808
+date_from: 2026-08-01
+PTCG_DISABLE_CUDNN=1 in training commands
+```
+
+It was then stopped deliberately before completion because one date window is
+not appropriate for every deck. In particular, `Crustle 3cd` had only `49,155`
+rows from `2026-08-01+`, which is likely too small for a wall/stall archetype.
+
+Current adaptive runner:
+
+```text
+script: /tmp/run_v12_strategy_conditioned_adaptive_20260808.sh
+runner log: logs/v12_strategy_conditioned_adaptive_20260808/runner.log
+checkpoint dir: checkpoints/v12_strategy_conditioned_adaptive_20260808
+PTCG_DISABLE_CUDNN=1 in training commands
+runner pids at check: 2974502 wrapper, 2974504 bash runner
+memory stayed around 54GiB host used at restart/check
+```
+
+Adaptive date windows:
+
+```text
+Ogerpon 697    date_from=2026-08-01, rows=154339
+Ogerpon 5899   date_from=2026-08-01, rows=78444
+Crustle 3cd    date_from=2026-07-18, expected rows about 160533
+Alakazam 7f9   date_from=2026-08-01, rows=398860
+```
+
+Reason for the different windows:
+
+```text
+Crustle 3cd rows:
+  >=2026-08-01:  49155 rows, likely too small.
+  >=2026-07-18: ~160533 rows, better target size without returning to all 548969 rows.
+
+Alakazam 7f9 rows:
+  all dates:      2484992 rows, too large for this pilot.
+  >=2026-08-01:   398860 rows, large enough and much safer.
+
+Ogerpon 697:
+  >=2026-08-01 keeps 85.6% of training-band rows.
+
+Ogerpon 5899:
+  data only exists from 2026-08-01 onward in selected bands, so no reduction.
+```
+
+Monitor:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 160 logs/v12_strategy_conditioned_adaptive_20260808/runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "run_v12_strategy_conditioned_adaptive|bc2_train.py|build_trajectory_targets.py"'
+ssh ks 'free -h && nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader,nounits'
+```
 
 ## 2026-08-08 Aggressive Strategy-Conditioned BC
 

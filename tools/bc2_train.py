@@ -437,6 +437,10 @@ def main() -> None:
                         help="repeat aux corpus paths N times as a coarse sample multiplier")
     parser.add_argument("--archetype", default="Marnie Grimmsnarl")
     parser.add_argument("--score-bands", nargs="+", default=["1200+", "1100-1199", "1000-1099"])
+    parser.add_argument("--date-from", default="",
+                        help="keep only corpus npz files whose filename date is >= YYYY-MM-DD")
+    parser.add_argument("--date-to", default="",
+                        help="keep only corpus npz files whose filename date is <= YYYY-MM-DD")
     parser.add_argument("--deck-sig", action="append", default=[],
                         help="filter to one or more deck signatures; repeatable. Requires freshly extracted corpus metadata.")
     parser.add_argument("--team-name", action="append", default=[],
@@ -576,7 +580,13 @@ def main() -> None:
         gb=args.cuda_memory_gb,
         fraction=args.cuda_memory_fraction,
     )
-    paths = discover_npz_paths(args.corpus, args.archetype, args.score_bands)
+    paths = discover_npz_paths(
+        args.corpus,
+        args.archetype,
+        args.score_bands,
+        date_from=args.date_from,
+        date_to=args.date_to,
+    )
     base_path_count = len(paths)
     aux_path_count = 0
     aux_details: list[tuple[str, int]] = []
@@ -586,6 +596,8 @@ def main() -> None:
             aux_root,
             args.aux_archetype or args.archetype,
             args.aux_score_bands,
+            date_from=args.date_from,
+            date_to=args.date_to,
         )
         aux_path_count += len(aux_paths)
         aux_details.append((aux_root, len(aux_paths)))
@@ -772,6 +784,7 @@ def main() -> None:
 
     print(
         f"BC2: {args.archetype} {args.score_bands} device={device} "
+        f"date_from={args.date_from or 'all'} date_to={args.date_to or 'all'} "
         f"{memory_limit_msg + ' ' if memory_limit_msg else ''}"
         f"arch={args.arch} width={args.width} state_layers={args.state_layers} "
         f"hierarchical_plan={args.hierarchical_plan} "

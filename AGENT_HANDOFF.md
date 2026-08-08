@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 17:05 Asia/Shanghai.
+Last updated: 2026-08-08 17:34 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -329,6 +329,36 @@ Runtime update at 2026-08-08 17:05 Asia/Shanghai:
   usually already above `160GiB/256GiB` cgroup memory, and Marnie b8f corpus
   loads are large enough to cause process kills. Run it separately after memory
   drops or after making `BCCorpus` streaming/memmap.
+
+Update at 2026-08-08 17:34 Asia/Shanghai:
+
+- Wave 1 completed successfully.
+  - `lucario_43d` best `val=0.9814`; accuracy on 30k samples:
+    `exact=0.718`, `first=0.731`, `top3=0.945`; random:
+    `300/300 = 100.0%`.
+  - `festival_e82` best `val=0.9447`; accuracy on 30k samples:
+    `exact=0.713`, `first=0.723`, `top3=0.935`; random:
+    `300/300 = 100.0%`.
+- Wave 2 started, but `trmewtwo_06f0` with `width=3 batch=1024` OOMed on GPU2
+  in the hierarchical option scorer before producing a checkpoint.
+- A separate retry was launched:
+  `/tmp/run_trmewtwo_seqplan_w3_b512_retry_20260808.sh`, log
+  `logs/v12_sequence_planner_20260808/trmewtwo_06f0_w3_b512.runner.log`,
+  train log `logs/v12_sequence_planner_20260808/trmewtwo_06f0_w3_b512.train.log`,
+  save path
+  `checkpoints/v12_sequence_planner_20260808/bc2_trmewtwo_06f0_seqplan_scratch_w3_b512.npz`.
+  It uses the same scratch sequence-planner recipe but `batch=512` and
+  `--cuda-memory-gb 22`.
+- `ogerpon_2a507` with `width=3 batch=1024` is still running normally. At the
+  last check it had reached epoch 5/12 after saving bests through epoch 4
+  (`val=0.9503` at epoch 4).
+- Monitor active jobs:
+
+```bash
+ssh ks 'pgrep -af "bc2_train.py.*2a5072194fdf|bc2_train.py.*06f0b265154c|bc2_accuracy.py.*seqplan|eval_bc.py.*seqplan|run_trmewtwo_seqplan|run_sequence_planner_scratch_w3"'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/v12_sequence_planner_20260808/ogerpon_2a507_w3.train.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/v12_sequence_planner_20260808/trmewtwo_06f0_w3_b512.train.log'
+```
 
 ## 2026-08-08 Top-Player Strategy Mining
 

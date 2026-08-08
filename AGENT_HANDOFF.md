@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 17:51 Asia/Shanghai.
+Last updated: 2026-08-08 19:15 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -381,6 +381,73 @@ Update at 2026-08-08 17:51 Asia/Shanghai:
   `batch=512`, `--cuda-memory-gb 22`, `--step-plan`,
   `--step-plan-loss-weight 0.30`, `--step-plan-teacher-forcing 0.50`,
   `checkpoint_every=1`, `epochs=12`.
+
+Update at 2026-08-08 19:15 Asia/Shanghai:
+
+- The `pkm_repo` orphan multiprocessing workers on `ks` were cleaned after the
+  user confirmed they were stale. This removed 134 orphan worker processes and
+  reduced cgroup usage from about `242GiB` to `137GiB`; RSS dropped from about
+  `134GiB` to `32GiB`.
+- `drop_caches` is read-only in this container, and cgroup
+  `memory.force_empty` is unavailable. A non-destructive
+  `posix_fadvise(DONTNEED)` file-cache evict scanned about `78.7GiB` and only
+  reduced cgroup usage from `137.0GiB` to `132.5GiB`.
+- The old waiting-only Marnie guard was stopped, and Marnie scratch sequence
+  planner was started directly on `cuda:3` with a watchdog that kills Marnie
+  first if cgroup usage exceeds `246GiB`.
+- Active Marnie job:
+  `checkpoints/v12_sequence_planner_20260808/bc2_marnie_b8f_seqplan_scratch_w3_b512.npz`.
+  At the latest check it was around epoch `2/12`, step `3600/7610`, cgroup
+  about `195GiB`, GPU3 about `7.8GiB`.
+- TRM scratch sequence planner completed. Best was epoch 10:
+  `val=0.9239`; epoch 11/12 slightly worsened. Random audit on the scratch
+  checkpoint was `499/500 = 99.8%`.
+- Non-Marnie scratch sequence-planner tests were completed in:
+  `logs/eval_v12_sequence_planner_20260808_nonmarnie`.
+  These are the current scratch sequence-planner checkpoints under
+  `checkpoints/v12_sequence_planner_20260808`, not the older v12 history init
+  checkpoints.
+- Random g500:
+  - `seqplan_festival_e82`: `500/500 = 100.0%`
+  - `seqplan_lucario_43d`: `493/500 = 98.6%`
+  - `seqplan_trmewtwo_06f0`: `499/500 = 99.8%`
+  - `seqplan_ogerpon_2a507`: `382/500 = 76.4%`
+- Same-sig mini RR row means (`g80`, row beats all other entries):
+  - `seqplan_trmewtwo_06f0`: `0.670`
+  - `seqplan_festival_e82`: `0.632`
+  - `seqplan_lucario_43d`: `0.536`
+  - `seqplan_ogerpon_2a507`: `0.175`
+  - w4 baselines in same matrix: Festival `0.679`, TRM `0.639`,
+    Lucario `0.452`, Ogerpon `0.214`.
+- Baseline-delta against w4 random_ge097 pool (`17` opponents, `80` games):
+  - `seqplan_lucario_43d`: `avg_delta=+0.124`, candidate `0.480`,
+    baseline `0.357`, lost `1/17`; worst
+    `mega_lopunny_sig2_276707c0:-0.037`, best
+    `alakazam_sig2_5a5ea26c:+0.225`.
+  - `seqplan_festival_e82`: `avg_delta=+0.046`, candidate `0.593`,
+    baseline `0.547`, lost `3/17`; worst
+    `mega_lopunny_sig1_b0cb21e2:-0.188`, best
+    `marnie_grimmsnarl_sig2_2c22fa76:+0.188`.
+  - `seqplan_trmewtwo_06f0`: `avg_delta=-0.024`, candidate `0.493`,
+    baseline `0.517`, lost `11/17`; worst
+    `team_rocket_mewtwo_sig1_06f0b265:-0.150`, best
+    `teal_mask_ogerpon_sig1_697a82e5:+0.087`.
+  - `seqplan_ogerpon_2a507`: `avg_delta=-0.074`, candidate `0.127`,
+    baseline `0.201`, lost `13/17`; worst
+    `mega_lopunny_sig1_b0cb21e2:-0.213`, best
+    `festival_lead_sig1_e82dcbe6:+0.050`.
+- Interpretation:
+  - Scratch sequence planner is not globally better.
+  - `seqplan_lucario_43d` is the clearest positive result and is a reasonable
+    ablation submission candidate.
+  - `seqplan_festival_e82` is mildly positive against the w4 pool but weaker
+    than w4 Festival in same-sig RR, so it is a lower-priority candidate.
+  - `seqplan_trmewtwo_06f0` passes random and same-sig RR, but loses to its w4
+    baseline on the broader w4 pool; do not treat it as an improvement.
+  - `seqplan_ogerpon_2a507` is a failed version. It fails random gate and
+    broad matchup checks. Do not submit or continue training it by just adding
+    epochs; the plan supervision likely distorts Ogerpon's core action
+    distribution.
 
 ## 2026-08-08 Top-Player Strategy Mining
 

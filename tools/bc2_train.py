@@ -11,6 +11,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
+if os.environ.get("PTCG_DISABLE_CUDNN"):
+    torch.backends.cudnn.enabled = False
+
 _HERE = Path(__file__).resolve().parent
 _REPO = _HERE.parent
 sys.path.insert(0, str(_REPO))

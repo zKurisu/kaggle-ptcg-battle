@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 import time
 from collections import defaultdict
@@ -10,6 +11,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
+
+if os.environ.get("PTCG_DISABLE_CUDNN"):
+    torch.backends.cudnn.enabled = False
 
 _HERE = Path(__file__).resolve().parent
 _REPO = _HERE.parent

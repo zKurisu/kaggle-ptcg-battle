@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 03:30 Asia/Shanghai.
+Last updated: 2026-08-08 10:40 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -12,7 +12,7 @@ This file is the first place a new agent should read before touching the project
 - Remote original workspace also exists in older notes: `ks:/home/jie/Do/0_PTCG/workspace/ptcg_rl_git`
 - Current remote training data for active BC experiments:
   - Completed stable baseline: `data/bc_corpus_banded_v11_0701_0804`
-  - New v12 extraction in progress: `data/bc_corpus_banded_v12_0701_0805_hist32_log128_board12`
+  - Completed v12 history corpus: `data/bc_corpus_banded_v12_0701_0805_hist32_log128_board12`
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
@@ -157,6 +157,43 @@ Update at 2026-08-08 03:30 Asia/Shanghai:
   Marnie random, evaluate the no-history Lucario checkpoint, then launch the
   remaining nohist/cross wave in a fresh script. Prefer CPU or a fresh CUDA
   process with lower memory pressure for the Marnie accuracy retry.
+
+Update at 2026-08-08 10:40 Asia/Shanghai:
+
+- The user requested parallel execution because all A800 GPUs had enough free
+  memory. The sequential resume script was stopped at the wrapper level:
+  `/tmp/run_v12_history_pilots_resume_20260808.sh`. Its existing Marnie CPU
+  accuracy child was intentionally left running to preserve progress.
+- Active parallel runner:
+  `/tmp/run_v12_history_pilots_parallel_20260808.sh`, log
+  `logs/v12_history_pilots_parallel_20260808.runner.log`.
+- This runner evaluates existing Marnie hist and Lucario nohist checkpoints and
+  runs pointer/no-history jobs in parallel:
+  - `marnie_b8f_v12nohist_pointer_refit` on GPU0.
+  - `ogerpon_5899_v12nohist_pointer_refit` on GPU1.
+- `lucario_43d_v12hist_cross_init` failed again under regular cuDNN with
+  `CUDNN_STATUS_NOT_INITIALIZED`. The old Marnie cross process was killed before
+  it likely hit the same failure.
+- Added `PTCG_DISABLE_CUDNN=1` support in `tools/bc2_train.py` and
+  `tools/bc2_accuracy.py`. When this env var is set, `torch.backends.cudnn.enabled`
+  is disabled before model construction. This is intended only for history/GRU
+  CUDA runs that hit cuDNN initialization errors.
+- Active cross-only retry:
+  `/tmp/run_v12_cross_nocudnn_20260808.sh`, log
+  `logs/v12_cross_nocudnn_20260808.runner.log`.
+  It exports `PTCG_DISABLE_CUDNN=1` and runs:
+  - `lucario_43d_v12hist_cross_init` on GPU2.
+  - `marnie_b8f_v12hist_cross_init` on GPU3.
+- The nocudnn Lucario cross retry passed the previous failure point and reached
+  epoch 1, so the env-var workaround appears viable.
+
+Monitor:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 100 logs/v12_history_pilots_parallel_20260808.runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 100 logs/v12_cross_nocudnn_20260808.runner.log'
+ssh ks 'pgrep -af "run_v12_history_pilots_parallel|run_v12_cross_nocudnn|bc2_train.py.*v12_history_pilots|bc2_accuracy.py.*v12_history_pilots|eval_bc.py.*v12_history_pilots"'
+```
 
 ## 2026-08-08 Top-Player Strategy Mining
 

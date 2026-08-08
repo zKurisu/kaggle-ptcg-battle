@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 10:50 Asia/Shanghai.
+Last updated: 2026-08-08 11:45 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -4302,6 +4302,93 @@ ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && for
 When this finishes, first inspect `*.accuracy.log` and `*.random_g500.log`.
 Only if Marnie/Ogerpon/Lucario random is stable should the next step be paired
 baseline-delta versus the existing w4 specialist pool.
+
+## 2026-08-08 Matchup Teacher Mining
+
+Important user correction:
+
+- For weak-matchup success mining, do not restrict demonstrations to the exact
+  target deck signature. Example: for Ogerpon into Crustle, wins from all Teal
+  Mask Ogerpon signatures are relevant because the deck plans are similar.
+- First find which same-archetype signature/team best solves the weak matchup:
+  which Ogerpon beats Crustle, which Marnie beats Ogerpon, which Lucario beats
+  its weak target, and so on.
+- Also separate real strategy wins from lucky wins. A weak-matchup win should
+  not automatically become a high-weight teacher if the opponent bricked, failed
+  to attack, failed to set up its primary line, or made repeated early-end
+  decisions.
+
+New tools added locally and synced to `ks`:
+
+```text
+tools/find_matchup_teachers.py
+tools/audit_teacher_win_quality.py
+tools/run_matchup_quality_audits.py
+tools/build_trajectory_targets.py  # enhanced strategy target columns
+```
+
+`find_matchup_teachers.py` scans a BC corpus and ranks same-archetype teacher
+cohorts by `(archetype, opponent_archetype, deck_sig, team_name)`. It writes
+pair-level success coverage and teacher-level rankings by support, win rate,
+share of pair wins, and quality score.
+
+`audit_teacher_win_quality.py` takes two `build_trajectory_targets.py` CSVs for
+both sides of a matchup and pairs the two players by episode. It reports:
+
+- `clean_wins`: candidate win, candidate setup/tempo is coherent, and opponent
+  also had a plausible setup/tempo.
+- `opponent_brick_wins`: opponent failed attack/setup or showed low pressing
+  rate/early-end behavior.
+- `strategy_wins`: candidate win with candidate setup or tempo success.
+
+Use `clean_teacher` rows as high-weight strategy data. Treat
+`mostly_opponent_brick` rows as low-weight evidence or exclude them from success
+BC subsets.
+
+Active remote teacher scan:
+
+```text
+script: /tmp/run_v12_matchup_teacher_scan_20260808.sh
+runner log: logs/v12_matchup_teachers_20260808.runner.log
+outputs:
+  logs/v12_matchup_teachers_20260808/pairs_major_900plus.csv
+  logs/v12_matchup_teachers_20260808/teachers_major_900plus_top30.csv
+corpus: data/bc_corpus_banded_v12_0701_0805_hist32_log128_board12
+score bands: 1200+, 1100-1199, 1000-1099, 900-999
+archetypes:
+  Alakazam, Crustle Wall, Dragapult, Festival Lead, Marnie Grimmsnarl,
+  Mega Lopunny, Mega Lucario, Teal Mask Ogerpon, Team Rocket Mewtwo
+```
+
+At the last update it was still running, around `200/656` files scanned, and
+healthy. Monitor:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/v12_matchup_teachers_20260808.runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "find_matchup_teachers|run_v12_matchup_teacher_scan|run_matchup_quality_audits"'
+```
+
+After the scan completes, run paired win-quality audits. Suggested first command:
+
+```bash
+python3 tools/run_matchup_quality_audits.py \
+  --corpus data/bc_corpus_banded_v12_0701_0805_hist32_log128_board12 \
+  --pairs-csv logs/v12_matchup_teachers_20260808/pairs_major_900plus.csv \
+  --weak-pair "Teal Mask Ogerpon=>Crustle Wall" \
+  --weak-pair "Marnie Grimmsnarl=>Teal Mask Ogerpon" \
+  --weak-pair "Mega Lucario=>Teal Mask Ogerpon" \
+  --weak-pair "Mega Lucario=>Crustle Wall" \
+  --weak-pair "Mega Lucario=>Marnie Grimmsnarl" \
+  --score-bands 1200+ 1100-1199 1000-1099 900-999 \
+  --max-pair-wr 0.45 \
+  --min-pair-games 80 \
+  --min-pair-wins 1 \
+  --limit 18 \
+  --top 30 \
+  --out-dir logs/v12_matchup_teachers_20260808/quality_audit
+```
+
+Run long commands via `/tmp` scripts on `ks`, not large inline heredocs.
 
 ## Next Work
 

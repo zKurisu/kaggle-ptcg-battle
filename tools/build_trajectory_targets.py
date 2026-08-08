@@ -66,6 +66,18 @@ FIELDS = [
     "primary_board_by_2",
     "primary_board_by_4",
     "primary_board_by_6",
+    "outcome_win",
+    "outcome_loss",
+    "outcome_draw",
+    "no_early_end",
+    "pressing_main_rate",
+    "primary_board_turn_norm",
+    "primary_active_turn_norm",
+    "attack_turn_norm",
+    "setup_success",
+    "tempo_success",
+    "strategy_success",
+    "strategy_weight",
 ]
 
 
@@ -204,6 +216,56 @@ def finalize(row: dict) -> dict:
     row["primary_board_by_2"] = int(row["first_primary_board_turn"] <= 2)
     row["primary_board_by_4"] = int(row["first_primary_board_turn"] <= 4)
     row["primary_board_by_6"] = int(row["first_primary_board_turn"] <= 6)
+    row["outcome_win"] = int(row.get("outcome") == "win")
+    row["outcome_loss"] = int(row.get("outcome") == "loss")
+    row["outcome_draw"] = int(row.get("outcome") == "draw")
+    row["no_early_end"] = int(int(row.get("early_end_count", 0)) == 0)
+    main = max(int(row.get("main_decisions", 0)), 1)
+    pressing = (
+        int(row.get("attack_count", 0))
+        + int(row.get("attach_count", 0))
+        + int(row.get("evolve_count", 0))
+        + int(row.get("ability_count", 0))
+        + int(row.get("play_count", 0))
+        + int(row.get("retreat_count", 0))
+    )
+    row["pressing_main_rate"] = min(1.0, pressing / float(main))
+    # Bounded continuous timing signals for the plan head. 1.0 means early,
+    # 0.0 means never/very late. These are deliberately coarse and game-level.
+    row["primary_board_turn_norm"] = max(0.0, 1.0 - min(int(row["first_primary_board_turn"]), 12) / 12.0)
+    row["primary_active_turn_norm"] = max(0.0, 1.0 - min(int(row["first_primary_active_turn"]), 12) / 12.0)
+    row["attack_turn_norm"] = max(0.0, 1.0 - min(int(row["first_attack_turn"]), 12) / 12.0)
+    row["setup_success"] = int(
+        int(row["primary_board_by_4"]) == 1
+        and int(row["no_early_end"]) == 1
+        and float(row["pressing_main_rate"]) >= 0.35
+    )
+    row["tempo_success"] = int(
+        int(row["attack_by_6"]) == 1
+        and int(row["no_early_end"]) == 1
+        and float(row["pressing_main_rate"]) >= 0.40
+    )
+    row["strategy_success"] = int(
+        int(row["outcome_win"]) == 1
+        and (int(row["setup_success"]) == 1 or int(row["tempo_success"]) == 1)
+    )
+    # A numeric column for whole-game sample weighting. It intentionally keeps
+    # losing trajectories present, but gives strongest mass to wins that also
+    # exhibit coherent setup/tempo signals.
+    weight = 1.0
+    if int(row["outcome_win"]) == 1:
+        weight *= 1.8
+    elif int(row["outcome_draw"]) == 1:
+        weight *= 0.9
+    else:
+        weight *= 0.45
+    if int(row["setup_success"]) == 1:
+        weight *= 1.25
+    if int(row["tempo_success"]) == 1:
+        weight *= 1.20
+    if int(row["no_early_end"]) == 0:
+        weight *= 0.75
+    row["strategy_weight"] = min(weight, 4.0)
     return row
 
 

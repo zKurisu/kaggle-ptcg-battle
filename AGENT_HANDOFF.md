@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 12:05 Asia/Shanghai.
+Last updated: 2026-08-08 13:50 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -307,6 +307,101 @@ Interpretation discipline:
 - Use `target_game_keys.csv` only after confirming the target cohort is
   genuinely strong in the specific matchup; otherwise it can encode a strong
   player's general style rather than a counter-plan.
+
+## 2026-08-08 Matchup Teacher Quality / Clean Success Data
+
+The user clarified that weak-matchup win mining must use all same-archetype
+deck signatures/teams as potential teachers, not only the exact target
+signature. We also must distinguish real counter-strategy wins from wins caused
+by opponent brick, early end, or no setup.
+
+Completed remote teacher quality audit:
+
+```text
+repo: /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+corpus: data/bc_corpus_banded_v12_0701_0805_hist32_log128_board12
+runner log: logs/v12_matchup_teachers_20260808/quality_audit.runner.log
+quality summary: logs/v12_matchup_teachers_20260808/quality_audit/quality_all_pairs.csv
+per-game labels: logs/v12_matchup_teachers_20260808/quality_audit/game_quality_all_pairs.csv
+rows: 359 teacher rows, 15079 per-game rows
+status: completed
+```
+
+Important conclusions:
+
+- `Teal Mask Ogerpon => Crustle Wall` is not best explained by Ogerpon
+  `5899...`; the clean teacher is `2a5072194fdf / James Cox & Henry Chao`.
+  Full pair signal was `82/458 = 17.9%`, but this teacher was `61/150 = 40.7%`
+  with `58/61` clean wins and only `4.9%` brick share.
+- `Marnie Grimmsnarl => Teal Mask Ogerpon` has many clean teachers, mostly
+  `b8f251a476e7` teams. Examples: Raihan Ramadistra `34/39` clean,
+  `@kdcyberdude` `26/29`, Sixth Sense `27/34`, LiamK `20/35`, Dominic Peel
+  `23/45`, plus some `2c22fa761816` teams. This is real learnable data, not
+  just sparse lucky wins.
+- `Mega Lucario => Teal Mask Ogerpon` and `Mega Lucario => Crustle Wall` both
+  identify `43d6d8b0fce9 / Majkel1337` as the primary clean teacher. It had
+  `33/34` clean wins vs Ogerpon and `15/16` clean wins vs Crustle.
+- Other strong clean teacher pools found:
+  `Alakazam => Team Rocket Mewtwo`,
+  `Crustle Wall => Team Rocket Mewtwo`,
+  `Festival Lead => Team Rocket Mewtwo`,
+  `Team Rocket Mewtwo => Dragapult`.
+
+Added tool:
+
+```text
+tools/select_clean_teacher_games.py
+```
+
+It reads `quality_all_pairs.csv` plus `game_quality_all_pairs.csv`, selects
+teacher rows by clean-win/brick thresholds, and writes reusable game-key CSVs
+by matchup and by archetype.
+
+Remote selection already generated:
+
+```text
+out: logs/v12_matchup_teachers_20260808/clean_teacher_selection_min10_brick010
+thresholds: min_clean_wins=10, min_clean_share=0.15, max_brick_share=0.10
+selected: 65 teachers, 2228 clean games, 14 pair files, 7 archetype files
+```
+
+Largest selected clean pools:
+
+```text
+Alakazam vs Team Rocket Mewtwo:       861 games
+Crustle Wall vs Team Rocket Mewtwo:   405 games
+Marnie Grimmsnarl vs Teal Ogerpon:    267 games
+Mega Lucario all selected matchups:   263 games
+Teal Mask Ogerpon all selected:       163 games
+Team Rocket Mewtwo all selected:      154 games
+```
+
+Active remote subset build:
+
+```text
+script: /tmp/build_v12_clean_teacher_subsets_20260808.sh
+log: logs/v12_matchup_teachers_20260808/build_clean_teacher_subsets.runner.log
+output root: data/bc_corpus_clean_teachers_v12_0701_0805_min10_brick010
+pid at launch: 2464429
+status at 13:50: running, scanning Alakazam first
+```
+
+Monitor:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/v12_matchup_teachers_20260808/build_clean_teacher_subsets.runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "build_v12_clean_teacher_subsets|build_bc_subset.py"'
+```
+
+Recommended next step after subset build completes:
+
+- Do not replace general BC with these subsets directly. Use them as
+  matchup-conditioned auxiliary data, teacher policies, or representation/plan
+  targets while keeping the broad BC anchor.
+- First pilots should focus on:
+  `Ogerpon 2a507 vs Crustle`, `Marnie b8f/2c22 vs Ogerpon`,
+  `Lucario 43d vs Ogerpon/Crustle/Marnie`, and
+  `Crustle 3cd/96d/b141 vs Team Rocket Mewtwo`.
 
 ## Episode Backfill
 

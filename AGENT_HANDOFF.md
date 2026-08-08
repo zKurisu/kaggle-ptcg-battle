@@ -269,6 +269,96 @@ Old Marnie seqplan note:
 - Last useful checkpoint is epoch 2:
   `checkpoints/v12_sequence_planner_20260808/bc2_marnie_b8f_seqplan_scratch_w3_b512.npz`.
 
+## 2026-08-08 Strategy-Conditioned Adaptive Pilot Results
+
+Remote result dir:
+
+```text
+logs/eval_v12_strategy_adaptive_20260808
+```
+
+Training completed for four pilots:
+
+```text
+checkpoints/v12_strategy_conditioned_adaptive_20260808/bc2_ogerpon_697_strategy_seqplan_2026-08-01_w3.npz
+checkpoints/v12_strategy_conditioned_adaptive_20260808/bc2_ogerpon_5899_strategy_seqplan_2026-08-01_w3.npz
+checkpoints/v12_strategy_conditioned_adaptive_20260808/bc2_crustle_3cd_strategy_seqplan_2026-07-18_w3.npz
+checkpoints/v12_strategy_conditioned_adaptive_20260808/bc2_alakazam_7f9_strategy_seqplan_2026-08-01_w3.npz
+```
+
+Random g500:
+
+```text
+Alakazam 7f9 strategy:      98.0% (490/500)
+Crustle 3cd strategy:       97.4% (487/500)
+Ogerpon 697 strategy:       99.0% (495/500)
+Ogerpon 5899 strategy:      99.4% (497/500)
+```
+
+This is not a basic-play collapse, but it is weaker than the strongest old w4
+deck-sig specialists for Alakazam/Crustle/Ogerpon5899. Old w4 reference random:
+Alakazam 7f9 `100%`, Crustle 3cd `99.5%`, Ogerpon5899 `100%`, Ogerpon697
+`98.5%`.
+
+New-four RR g80:
+
+```text
+new_crustle3cd    avg=0.854 worst=new_alakazam7f9:0.700
+new_alakazam7f9   avg=0.571 worst=new_crustle3cd:0.300
+new_ogerpon697    avg=0.296 worst=new_crustle3cd:0.075
+new_ogerpon5899   avg=0.279 worst=new_crustle3cd:0.062
+```
+
+Against old w4 same/meta reference entries, candidate-only g80:
+
+```text
+new_ogerpon697:
+  vs old_alakazam7f9 0.362, old_crustle3cd 0.037,
+  old_ogerpon697 0.388, old_ogerpon5899 0.412
+
+new_ogerpon5899:
+  vs old_alakazam7f9 0.287, old_crustle3cd 0.037,
+  old_ogerpon697 0.562, old_ogerpon5899 0.525
+
+new_crustle3cd:
+  vs old_alakazam7f9 0.637, old_crustle3cd 0.388,
+  old_ogerpon697 0.975, old_ogerpon5899 0.963
+
+new_alakazam7f9:
+  vs old_alakazam7f9 0.362, old_crustle3cd 0.300,
+  old_ogerpon697 0.613, old_ogerpon5899 0.750
+```
+
+Broader new Crustle vs old w4 top pool, candidate-only g60:
+
+```text
+weighted/avg=0.590, worst=mega_lopunny_sig2_276707c0:0.283
+strong into:
+  Ogerpon 697: 0.983
+  Ogerpon 5899: 0.967
+  Alakazam sigs: 0.650 / 0.733 / 0.817
+  Cynthia 52f: 0.733
+  Dragapult 0b7: 0.817
+weak into:
+  Team Rocket Mewtwo 06f: 0.333
+  Marnie b8f: 0.350
+  Festival e82: 0.383
+  Lopunny 276: 0.283
+  old Crustle 3cd mirror: 0.450
+```
+
+Interpretation:
+
+- Do not treat the strategy-conditioned batch as a general upgrade.
+- The two Ogerpon strategy checkpoints are regressions in local RR and should
+  not be submitted as-is.
+- `new_crustle3cd` is a useful local specialist for studying how Crustle
+  crushes Ogerpon and many Alakazam/Dragapult/Cynthia variants, but it is not a
+  universal ladder pick because it loses to several strong non-Ogerpon
+  archetypes and to old Crustle mirror.
+- `new_alakazam7f9` gained anti-Ogerpon behavior but regressed against old
+  Alakazam/Crustle, so it is also not a broad upgrade.
+
 ## 2026-08-08 Packaged v12 Sequence Planner Candidates
 
 The user asked to package the two most worthwhile completed non-Marnie

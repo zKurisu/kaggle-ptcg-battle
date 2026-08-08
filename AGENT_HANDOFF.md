@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-08 14:25 Asia/Shanghai.
+Last updated: 2026-08-08 15:30 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -13,6 +13,7 @@ This file is the first place a new agent should read before touching the project
 - Current remote training data for active BC experiments:
   - Completed stable baseline: `data/bc_corpus_banded_v11_0701_0804`
   - Completed v12 history corpus: `data/bc_corpus_banded_v12_0701_0805_hist32_log128_board12`
+  - Current refreshed v12 corpus: `data/bc_corpus_banded_v12_0701_0807_hist32_log128_board12`
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
@@ -513,6 +514,40 @@ Rationale: GPU memory is available, but cgroup memory was around
 `214GiB / 256GiB` during extraction and Marnie cross training. Do not start
 Alakazam, Crustle, or another Marnie large-corpus job in parallel until memory
 pressure drops or the loader is made streaming/memmap.
+
+Update at 2026-08-08 15:30 Asia/Shanghai:
+
+- Incremental v12 extraction is complete. Final validation in
+  `logs/extract_v12_0701_0807_incremental_20260808.log` reported
+  `npz_total=1668`, `npz_0806=58`, `npz_0807=58`, sample state `(80,)`,
+  option `(1,64)`, `feature_version=v12_multistream_history`, and history
+  dimensions `32/128/12/32`.
+- `logs/v12_0701_0807_history_baselines_20260808.runner.log` completed four
+  v12 `cross_attn + history` baseline trainings from w4 init:
+  - Mega Lucario `43d6d8b0fce9`: best val `0.9558`, accuracy
+    exact/first/top3 `0.675/0.690/0.925`, random `298/300 = 99.3%`.
+  - Teal Mask Ogerpon `2a5072194fdf`: best val `0.8366`, accuracy
+    `0.723/0.740/0.929`, random `264/300 = 88.0%`. Treat this as failed for
+    submission until random failure traces are inspected or another Ogerpon
+    signature is retrained.
+  - Festival Lead `e82dcbe62260`: best val `0.9207`, accuracy
+    `0.658/0.669/0.908`, random `300/300 = 100.0%`.
+  - Team Rocket Mewtwo `06f0b265154c`: best val `0.8858`, accuracy
+    `0.705/0.718/0.939`, random `299/300 = 99.7%`.
+- The 0701-0807 teacher refresh is active:
+  `logs/v12_matchup_teachers_20260808_0701_0807.runner.log`. It has completed
+  teacher scan, quality audit, and clean teacher selection. Current selected
+  pools include Marnie vs Ogerpon `283` clean games, Lucario selected matchups
+  `338`, Ogerpon selected matchups `240`, and Team Rocket Mewtwo selected
+  matchups `154`.
+- Clean subset build output root:
+  `data/bc_corpus_clean_teachers_v12_0701_0807_min10_brick010`. Completed
+  subset npz files at the status check: Alakazam, Crustle Wall, Festival Lead.
+  It was actively building the Marnie Grimmsnarl subset.
+- Marnie large guarded cross-attn history training is still active:
+  `logs/v12_marnie_large_guarded_20260808.runner.log`, checkpoint
+  `checkpoints/v12_history_pilots_20260807/bc2_marnie_b8f_v12hist_cross_init.npz`.
+  At the check it was still in epoch 4/6 around step `2875/3331`.
 
 ## Episode Backfill
 

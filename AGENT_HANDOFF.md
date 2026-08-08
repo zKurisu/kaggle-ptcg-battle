@@ -37,13 +37,16 @@ interpretation:
 Code added locally and synced to `ks`:
 
 - `ptcg_rl/rule_overlay.py`
-  - new `counter_plan` mode.
+  - new `counter_plan` / `counter_plan_aggressive` modes.
   - Uses visible opponent active/bench/discard card IDs, not only opponent
     active.
-  - Aggressively forces core evolution/setup for stage decks, Marnie setup vs
-    visible Ogerpon, Ogerpon no-blank-ex-attack/attach discipline vs Crustle,
-    Cynthia Spiritomb routing vs Crustle, Team Rocket board setup, Lucario
-    engine setup, no-early-end, and late attack-window guard.
+  - `counter_plan_aggressive` is the broad failed experiment: it aggressively
+    forces core evolution/setup for stage decks, Marnie setup vs visible
+    Ogerpon, Ogerpon no-blank-ex-attack/attach discipline vs Crustle, Cynthia
+    Spiritomb routing vs Crustle, Team Rocket board setup, Lucario engine
+    setup, no-early-end, and late attack-window guard.
+  - default `counter_plan` is now only the narrow high-confidence Ogerpon vs
+    Crustle guard. Do not use `counter_plan_aggressive` for submission.
 - `tools/audit_weak_pair_signal.py`
   - Scans v12 corpus and reports weak-pair decision share, weak-win decision
     share, and clean-teacher decision share for top weak pairs.
@@ -56,6 +59,15 @@ Code added locally and synced to `ks`:
   - Generates clean teacher subsets and optional pair-specialist training
     commands for weak matchup pairs. This is the training-side answer to data
     drowning; do not use tiny aux weights here.
+- `tools/build_counter_filter_csv.py`
+  - Builds per-archetype trajectory filters with `counter_bad=1` for selected
+    weak-matchup losses/dirty wins and `counter_clean=1` for clean teacher
+    wins.
+- `tools/build_counter_mixture_pipeline.py`
+  - Generates submit-capable per-archetype counter-mixture training scripts:
+    keep base corpus as anchor, drop selected weak failures, repeat clean
+    teacher aux data heavily, and train a trajectory/step-plan conditioned
+    cross-attention model from scratch.
 
 Active remote runner:
 
@@ -109,7 +121,7 @@ Interpretation:
   training / teacher rollout, then evaluate those specialists against the weak
   opponent and random. Use rules only as hard safety guards.
 
-Active pair-teacher job:
+Obsolete/failed pair-teacher job:
 
 ```text
 launcher: /tmp/pair_teacher_top60_clean10_train.sh
@@ -121,6 +133,18 @@ planned_train pairs: 12
 skipped_low_clean_games pairs: 48
 min clean games: 10
 ```
+
+This job failed in the training phase, not because of model quality:
+
+- generated `xargs bash -lc` commands split archetype names with spaces
+  (`Teal Mask Ogerpon`, `Crustle Wall`, etc.);
+- one Alakazam job also hit `CUDNN_STATUS_NOT_INITIALIZED` from GRU history.
+
+The generator was fixed after this failure:
+
+- each train task is now emitted as its own `/tmp/.../*.sh` job file;
+- every history/GRU training job exports `PTCG_DISABLE_CUDNN=1`;
+- new scripts should be regenerated from the fixed tool before running.
 
 The 12 planned clean teacher pair specialists are:
 
@@ -139,11 +163,48 @@ Teal Mask Ogerpon -> Alakazam, clean_games=20
 Crustle Wall -> Team Rocket Mewtwo, clean_games=405
 ```
 
-Monitor pair-teacher:
+Current aggressive jobs launched after the fix:
+
+```text
+counter mixture launcher: /tmp/counter_mixture_clean20_train.sh
+counter mixture nohup log: logs/counter_mixture_20260808/counter_mixture_clean20_train.nohup.log
+counter mixture manifest: /tmp/counter_mixture_clean20_train.manifest.csv
+counter mixture checkpoints: checkpoints/counter_mixture_v12_0701_0807_clean20
+counter mixture subset corpus: data/bc_counter_mix_teachers_v12_0701_0807_clean20
+
+pair teacher launcher: /tmp/pair_teacher_allquality_clean20_train.sh
+pair teacher nohup log: logs/aggressive_counter_20260808/pair_teacher_allquality_clean20_train.nohup.log
+pair teacher manifest: /tmp/pair_teacher_allquality_clean20_train.manifest.csv
+pair teacher checkpoints: checkpoints/pair_teachers_v12_0701_0807_allquality_clean20
+pair teacher subset corpus: data/bc_pair_teachers_v12_0701_0807_allquality_clean20
+teacher source: logs/v12_matchup_teachers_20260808_0701_0807/quality_audit/game_quality_all_pairs.csv
+min clean games: 20
+```
+
+Counter-mixture planned archetypes:
+
+```text
+Alakazam -> Team Rocket Mewtwo
+Crustle Wall -> Team Rocket Mewtwo, Mega Lopunny
+Festival Lead -> Mega Lopunny, Dragapult
+Marnie Grimmsnarl -> Teal Mask Ogerpon
+Mega Lopunny -> Mega Lucario
+Mega Lucario -> Marnie Grimmsnarl, Crustle Wall, Teal Mask Ogerpon
+Teal Mask Ogerpon -> Alakazam, Mega Lopunny, Crustle Wall, Mega Lucario
+Team Rocket Mewtwo -> Dragapult, Teal Mask Ogerpon, Mega Lopunny
+```
+
+`Mega Starmie`, `Dragapult`, and `Cynthia Garchomp` were not included in the
+current counter-mixture run because this quality audit has no clean teacher
+rows for their weak pairs. Do not treat that as proof they have no successful
+games; it means teacher mining is incomplete for those archetypes.
+
+Monitor active aggressive jobs:
 
 ```bash
-ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/aggressive_counter_20260808/pair_teacher_top60_clean10_train.nohup.log'
-ssh -F /home/jie/.ssh/config ks 'ps -eo pid,ppid,stat,pcpu,pmem,etime,cmd | grep -E "pair_teacher_top60|bc2_.*clean_teacher|build_bc_subset|bc2_train.py" | grep -v grep'
+ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/counter_mixture_20260808/counter_mixture_clean20_train.nohup.log'
+ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/aggressive_counter_20260808/pair_teacher_allquality_clean20_train.nohup.log'
+ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && ps -eo pid,ppid,stat,pcpu,pmem,etime,cmd | grep -E "counter_mixture_clean20|pair_teacher_allquality|build_trajectory_targets|build_bc_subset|bc2_train.py" | grep -v grep'
 ```
 
 Do not use `counter_plan_aggressive` for submission. If testing rules, use

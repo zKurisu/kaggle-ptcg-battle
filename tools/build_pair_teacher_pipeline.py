@@ -99,7 +99,7 @@ def main() -> None:
         f.write("#!/usr/bin/env bash\n")
         f.write("set -euo pipefail\n")
         f.write(f"mkdir -p {q(str(out_corpus))} {q(str(ckpt_dir))}\n")
-        train_cmds: list[str] = []
+        train_cmds: list[tuple[str, str, str]] = []
         for idx, (arch, opp) in enumerate(pairs, 1):
             clean_games = int(clean_counts.get((arch, opp), 0))
             if clean_games < args.min_clean_games:
@@ -134,8 +134,7 @@ def main() -> None:
                 gpu = gpu_ids[(idx - 1) % max(len(gpu_ids), 1)] if gpu_ids else "0"
                 ckpt = ckpt_dir / f"bc2_{stem}_clean_teacher_w{args.width:g}.npz"
                 log_train = f"logs/pair_teacher_pipeline/{stem}_train_w{args.width:g}.log"
-                train_cmds.append(" ".join([
-                    f"CUDA_VISIBLE_DEVICES={q(gpu)}",
+                train_cmds.append((stem, gpu, " ".join([
                     "python3", "tools/bc2_train.py",
                     "--corpus", q(str(out_corpus)),
                     "--archetype", q(arch),
@@ -161,7 +160,7 @@ def main() -> None:
                     "--split-by-game",
                     "--save", q(str(ckpt)),
                     "2>&1", "|", "tee", q(log_train),
-                ]))
+                ])))
                 rows.append({
                     "idx": str(idx),
                     "archetype": arch,
@@ -186,11 +185,24 @@ def main() -> None:
                 })
         if train_cmds:
             f.write("\n")
-            f.write("cat > /tmp/pair_teacher_train_commands.txt <<'CMDS'\n")
-            for cmd in train_cmds:
+            f.write("job_dir=/tmp/pair_teacher_train_jobs\n")
+            f.write("mkdir -p \"$job_dir\"\n")
+            f.write(": > /tmp/pair_teacher_train_jobs.list\n")
+            for job_i, (stem, gpu, cmd) in enumerate(train_cmds, 1):
+                job_path = f"/tmp/pair_teacher_train_jobs/{job_i:03d}_{clean_name(stem)}.sh"
+                f.write(f"cat > {q(job_path)} <<'JOB'\n")
+                f.write("#!/usr/bin/env bash\n")
+                f.write("set -euo pipefail\n")
+                f.write(f"export CUDA_VISIBLE_DEVICES={q(gpu)}\n")
+                f.write("export PTCG_DISABLE_CUDNN=1\n")
                 f.write(cmd + "\n")
-            f.write("CMDS\n")
-            f.write(f"xargs -P {max(1, args.max_parallel)} -I CMD bash -lc CMD < /tmp/pair_teacher_train_commands.txt\n")
+                f.write("JOB\n")
+                f.write(f"chmod +x {q(job_path)}\n")
+                f.write(f"printf '%s\\n' {q(job_path)} >> /tmp/pair_teacher_train_jobs.list\n")
+            f.write(
+                f"xargs -P {max(1, args.max_parallel)} -n 1 bash "
+                "< /tmp/pair_teacher_train_jobs.list\n"
+            )
 
     os.chmod(script, 0o755)
     manifest = script.with_suffix(".manifest.csv")

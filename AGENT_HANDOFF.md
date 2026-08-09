@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-09 02:42 Asia/Shanghai.
+Last updated: 2026-08-09 09:50 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -18,31 +18,36 @@ This file is the first place a new agent should read before touching the project
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
 
-## Active Remote Job: Marnie Nightly 2026-08-09
+## Active Remote Job: Marnie Big-Batch Restart 2026-08-09
 
-User requested a long-running Marnie training job on `ks` to use the night and
-avoid interruption.
+The first Marnie nightly run from `2026-08-09 01:40 CST` loaded all 31 files
+and then failed before epoch 1 with `RuntimeError: cuDNN error:
+CUDNN_STATUS_NOT_INITIALIZED`. No usable checkpoint was produced by that run.
 
-Started on `ks` at about `2026-08-09 01:40 CST`:
+The user then requested a restart with batch size increased according to current
+GPU resources. GPU0 was almost completely free; GPU1/2/3 still had other jobs.
+The new runner was uploaded to `ks:/tmp` and started at about
+`2026-08-09 09:42 CST`, bound to GPU0 only:
 
 ```text
-runner script: /tmp/run_marnie_nightly_20260809.sh
+runner script:
+  /tmp/run_marnie_nightly_nocudnn_bigrun_20260809.sh
+run id:
+  marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_20260809
 runner PID file:
-  logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nightly_20260809.pid
-train process pattern:
-  tools/bc2_train.py ... bc2_marnie_b8f_v12_0730_0807_histcross_w4_nightly.npz
+  logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_20260809.pid
+active process pattern:
+  tools/bc2_train.py ... --batch-size 1536 ... --save checkpoints/marnie_nightly_20260809/bc2_marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_b1536.npz
 checkpoint dir:
   checkpoints/marnie_nightly_20260809
-main checkpoint:
-  checkpoints/marnie_nightly_20260809/bc2_marnie_b8f_v12_0730_0807_histcross_w4_nightly.npz
 runner log:
-  logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nightly_20260809.runner.log
+  logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_20260809.runner.log
 train log:
-  logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nightly_20260809.train.log
+  logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_20260809.b1536.train.log
 heartbeat:
-  logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nightly_20260809.heartbeat.log
+  logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_20260809.heartbeat.log
 status:
-  logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nightly_20260809.status
+  logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_20260809.status
 ```
 
 Training recipe:
@@ -54,42 +59,34 @@ deck_sig: b8f251a476e7
 date window: 2026-07-30..2026-08-07
 score bands: 1200+ 1100-1199 1000-1099 900-999
 arch: cross_attn, width=4, state_layers=2
-history: history_k=32, log_history_k=128, board_history_k=12
+history: history_k=32, log_history_k=128, board_history_k=12, board_history_feat_dim=32
 init: checkpoints/v12_history_pilots_20260807/bc2_marnie_b8f_v12hist_cross_init.npz
-batch: 512
+batch fallback order: 1536 at 56GB, then 1024 at 48GB, then 768 at 40GB
 epochs: 8
 lr: 3e-5
-cuda cap: 24GB on cuda:0
-weights: win/loss/draw=1.5/0.4/0.8, first_action=1.5, option=0.15
+device: CUDA_VISIBLE_DEVICES=0, --device cuda:0
+PTCG_DISABLE_CUDNN=1
+weights: win/loss/draw=1.5/0.4/0.8, first_action=1.5, option=0.15, set_loss=0
 checkpoint_every: 1
 ```
-
-Why this recipe:
-
-- Avoids already-failed winner-only/filtered weak-matchup BC.
-- Uses the best existing Marnie history-cross checkpoint as init.
-- Uses recent high-quality full-history data, but not the full 228-file Marnie
-  corpus, reducing memory/interruption risk.
-- `nohup` + runner log + heartbeat + `flock` lock are used so normal SSH
-  disconnects do not stop the run.
 
 Automatic post-eval after successful training:
 
 ```text
 random 500:
-  logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nightly_20260809.random_g500.log
+  logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_20260809.random_g500.log
 
-Marnie W4 baseline vs nightly delta against Ogerpon 5899/697, 300 games each:
-  logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nightly_20260809.vs_ogerpon_w4_delta_g300.csv
-  logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nightly_20260809.vs_ogerpon_w4_delta_g300.log
+Marnie W4 baseline vs big-run delta against Ogerpon 5899/697, 300 games each:
+  logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_20260809.vs_ogerpon_w4_delta_g300.csv
+  logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_20260809.vs_ogerpon_w4_delta_g300.log
 ```
 
 Monitor:
 
 ```bash
-ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "bc2_train.py.*marnie_b8f_v12_0730_0807|run_marnie_nightly_20260809" && tail -n 80 logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nightly_20260809.train.log'
+ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "bc2_train.py.*nocudnn_bigrun|run_marnie_nightly_nocudnn_bigrun" && nvidia-smi --query-gpu=index,memory.used,memory.free,utilization.gpu --format=csv,noheader,nounits'
 
-ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nightly_20260809.status && tail -n 80 logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nightly_20260809.heartbeat.log'
+ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_20260809.status && tail -n 120 logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_20260809.b1536.train.log'
 ```
 
 ## 2026-08-09 Explicit Rule/Plan Pivot

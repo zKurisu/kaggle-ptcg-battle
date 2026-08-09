@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-09 15:25 Asia/Shanghai.
+Last updated: 2026-08-09 18:45 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -18,7 +18,7 @@ This file is the first place a new agent should read before touching the project
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
 
-## Active Remote Job: RL v2 Wave1 2026-08-09
+## Completed Remote Job: RL v2 Wave1 2026-08-09
 
 Reason: BC/history/cross-attn variants have plateaued. The current experiment
 switches from BC tuning to targeted weak-pool PPO with real large-model support.
@@ -46,15 +46,16 @@ checkpoint: checkpoints/rl_v2_smoke_20260809/marnie_vs_og5899_rl_v2_smoke.npz
 result: 1 iter, 4 games, W/L/D=2/2/0, saved successfully
 ```
 
-Active wave1 script:
+Wave1 script:
 
 ```text
 local script source: /tmp/run_rl_v2_wave1_20260809.sh
 remote script: ks:/tmp/run_rl_v2_wave1_20260809.sh
-remote runner PID: 153826
+remote runner PID: 153826, completed
 root logs: logs/rl_v2_wave1_20260809
 root checkpoints: checkpoints/rl_v2_wave1_20260809
 started: 2026-08-09 15:08 CST
+ended: 2026-08-09 17:40 CST, status=0
 ```
 
 Wave1 jobs:
@@ -81,15 +82,47 @@ GPU3 Dragapult cc2 W4 pointer vs Marnie/Crustle/Lucario
   log:  logs/rl_v2_wave1_20260809/dragapult_cc2_vs_marnie_crustle_rlv2.train.log
 ```
 
-Monitor:
+Final metrics:
 
-```bash
-ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && for f in logs/rl_v2_wave1_20260809/*train.log; do echo ===$(basename $f); grep -E "iter [0-9]{4}|parallel rollout (32|64|128|192|256)/256|Traceback|RuntimeError|exit=" $f | tail -20; done'
-ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && for f in logs/rl_v2_wave1_20260809/*.metrics.csv; do echo ===$(basename $f); tail -5 $f; done'
-ssh -F /home/jie/.ssh/config ks 'nvidia-smi --query-gpu=index,memory.used,memory.free,utilization.gpu --format=csv,noheader,nounits'
+```text
+Marnie b8f vs Ogerpon:
+  iterations=32, best rollout WR=0.414 at iter31, final WR=0.387
+  random500=99.6%
+  paired delta avg=+0.0478
+  og5899: 15.3% -> 20.0%, +4.7pp
+  og697:  19.7% -> 19.3%, -0.3pp
+  og2a:   80.3% -> 90.3%, +10.0pp
+  interpretation: useful but not universal; Ogerpon 697 did not improve.
+
+Mega Lucario 43d vs Marnie/Crustle/Ogerpon:
+  iterations=28, best/final rollout WR=0.164
+  random500=98.4%
+  paired delta avg=+0.0022
+  marnie: 14.7% -> 14.0%, -0.7pp
+  crustle: 17.7% -> 19.7%, +2.0pp
+  og5899: 39.3% -> 38.7%, -0.7pp
+  interpretation: random preserved, no meaningful matchup gain.
+
+Dragapult cc2 vs Marnie/Crustle/Lucario:
+  iterations=28, best rollout WR=0.102 at iter21, final WR=0.094
+  random500=78.2%
+  paired delta avg=-0.0500
+  marnie: 10.7% -> 11.3%, +0.7pp
+  crustle: 10.7% -> 5.0%, -5.7pp
+  lucario: 46.0% -> 36.0%, -10.0pp
+  interpretation: failed, policy quality collapsed relative to baseline.
+
+Ogerpon 2a vs Crustle:
+  iterations=28, best rollout WR=0.043 at iter3, final WR=0.039
+  random500=69.4%
+  paired delta avg=-0.0133
+  crustle3cd: 5.7% -> 5.3%, -0.3pp
+  crustle96d: 5.7% -> 4.3%, -1.3pp
+  crustleb141: 5.0% -> 2.7%, -2.3pp
+  interpretation: failed; this remains a structural weakness.
 ```
 
-When wave1 completes, inspect:
+Output files:
 
 ```text
 logs/rl_v2_wave1_20260809/*.random.log
@@ -97,9 +130,13 @@ logs/rl_v2_wave1_20260809/*.delta.csv
 logs/rl_v2_wave1_20260809/runner.log
 ```
 
-Accept a checkpoint only if it improves paired weakness delta and does not
-collapse random. Training rollout WR alone is not sufficient, because actors are
-sampling with temperature/top-k for exploration.
+Do not use Dragapult or Ogerpon wave1 checkpoints for submission. Marnie is the
+only wave1 model with a measurable paired gain and random preserved. Lucario is
+stable but effectively neutral.
+
+GPU note after completion: PTCG wave1 left no matching `rl_finetune_vs_pool`,
+`eval_bc.py`, or `eval_baseline_delta.py` processes. GPU 1-3 remained occupied
+by `/home/byer/ARC/ttt_fast` jobs, unrelated to this repo.
 
 ## Completed Remote Job: Marnie Big-Batch Restart 2026-08-09
 

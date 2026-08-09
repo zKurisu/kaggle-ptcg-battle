@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-09 19:10 Asia/Shanghai.
+Last updated: 2026-08-09 20:55 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -18,50 +18,73 @@ This file is the first place a new agent should read before touching the project
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
 
-## Active Remote Jobs: RL v3 Parallel 2026-08-09
+## RL v3 Parallel Results 2026-08-09
 
 User preference for scheduling: before starting GPU training, check `nvidia-smi`;
 if idle memory is available, use multiple GPUs in parallel instead of single-GPU
 serial execution. Keep CPU worker count reasonable, but do not serialize merely
 out of habit.
 
-Current active PPO/RL jobs on `ks`:
+Most of the PPO v3 parallel wave has completed. Current `ks` status at
+2026-08-09 20:55 CST:
 
 ```text
-Primary serial runner:
-  remote script: /tmp/run_rl_v3_wave2_20260809.sh
-  runner PID: 428410
-  current child: Marnie b8f vs Ogerpon 5899/697
-  train PID: 428420 plus rollout workers
-  GPU: 0
-  logs: logs/rl_v3_wave2_20260809/marnie_b8f_vs_og5899_og697_rlv3.train.log
-  checkpoints: checkpoints/rl_v3_wave2_20260809/
-  note: this original runner still has a later Lucario stage queued. If the
-        parallel Lucario below completes first, treat the queued serial Lucario
-        as a duplicate control or skip it deliberately.
-
-Extra pointer job:
-  remote script: /tmp/run_rl_v3_parallel_extra_20260809.sh
-  runner PID: 439527
-  active child: Dragapult cc2 vs Marnie/Crustle/Lucario
-  train PID: 439538 plus rollout workers
-  GPU: 3
-  logs: logs/rl_v3_parallel_extra_20260809/dragapult_cc2_vs_marnie_crustle_lucario_rlv3p.train.log
-  checkpoints: checkpoints/rl_v3_parallel_extra_20260809/
-  note: the Lucario/Ogerpon history jobs in this first extra runner failed at
-        startup with `CUDNN_STATUS_NOT_INITIALIZED`; do not use those failed
-        outputs.
-
-Extra history no-cuDNN jobs:
-  remote script: /tmp/run_rl_v3_history_nocudnn_extra_20260809.sh
-  runner PID: 443457
-  env: PTCG_DISABLE_CUDNN=1
-  active children:
-    GPU1 Mega Lucario 43d vs Marnie/Crustle/Ogerpon
-    GPU2 Ogerpon 2a vs Crustle 3cd/b141
-  logs: logs/rl_v3_parallel_extra_nocudnn_20260809/
-  checkpoints: checkpoints/rl_v3_parallel_extra_nocudnn_20260809/
+GPU0: duplicate serial Lucario job still running from /tmp/run_rl_v3_wave2_20260809.sh
+GPU1-3: idle
 ```
+
+The active duplicate is:
+
+```text
+remote script: /tmp/run_rl_v3_wave2_20260809.sh
+runner PID: 428410
+current child: Mega Lucario 43d vs Marnie/Crustle/Ogerpon
+train PID around check time: 540816 plus rollout workers
+metrics: logs/rl_v3_wave2_20260809/lucario_43d_vs_marnie_crustle_og_rlv3.metrics.csv
+checkpoint root: checkpoints/rl_v3_wave2_20260809/
+note: a no-cuDNN parallel Lucario run already completed, so this serial job is
+      mostly a duplicate control unless intentionally kept.
+```
+
+Completed v3 outcomes:
+
+```text
+Marnie b8f v3:
+  metrics rows=24, rollout best WR=0.184 at iter22, final rollout WR=0.109
+  random500=99.8% (499/500)
+  delta vs Ogerpon pool: avg -2.1pp
+    og5899 -2.3pp, og697 -2.0pp, og2a -2.0pp
+  interpretation: stable random, but weak-pool PPO made matchups worse.
+
+Dragapult cc2 v3p:
+  metrics rows=20, rollout best WR=0.117 at iter13, final rollout WR=0.082
+  random500=80.4% (402/500)
+  delta vs pool: avg -1.4pp
+    marnie -1.7pp, crustle -3.3pp, lucario +0.8pp
+  interpretation: not usable; random remains poor and matchup avg worsened.
+
+Mega Lucario 43d v3p no-cuDNN:
+  metrics rows=20, rollout best/final WR=0.125
+  random500=98.2% (491/500)
+  delta vs pool: avg +3.6pp
+    marnie +0.0pp, crustle +3.3pp, ogerpon +7.5pp
+  interpretation: best signal in this wave; modest positive, not a large
+  breakthrough.
+
+Ogerpon 2a v3p no-cuDNN:
+  metrics rows=24, rollout best WR=0.039 at iter19, final rollout WR=0.020
+  random500=83.0% (415/500)
+  delta vs Crustle pool: avg +3.8pp
+    crustle3cd +0.6pp, crustleb141 +6.9pp
+  interpretation: weak matchup improved slightly, but random collapsed too far
+  for submission use.
+```
+
+Summary: PPO v3 is a stable constrained PPO baseline, not a major improvement
+yet. The constraints prevented catastrophic KL drift, but also made updates too
+small for structural weaknesses. Next RL attempts should be more aggressive:
+curriculum / rule-shaped rewards / success-trajectory replay / staged KL
+relaxation, especially for Ogerpon-vs-Crustle style matchups.
 
 `tools/rl_finetune_vs_pool.py` now honors `PTCG_DISABLE_CUDNN=1`, matching
 `tools/bc2_train.py` and `tools/bc2_accuracy.py`. This is required for
@@ -72,9 +95,8 @@ Monitor:
 
 ```bash
 ssh ks 'nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits'
-ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/rl_v3_wave2_20260809/marnie_b8f_vs_og5899_og697_rlv3.train.log'
-ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/rl_v3_parallel_extra_20260809/dragapult_cc2_vs_marnie_crustle_lucario_rlv3p.train.log'
-ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/rl_v3_parallel_extra_nocudnn_20260809/history.runner.log'
+ssh ks 'pgrep -af "rl_finetune_vs_pool.py|run_rl_v3|eval_bc.py|eval_baseline_delta.py"'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/rl_v3_wave2_20260809/lucario_43d_vs_marnie_crustle_og_rlv3.train.log'
 ```
 
 ## Completed Remote Job: RL v2 Wave1 2026-08-09

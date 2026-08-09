@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-10 07:07 Asia/Shanghai.
+Last updated: 2026-08-10 07:24 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -17,6 +17,79 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## Active Remote Job: Search Teacher Wave1 2026-08-10
+
+Reason: scratch PPO learned high random win rate but became worse than BC on
+hard fixed opponents. The current direction is no longer PPO hyperparameter
+tuning. It builds replayable weak-matchup state banks, then uses engine search
+rollouts to generate planner/teacher labels for specific decision states.
+
+New tools:
+
+```text
+tools/build_weakness_state_bank.py
+  Plays candidate vs opponent, records candidate-side raw observations,
+  baseline actions, policy rankings, policy-history arrays, and compact
+  board/option summaries. Output is JSONL/JSONL.GZ plus CSV indices.
+
+tools/search_action_teacher.py
+  Reads state bank JSONL, enumerates legal root actions, uses cg.api
+  search_begin/search_step to roll each action forward, and scores actions by
+  terminal result plus horizon heuristic score. Output includes action-level
+  CSV, best-action CSV, and teacher JSONL.
+```
+
+Pilot result before wave1:
+
+```text
+pair: Ogerpon 2a vs Crustle 3cd
+midgame filters: loss states, context=0, turn>=4
+teacher: 8 states, 4 rollouts/action, horizon 160
+result: improved_score=6/8, mean delta_score=+0.5524
+example signal:
+  baseline Teal Mask Ogerpon ability was often worse than attach/Energy Switch
+  or bench setup in searched midgame states.
+interpretation:
+  search teacher now produces non-trivial decision signals. This is the first
+  promising signal after BC/PPO plateau, but it is not yet validated in actual
+  policy training or rule-overlay evaluation.
+```
+
+Active remote wave:
+
+```text
+remote script: /tmp/run_search_teacher_wave1_20260810.sh
+runner PID: 1290943
+logs root: logs/search_teacher_20260810
+
+pairs:
+  wave1_og2a_vs_crustle3
+  wave1_marnie_vs_og5899
+  wave1_lucario43_vs_marnie
+  wave1_dragcc2_vs_marnie
+
+per pair:
+  build bank: up to 80 loss states, context=0, turn>=4, min options=3
+  teacher: first 24 states, 8 rollouts/action, horizon 180, max 16 actions,
+           4 worker processes
+```
+
+Monitor:
+
+```bash
+ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "run_search_teacher_wave1|build_weakness_state_bank.py|search_action_teacher.py" && for f in logs/search_teacher_20260810/wave1_*.log; do echo ===$f===; tail -12 "$f"; done'
+```
+
+Next interpretation step after wave1 finishes:
+
+```text
+1. Summarize each wave1_*_teacher_best.csv by improved_score rate and mean
+   delta_score.
+2. Inspect repeated best-action motifs by card/action type.
+3. If motifs are consistent, convert them into explicit route/rule candidates
+   or into planner-distillation labels. Do not fine-tune BC.
+```
 
 ## Completed Remote Job: Scratch League RL 2026-08-09/10
 

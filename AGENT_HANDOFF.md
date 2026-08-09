@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-09 18:45 Asia/Shanghai.
+Last updated: 2026-08-09 19:05 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -137,6 +137,65 @@ stable but effectively neutral.
 GPU note after completion: PTCG wave1 left no matching `rl_finetune_vs_pool`,
 `eval_bc.py`, or `eval_baseline_delta.py` processes. GPU 1-3 remained occupied
 by `/home/byer/ARC/ttt_fast` jobs, unrelated to this repo.
+
+## Active Remote Job: RL v3 Wave2 2026-08-09
+
+Reason: wave1 proved the PPO infrastructure works but also showed destructive
+drift for Dragapult/Ogerpon and only partial gain for Marnie. PPO v3 adds a
+stronger trust region and matchup balancing:
+
+- action-level reference-policy KL via `--ref-kl-coef`;
+- PPO2-style `--value-clip-eps`;
+- `--target-kl` early stop within an update;
+- `--advantage-normalization opponent` and `--advantage-clip`;
+- batch-level `--reward-weight-mode opponent_inverse_winrate`;
+- `--save-policy both` so best rollout and final checkpoint are both kept.
+
+Implementation file changed:
+
+```text
+tools/rl_finetune_vs_pool.py
+```
+
+Smoke test passed:
+
+```text
+script: /tmp/run_rl_v3_smoke_20260809.sh
+log: logs/rl_v3_smoke_20260809/marnie_v3_smoke.log
+result: 1 iter completed, ref KL/value clip/reward weighting/early stop worked
+```
+
+Active wave2:
+
+```text
+script: ks:/tmp/run_rl_v3_wave2_20260809.sh
+runner PID: 428410
+logs: logs/rl_v3_wave2_20260809
+checkpoints: checkpoints/rl_v3_wave2_20260809
+started: 2026-08-09 18:59 CST
+GPU: only GPU0, because GPU1-3 are occupied by /home/byer/ARC/ttt_fast
+```
+
+Wave2 order:
+
+```text
+1. Marnie b8f hard PPO v3 vs Ogerpon 5899/697 only
+   init: checkpoints/marnie_nightly_20260809/bc2_marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_b1536.npz
+   best: checkpoints/rl_v3_wave2_20260809/marnie_b8f_vs_og5899_og697_rlv3_best.npz
+   final: checkpoints/rl_v3_wave2_20260809/marnie_b8f_vs_og5899_og697_rlv3_final.npz
+
+2. Mega Lucario 43d PPO v3 vs Marnie/Crustle/Ogerpon
+   init: checkpoints/v12_0701_0807_history_baselines_20260808/bc2_mega_lucario_43d_v12_0701_0807_hist_cross_init.npz
+   best: checkpoints/rl_v3_wave2_20260809/lucario_43d_vs_marnie_crustle_og_rlv3_best.npz
+   final: checkpoints/rl_v3_wave2_20260809/lucario_43d_vs_marnie_crustle_og_rlv3_final.npz
+```
+
+Monitor:
+
+```bash
+ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && for f in logs/rl_v3_wave2_20260809/*train.log; do echo ===$(basename $f); grep -E "iter [0-9]{4}|parallel rollout (32|64|128|192|256)/256|Traceback|RuntimeError|Killed|exit=" $f | tail -20; done'
+ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && for f in logs/rl_v3_wave2_20260809/*.metrics.csv; do echo ===$(basename $f); tail -5 $f; done 2>/dev/null || true'
+```
 
 ## Completed Remote Job: Marnie Big-Batch Restart 2026-08-09
 

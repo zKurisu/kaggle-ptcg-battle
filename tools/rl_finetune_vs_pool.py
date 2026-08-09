@@ -85,7 +85,12 @@ METRIC_FIELDS = [
     "entropy",
     "approx_kl",
     "clip_frac",
+    "value_clip_frac",
+    "ref_kl_loss",
+    "ref_logprob_delta",
     "bc_anchor_loss",
+    "avg_reward_weight",
+    "early_stop",
     "t_collect",
     "t_update",
     "checkpoint",
@@ -246,6 +251,75 @@ def refresh_old_policy_stats(model: nn.Module, samples: list, minibatch: int) ->
         for d, lp, val in zip(mb, logprob.detach().cpu().numpy(), value.detach().cpu().numpy()):
             d.logprob = float(lp)
             d.value = float(val)
+
+
+@torch.no_grad()
+def refresh_reference_policy_stats(model: nn.Module, samples: list, minibatch: int) -> None:
+    """Fill reference-policy log-probs for sampled actions.
+
+    This is an action-level trust region against the initial policy. It is not a
+    full distribution KL, but it is cheap, architecture-agnostic, and catches the
+    destructive drift observed in the first RL wave.
+    """
+    model.eval()
+    for start in range(0, len(samples), max(1, int(minibatch))):
+        mb = samples[start : start + max(1, int(minibatch))]
+        logprob, _, _ = model.evaluate_actions(mb)
+        for d, lp in zip(mb, logprob.detach().cpu().numpy()):
+            d.ref_logprob = float(lp)
+
+
+def attach_episode_metadata(decisions: list, *, opponent: str, outcome: str) -> None:
+    for d in decisions:
+        d.opponent = opponent
+        d.outcome = outcome
+
+
+def apply_batch_reward_weighting(
+    episodes: list[list],
+    games_meta: list[dict],
+    args: argparse.Namespace,
+) -> dict[str, float]:
+    """Reweight collected rewards before GAE.
+
+    `opponent_inverse_winrate` emphasizes matchups where the current policy is
+    struggling in this batch, reducing the tendency to improve already-easy
+    opponents while losing the target weakness.
+    """
+    mode = str(getattr(args, "reward_weight_mode", "none") or "none")
+    if mode == "none" or not episodes:
+        for episode in episodes:
+            for d in episode:
+                d.reward_weight = 1.0
+        return {"avg_reward_weight": 1.0}
+
+    counts: dict[str, int] = {}
+    wins: dict[str, int] = {}
+    for meta in games_meta:
+        opp = str(meta.get("opponent", ""))
+        counts[opp] = counts.get(opp, 0) + 1
+        if meta.get("outcome") == "win":
+            wins[opp] = wins.get(opp, 0) + 1
+
+    coef = float(getattr(args, "reward_weight_coef", 1.0) or 0.0)
+    lo = float(getattr(args, "reward_weight_min", 0.25) or 0.25)
+    hi = float(getattr(args, "reward_weight_max", 2.5) or 2.5)
+    weights: list[float] = []
+    for episode, meta in zip(episodes, games_meta):
+        opp = str(meta.get("opponent", ""))
+        wr = wins.get(opp, 0) / max(counts.get(opp, 1), 1)
+        if mode == "opponent_inverse_winrate":
+            weight = 1.0 + coef * (0.5 - wr)
+        elif mode == "opponent_lossrate":
+            weight = 1.0 + coef * (1.0 - wr)
+        else:
+            weight = 1.0
+        weight = float(np.clip(weight, lo, hi))
+        weights.append(weight)
+        for d in episode:
+            d.reward *= weight
+            d.reward_weight = weight
+    return {"avg_reward_weight": float(np.mean(weights)) if weights else 1.0}
 
 
 @torch.no_grad()
@@ -420,6 +494,7 @@ def play_training_game(
 
     outcome = outcome_for_candidate(result, candidate_side)
     assign_episode_rewards(decisions, outcome, args)
+    attach_episode_metadata(decisions, opponent=opponent.name, outcome=outcome)
     return decisions, {
         "outcome": outcome,
         "opponent": opponent.name,
@@ -627,6 +702,7 @@ def _actor_play_training_game(task: tuple[int, int, int]) -> tuple[list, dict]:
 
     outcome = outcome_for_candidate(result, candidate_side)
     assign_episode_rewards(decisions, outcome, args)
+    attach_episode_metadata(decisions, opponent=opponent.name, outcome=outcome)
     return decisions, {
         "outcome": outcome,
         "opponent": opponent.name,
@@ -768,6 +844,33 @@ def sample_anchor_batch(corpus: BCCorpus, indices: list, batch_size: int, device
     return corpus.collate([indices[int(i)] for i in picked], device)
 
 
+def normalized_advantage_map(samples: list, args: argparse.Namespace) -> tuple[dict[int, float], dict[str, float]]:
+    raw = np.asarray([float(s.adv) for s in samples], dtype=np.float32)
+    mode = str(getattr(args, "advantage_normalization", "global") or "global")
+    out = np.zeros_like(raw)
+    if mode == "none":
+        out = raw
+    elif mode == "opponent":
+        groups: dict[str, list[int]] = {}
+        for i, sample in enumerate(samples):
+            groups.setdefault(str(getattr(sample, "opponent", "")), []).append(i)
+        for idxs in groups.values():
+            vals = raw[idxs]
+            out[idxs] = (vals - vals.mean()) / (vals.std() + 1e-8)
+    else:
+        out = (raw - raw.mean()) / (raw.std() + 1e-8)
+    clip = float(getattr(args, "advantage_clip", 0.0) or 0.0)
+    if clip > 0:
+        out = np.clip(out, -clip, clip)
+    return (
+        {id(sample): float(out[i]) for i, sample in enumerate(samples)},
+        {
+            "adv_mean": float(raw.mean()) if raw.size else 0.0,
+            "adv_std": float(raw.std()) if raw.size else 0.0,
+        },
+    )
+
+
 def ppo_update(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -779,9 +882,7 @@ def ppo_update(
     anchor_indices: list,
 ) -> dict:
     model.train()
-    advs = np.asarray([s.adv for s in samples], dtype=np.float32)
-    adv_mean = float(advs.mean())
-    adv_std = float(advs.std() + 1e-8)
+    adv_map, _adv_stats = normalized_advantage_map(samples, args)
     order = np.arange(len(samples))
     stats = {
         "policy_loss": 0.0,
@@ -789,9 +890,14 @@ def ppo_update(
         "entropy": 0.0,
         "approx_kl": 0.0,
         "clip_frac": 0.0,
+        "value_clip_frac": 0.0,
+        "ref_kl_loss": 0.0,
+        "ref_logprob_delta": 0.0,
         "bc_anchor_loss": 0.0,
+        "early_stop": 0.0,
         "n": 0,
     }
+    early_stop = False
 
     for _ in range(args.ppo_epochs):
         np.random.shuffle(order)
@@ -801,16 +907,39 @@ def ppo_update(
                 continue
             mb = [samples[int(i)] for i in mb_idx]
             old_logprob = torch.as_tensor([s.logprob for s in mb], dtype=torch.float32, device=device)
-            adv = torch.as_tensor([s.adv for s in mb], dtype=torch.float32, device=device)
+            old_value = torch.as_tensor([s.value for s in mb], dtype=torch.float32, device=device)
+            adv = torch.as_tensor([adv_map[id(s)] for s in mb], dtype=torch.float32, device=device)
             ret = torch.as_tensor([s.ret for s in mb], dtype=torch.float32, device=device)
-            adv = (adv - adv_mean) / adv_std
 
             new_logprob, entropy, value = model.evaluate_actions(mb)
             ratio = torch.exp(new_logprob - old_logprob)
             clipped = torch.clamp(ratio, 1.0 - args.clip_eps, 1.0 + args.clip_eps)
             policy_loss = -torch.min(ratio * adv, clipped * adv).mean()
-            value_loss = (value - ret).pow(2).mean()
+            value_clip_frac = torch.tensor(0.0, device=device)
+            if float(getattr(args, "value_clip_eps", 0.0) or 0.0) > 0:
+                value_clipped = old_value + torch.clamp(
+                    value - old_value,
+                    -float(args.value_clip_eps),
+                    float(args.value_clip_eps),
+                )
+                value_loss_unclipped = (value - ret).pow(2)
+                value_loss_clipped = (value_clipped - ret).pow(2)
+                value_loss = torch.max(value_loss_unclipped, value_loss_clipped).mean()
+                value_clip_frac = (value - old_value).abs().gt(float(args.value_clip_eps)).float().mean()
+            else:
+                value_loss = (value - ret).pow(2).mean()
             loss = policy_loss + args.value_coef * value_loss - args.entropy_coef * entropy.mean()
+
+            ref_kl_loss = torch.tensor(0.0, device=device)
+            ref_logprob_delta = torch.tensor(0.0, device=device)
+            if float(getattr(args, "ref_kl_coef", 0.0) or 0.0) > 0:
+                if not all(hasattr(s, "ref_logprob") for s in mb):
+                    raise RuntimeError("--ref-kl-coef requires reference logprobs")
+                ref_logprob = torch.as_tensor([s.ref_logprob for s in mb], dtype=torch.float32, device=device)
+                delta_ref = new_logprob - ref_logprob
+                ref_kl_loss = delta_ref.pow(2).mean()
+                ref_logprob_delta = delta_ref.abs().mean()
+                loss = loss + float(args.ref_kl_coef) * ref_kl_loss
 
             anchor_loss = torch.tensor(0.0, device=device)
             if anchor_corpus is not None and args.bc_anchor_weight > 0:
@@ -839,11 +968,21 @@ def ppo_update(
             stats["entropy"] += float(entropy.mean().detach().cpu())
             stats["approx_kl"] += float(approx_kl.detach().cpu())
             stats["clip_frac"] += float(clip_frac.detach().cpu())
+            stats["value_clip_frac"] += float(value_clip_frac.detach().cpu())
+            stats["ref_kl_loss"] += float(ref_kl_loss.detach().cpu())
+            stats["ref_logprob_delta"] += float(ref_logprob_delta.detach().cpu())
             stats["bc_anchor_loss"] += float(anchor_loss.detach().cpu())
             stats["n"] += 1
+            if float(getattr(args, "target_kl", 0.0) or 0.0) > 0 and abs(float(approx_kl)) > float(args.target_kl):
+                early_stop = True
+                break
+        if early_stop:
+            break
 
     n = max(stats.pop("n"), 1)
-    return {k: v / n for k, v in stats.items()}
+    out = {k: v / n for k, v in stats.items()}
+    out["early_stop"] = 1.0 if early_stop else 0.0
+    return out
 
 
 def append_metrics(path: str, row: dict) -> None:
@@ -864,6 +1003,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--policy-init", required=True, help="BC2 .npz checkpoint to fine-tune")
     p.add_argument("--deck", required=True, help="candidate deck CSV")
     p.add_argument("--save", required=True, help="final/best output .npz path")
+    p.add_argument("--save-policy", choices=["final", "best", "both"], default="final",
+                   help="what to write to --save; use best/both for RL sweeps to avoid final drift")
+    p.add_argument("--save-final", default="",
+                   help="optional final checkpoint path when --save-policy is best or both")
     p.add_argument("--checkpoint-dir", default="", help="optional directory for per-iteration checkpoints")
     p.add_argument("--metrics-csv", default="", help="append per-iteration metrics here")
     p.add_argument("--archetype", default="", help="label used only for logs and BC anchor defaults")
@@ -897,6 +1040,24 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--minibatch", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-5)
     p.add_argument("--clip-eps", type=float, default=0.1)
+    p.add_argument("--target-kl", type=float, default=0.0,
+                   help="stop the current PPO update early when approximate KL exceeds this value")
+    p.add_argument("--value-clip-eps", type=float, default=0.0,
+                   help="PPO2-style value clipping; 0 disables")
+    p.add_argument("--advantage-normalization", choices=["global", "opponent", "none"], default="global",
+                   help="normalize GAE globally or within each opponent group")
+    p.add_argument("--advantage-clip", type=float, default=0.0,
+                   help="clip normalized advantages to +/- this value; 0 disables")
+    p.add_argument("--ref-policy", default="",
+                   help="reference checkpoint for action-level KL; default is --policy-init")
+    p.add_argument("--ref-kl-coef", type=float, default=0.0,
+                   help="penalty coefficient for squared logprob drift from the reference policy")
+    p.add_argument("--reward-weight-mode", choices=["none", "opponent_inverse_winrate", "opponent_lossrate"],
+                   default="none",
+                   help="batch-level episode reward reweighting before GAE")
+    p.add_argument("--reward-weight-coef", type=float, default=1.0)
+    p.add_argument("--reward-weight-min", type=float, default=0.25)
+    p.add_argument("--reward-weight-max", type=float, default=2.5)
     p.add_argument("--value-coef", type=float, default=0.5)
     p.add_argument("--entropy-coef", type=float, default=0.003)
     p.add_argument("--gamma", type=float, default=0.99)
@@ -1024,6 +1185,31 @@ def main() -> None:
     if skipped:
         raise RuntimeError(f"strict init unexpectedly skipped tensors: {skipped[:8]}")
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
+    ref_model = None
+    if float(args.ref_kl_coef or 0.0) > 0:
+        ref_path = args.ref_policy or args.policy_init
+        ref_model = build_policy_model(
+            arch=arch,
+            width=width,
+            slot_state=slot_state,
+            option_context=option_context,
+            state_feat_dim=state_feat_dim,
+            opt_feat_dim=opt_feat_dim,
+            plan_dim=plan_dim,
+            hierarchical_plan=hierarchical_plan,
+            history_k=history_k,
+            opp_history_k=opp_history_k,
+            log_history_k=log_history_k,
+            board_history_k=board_history_k,
+            board_history_feat_dim=board_history_feat_dim,
+            state_layers=state_layers,
+        ).to(device)
+        loaded, skipped = _load_npz_init(ref_model, ref_path, device, partial=False)
+        if skipped:
+            raise RuntimeError(f"strict ref init unexpectedly skipped tensors: {skipped[:8]}")
+        ref_model.eval()
+        for p_ref in ref_model.parameters():
+            p_ref.requires_grad_(False)
 
     candidate_deck = read_deck(args.deck)
     specs, weights = load_opponent_specs(args)
@@ -1046,7 +1232,10 @@ def main() -> None:
         f"opponents={len(opponents)} opponent_weight_mode={args.opponent_weight_mode} "
         f"rollout_workers={args.rollout_workers} rollout_temperature={args.rollout_temperature} "
         f"rollout_top_k={args.rollout_top_k} shaping_weight={args.shaping_weight} "
-        f"bc_anchor={bool(anchor_corpus)} anchor_weight={args.bc_anchor_weight}",
+        f"bc_anchor={bool(anchor_corpus)} anchor_weight={args.bc_anchor_weight} "
+        f"ref_kl_coef={args.ref_kl_coef} target_kl={args.target_kl} "
+        f"adv_norm={args.advantage_normalization} reward_weight={args.reward_weight_mode} "
+        f"save_policy={args.save_policy}",
         flush=True,
     )
     for opp in opponents[:20]:
@@ -1123,7 +1312,10 @@ def main() -> None:
             print(f"iter {iteration}: only {len(samples)} decisions collected; skipping update", flush=True)
             continue
 
+        reward_stats = apply_batch_reward_weighting(episodes, games_meta, args)
         refresh_old_policy_stats(model, samples, args.minibatch)
+        if ref_model is not None:
+            refresh_reference_policy_stats(ref_model, samples, args.minibatch)
         for episode in episodes:
             compute_gae(episode, args.gamma, args.gae_lambda)
         stats = ppo_update(
@@ -1157,6 +1349,7 @@ def main() -> None:
             "avg_reward": avg_reward,
             "avg_decisions_per_game": len(samples) / max(args.games_per_iter, 1),
             **stats,
+            **reward_stats,
             "t_collect": t_collect,
             "t_update": t_update,
             "checkpoint": checkpoint or args.save,
@@ -1167,13 +1360,26 @@ def main() -> None:
             f"wr={win_rate:.3f} decisions={len(samples)} "
             f"pol={stats['policy_loss']:.4f} val={stats['value_loss']:.4f} "
             f"ent={stats['entropy']:.3f} kl={stats['approx_kl']:.4f} "
-            f"clip={stats['clip_frac']:.3f} bc={stats['bc_anchor_loss']:.4f} "
+            f"clip={stats['clip_frac']:.3f} vclip={stats['value_clip_frac']:.3f} "
+            f"ref={stats['ref_kl_loss']:.4f}/{stats['ref_logprob_delta']:.3f} "
+            f"bc={stats['bc_anchor_loss']:.4f} rw={reward_stats['avg_reward_weight']:.3f} "
+            f"early={int(stats['early_stop'])} "
             f"collect={t_collect:.1f}s update={t_update:.1f}s save={checkpoint or args.save}",
             flush=True,
         )
 
-    _save_npz(model, args.save)
-    print(f"Final saved -> {args.save}", flush=True)
+    if args.save_policy == "final":
+        _save_npz(model, args.save)
+        print(f"Final saved -> {args.save}", flush=True)
+    else:
+        if args.save_final:
+            _save_npz(model, args.save_final)
+            print(f"Final saved -> {args.save_final}", flush=True)
+        elif args.save_policy == "both":
+            final_path = str(Path(args.save).with_suffix("")) + ".final.npz"
+            _save_npz(model, final_path)
+            print(f"Final saved -> {final_path}", flush=True)
+        print(f"Best rollout saved -> {args.save} best_wr={best_wr:.3f}", flush=True)
 
 
 if __name__ == "__main__":

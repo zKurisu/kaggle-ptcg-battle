@@ -68,6 +68,29 @@ Current long-run template is stored as `/tmp/run_rl_v2_wave1_20260809.sh` on
 `ks`. It launches Marnie, Mega Lucario, Ogerpon, and Dragapult weak-pool PPO in
 parallel and then runs random plus paired baseline-delta checks.
 
+## PPO v3 Options
+
+The wave1 result showed that plain PPO can improve one matchup while damaging
+general play, especially for Dragapult and Ogerpon. The script now supports a
+more constrained PPO recipe:
+
+- `--ref-kl-coef`: action-level squared log-prob drift from the initial policy.
+  This is a cheap trust region across iterations.
+- `--target-kl`: stop the current PPO update early when the approximate KL is
+  already too large.
+- `--value-clip-eps`: PPO2-style value clipping to keep the newly trained value
+  head from amplifying noisy returns.
+- `--advantage-normalization opponent`: normalize advantages within each
+  opponent bucket, useful for mixed weakness pools.
+- `--advantage-clip`: bound extreme GAE samples.
+- `--reward-weight-mode opponent_inverse_winrate`: emphasize opponents that are
+  still hard in the current rollout batch and de-emphasize already-easy ones.
+- `--save-policy best --save-final ...` or `--save-policy both`: preserve the
+  best rollout checkpoint instead of overwriting it with the final policy.
+
+Current wave2 template is stored as `/tmp/run_rl_v3_wave2_20260809.sh` on `ks`.
+It runs on GPU0 only because GPU1-3 are occupied by unrelated ARC jobs.
+
 ## Validation Gate
 
 Evaluate every saved checkpoint before treating it as useful:

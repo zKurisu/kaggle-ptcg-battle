@@ -401,7 +401,8 @@ class PolicyValueNet(nn.Module):
         board = torch.from_numpy(np.stack([d.board_cards for d in decisions])).to(dev)
         hand = torch.from_numpy(np.stack([d.hand_cards for d in decisions])).to(dev)
         feats = torch.from_numpy(np.stack([d.state_feats for d in decisions])).to(dev)
-        h = self.encode_state(board, hand, feats)
+        history = self._stack_decision_history(decisions, dev)
+        h = self.encode_state(board, hand, feats, history)
         values = self.value(h)
 
         # Batch options (pad to n_max)
@@ -459,6 +460,42 @@ class PolicyValueNet(nn.Module):
 
         entropies /= max_k
         return logprobs, entropies, values
+
+    @staticmethod
+    def _stack_decision_history(decisions: list, device: torch.device) -> dict[str, torch.Tensor] | None:
+        """Stack optional per-decision history snapshots saved by rollout actors.
+
+        BC collation already supplies ``batch.history``. PPO rollouts store the
+        same shape of numpy arrays on each ``EncodedDecision`` so history-enabled
+        checkpoints are re-evaluated under the same information they acted on.
+        """
+        histories = [getattr(d, "history", None) for d in decisions]
+        if not any(isinstance(h, dict) and h for h in histories):
+            return None
+        keys: set[str] = set()
+        shapes: dict[str, tuple[int, ...]] = {}
+        dtypes: dict[str, np.dtype] = {}
+        for hist in histories:
+            if not isinstance(hist, dict):
+                continue
+            for key, value in hist.items():
+                arr = np.asarray(value)
+                keys.add(key)
+                shapes.setdefault(key, arr.shape)
+                dtypes.setdefault(key, arr.dtype)
+        out: dict[str, torch.Tensor] = {}
+        for key in sorted(keys):
+            shape = shapes[key]
+            dtype = dtypes[key]
+            rows = []
+            for hist in histories:
+                if isinstance(hist, dict) and key in hist:
+                    arr = np.asarray(hist[key], dtype=dtype)
+                else:
+                    arr = np.zeros(shape, dtype=dtype)
+                rows.append(arr)
+            out[key] = torch.as_tensor(np.stack(rows), device=device)
+        return out
 
     # ── MCTS action (for training-time self-play) ────────────────────
 
@@ -992,6 +1029,71 @@ class CrossAttentionPolicyValueNet(nn.Module):
         if self.plan_dim <= 0:
             raise RuntimeError("CrossAttentionPolicyValueNet was created without plan_dim")
         return self.plan_fc2(F.relu(self.plan_fc1(h)))
+
+    def evaluate_actions(self, decisions: list) -> tuple:
+        """Recompute (new_logprobs, entropies, values) for stored actions."""
+        if not decisions:
+            dev = next(self.parameters()).device
+            z = torch.zeros(0, device=dev)
+            return z, z, z
+
+        dev = next(self.parameters()).device
+        bsz = len(decisions)
+        board = torch.from_numpy(np.stack([d.board_cards for d in decisions])).to(dev)
+        hand = torch.from_numpy(np.stack([d.hand_cards for d in decisions])).to(dev)
+        feats = torch.from_numpy(np.stack([d.state_feats for d in decisions])).to(dev)
+        history = PolicyValueNet._stack_decision_history(decisions, dev)
+        h = self.encode_state(board, hand, feats, history)
+        values = self.value(h)
+
+        n_max = max(len(d.opt_type) for d in decisions)
+        opt_type = torch.zeros(bsz, n_max, dtype=torch.long, device=dev)
+        opt_card = torch.zeros(bsz, n_max, dtype=torch.long, device=dev)
+        opt_card2 = torch.zeros(bsz, n_max, dtype=torch.long, device=dev)
+        opt_attack = torch.zeros(bsz, n_max, dtype=torch.long, device=dev)
+        opt_feats = torch.zeros(bsz, n_max, self.opt_feat_dim, device=dev)
+        for i, d in enumerate(decisions):
+            n = len(d.opt_type)
+            opt_type[i, :n] = torch.from_numpy(d.opt_type).to(dev)
+            opt_card[i, :n] = torch.from_numpy(d.opt_card).to(dev)
+            opt_card2[i, :n] = torch.from_numpy(d.opt_card2).to(dev)
+            opt_attack[i, :n] = torch.from_numpy(d.opt_attack).to(dev)
+            src = torch.from_numpy(d.opt_feats).to(dev)
+            opt_feats[i, :n, : min(src.shape[-1], self.opt_feat_dim)] = src[:, : self.opt_feat_dim]
+
+        opts = self.encode_options(opt_type, opt_card, opt_card2, opt_attack, opt_feats)
+        logprobs = torch.zeros(bsz, device=dev)
+        entropies = torch.zeros(bsz, device=dev)
+        picked_sum = torch.zeros(bsz, self._oe, device=dev)
+        opt_len = torch.tensor([len(d.opt_type) for d in decisions], dtype=torch.long, device=dev)
+        opt_mask = torch.arange(n_max, device=dev).unsqueeze(0) < opt_len.unsqueeze(1)
+        avail = torch.cat([opt_mask, torch.ones(bsz, 1, dtype=torch.bool, device=dev)], dim=1)
+        max_k = max(len(d.action) for d in decisions) + 1
+
+        for k in range(max_k):
+            stop_ok = torch.tensor([k >= d.min_count for d in decisions], device=dev)
+            mask = avail.clone()
+            mask[:, :n_max] &= opt_mask
+            mask[:, n_max] = stop_ok
+            logits = self.option_logits(h, opts, picked_sum, mask)
+            logp = F.log_softmax(logits, dim=-1)
+            probs = logp.exp()
+            ent = -(probs * logp).sum(dim=-1)
+
+            for i, d in enumerate(decisions):
+                if k < len(d.action):
+                    idx = int(d.action[k])
+                    if 0 <= idx < n_max:
+                        logprobs[i] += logp[i, idx]
+                        entropies[i] += ent[i]
+                        picked_sum[i] += opts[i, idx]
+                        avail[i, idx] = False
+                elif k == len(d.action) and hasattr(d, "stopped") and d.stopped:
+                    logprobs[i] += logp[i, n_max]
+                    entropies[i] += ent[i]
+
+        entropies /= max_k
+        return logprobs, entropies, values
 
     def count_params(self) -> int:
         return sum(p.numel() for p in self.parameters())

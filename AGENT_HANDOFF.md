@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-09 09:50 Asia/Shanghai.
+Last updated: 2026-08-09 15:25 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -17,6 +17,89 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## Active Remote Job: RL v2 Wave1 2026-08-09
+
+Reason: BC/history/cross-attn variants have plateaued. The current experiment
+switches from BC tuning to targeted weak-pool PPO with real large-model support.
+
+Implementation now in use:
+
+- `ptcg_rl/model.py`
+  - `PolicyValueNet.evaluate_actions()` now forwards stored per-decision history
+    into `encode_state()`.
+  - `CrossAttentionPolicyValueNet.evaluate_actions()` was added, so PPO can
+    actually fine-tune cross-attention/history checkpoints.
+- `tools/rl_finetune_vs_pool.py`
+  - infers checkpoint architecture/width/features/history dims;
+  - supports parallel CPU rollout actors via `--rollout-workers`;
+  - exports the current torch model to actor `.npz`, collects sampled games
+    with `NumpyPolicy`, then refreshes old log-probs/value on GPU before PPO;
+  - supports modest dense shaping and low-weight BC anchor.
+
+Remote smoke test passed before the long run:
+
+```text
+script: /tmp/run_rl_v2_smoke_20260809.sh
+log: logs/rl_v2_smoke_20260809/train_smoke.log
+checkpoint: checkpoints/rl_v2_smoke_20260809/marnie_vs_og5899_rl_v2_smoke.npz
+result: 1 iter, 4 games, W/L/D=2/2/0, saved successfully
+```
+
+Active wave1 script:
+
+```text
+local script source: /tmp/run_rl_v2_wave1_20260809.sh
+remote script: ks:/tmp/run_rl_v2_wave1_20260809.sh
+remote runner PID: 153826
+root logs: logs/rl_v2_wave1_20260809
+root checkpoints: checkpoints/rl_v2_wave1_20260809
+started: 2026-08-09 15:08 CST
+```
+
+Wave1 jobs:
+
+```text
+GPU0 Marnie b8f big history/cross-attn vs Ogerpon 5899/697/2a
+  init: checkpoints/marnie_nightly_20260809/bc2_marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_b1536.npz
+  save: checkpoints/rl_v2_wave1_20260809/marnie_b8f_vs_ogerpon_rlv2.npz
+  log:  logs/rl_v2_wave1_20260809/marnie_b8f_vs_ogerpon_rlv2.train.log
+
+GPU1 Mega Lucario 43d history/cross-attn vs Marnie/Crustle/Ogerpon
+  init: checkpoints/v12_0701_0807_history_baselines_20260808/bc2_mega_lucario_43d_v12_0701_0807_hist_cross_init.npz
+  save: checkpoints/rl_v2_wave1_20260809/lucario_43d_vs_marnie_crustle_rlv2.npz
+  log:  logs/rl_v2_wave1_20260809/lucario_43d_vs_marnie_crustle_rlv2.train.log
+
+GPU2 Ogerpon 2a history/cross-attn vs Crustle 3cd/96d/b141
+  init: checkpoints/v12_0701_0807_history_baselines_20260808/bc2_ogerpon_2a507_v12_0701_0807_hist_cross_init.npz
+  save: checkpoints/rl_v2_wave1_20260809/ogerpon_2a_vs_crustle_rlv2.npz
+  log:  logs/rl_v2_wave1_20260809/ogerpon_2a_vs_crustle_rlv2.train.log
+
+GPU3 Dragapult cc2 W4 pointer vs Marnie/Crustle/Lucario
+  init: checkpoints/deck_sig_specialists_v11all35_20260806/w4/bc2_dragapult_sig2_cc2e995b_v11all35_sigpure_top3_w4.npz
+  save: checkpoints/rl_v2_wave1_20260809/dragapult_cc2_vs_marnie_crustle_rlv2.npz
+  log:  logs/rl_v2_wave1_20260809/dragapult_cc2_vs_marnie_crustle_rlv2.train.log
+```
+
+Monitor:
+
+```bash
+ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && for f in logs/rl_v2_wave1_20260809/*train.log; do echo ===$(basename $f); grep -E "iter [0-9]{4}|parallel rollout (32|64|128|192|256)/256|Traceback|RuntimeError|exit=" $f | tail -20; done'
+ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && for f in logs/rl_v2_wave1_20260809/*.metrics.csv; do echo ===$(basename $f); tail -5 $f; done'
+ssh -F /home/jie/.ssh/config ks 'nvidia-smi --query-gpu=index,memory.used,memory.free,utilization.gpu --format=csv,noheader,nounits'
+```
+
+When wave1 completes, inspect:
+
+```text
+logs/rl_v2_wave1_20260809/*.random.log
+logs/rl_v2_wave1_20260809/*.delta.csv
+logs/rl_v2_wave1_20260809/runner.log
+```
+
+Accept a checkpoint only if it improves paired weakness delta and does not
+collapse random. Training rollout WR alone is not sufficient, because actors are
+sampling with temperature/top-k for exploration.
 
 ## Completed Remote Job: Marnie Big-Batch Restart 2026-08-09
 

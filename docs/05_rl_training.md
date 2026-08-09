@@ -45,6 +45,29 @@ For another archetype, keep the same structure and replace:
 - `--opponent` / `--opponent-manifest` filters with its weak matchup pool.
 - `--bc-anchor-*` filters with the corresponding target archetype and opponent.
 
+## RL v2 Notes
+
+As of 2026-08-09, `tools/rl_finetune_vs_pool.py` is the active RL path.
+
+- It can infer `pointer` or `cross_attn` architecture from the `.npz`
+  checkpoint and build the matching torch model.
+- PPO re-evaluation now passes per-decision history snapshots into
+  `evaluate_actions()`, so history-enabled checkpoints are not silently trained
+  as stateless policies.
+- Rollout can run through CPU actor workers with `--rollout-workers`.
+  Actors use `NumpyPolicy` sampling, then the GPU learner refreshes old
+  log-probs/value estimates before PPO.
+- Use `--rollout-temperature` and `--rollout-top-k` for real exploration.
+  Greedy rollout is only for debugging.
+- `--shaping-weight` adds a coarse dense potential reward. Keep it modest and
+  verify with baseline-delta, because it is heuristic.
+- BC anchor should be low weight for RL experiments. It is a drift guard, not
+  the main learning signal.
+
+Current long-run template is stored as `/tmp/run_rl_v2_wave1_20260809.sh` on
+`ks`. It launches Marnie, Mega Lucario, Ogerpon, and Dragapult weak-pool PPO in
+parallel and then runs random plus paired baseline-delta checks.
+
 ## Validation Gate
 
 Evaluate every saved checkpoint before treating it as useful:
@@ -90,10 +113,14 @@ python3 tools/summarize_matchup_failures.py \
 
 ## Current Limits
 
-- Rollout is single-process. This is deliberate for the first infrastructure
-  pass; parallel actors can be added after the update loop is behaviorally
-  validated.
 - Opponents are fixed `NumpyPolicy`/random entries. The trainable side is a
-  torch `PolicyValueNet` initialized from BC2 `.npz`.
-- The script auto-infers width and feature dimensions from `--policy-init`.
-- BC anchor is strongly recommended. Without it, run only short sanity tests.
+  torch policy/value model initialized from BC2 `.npz`.
+- Self-play is still targeted weak-pool PPO, not a full ladder simulator.
+- The value head starts weak because BC mostly trains policy. Treat early PPO
+  value loss and rollout win-rate cautiously.
+- Dense shaping is coarse and may reward local board progress while missing a
+  matchup-specific long plan. Always validate against greedy baseline-delta and
+  random before using a checkpoint.
+- Full action/strategy hierarchy is still outside this PPO script. Current
+  history support uses checkpoint history features; it does not maintain a
+  separate learned high-level planner during RL.

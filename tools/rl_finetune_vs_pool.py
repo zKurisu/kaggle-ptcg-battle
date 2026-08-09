@@ -16,6 +16,8 @@ import random
 import re
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
@@ -33,7 +35,25 @@ sys.path.insert(0, str(_REPO.parent))
 
 from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, sequence_nll
 from ptcg_rl.encoder import FastEncoder
-from ptcg_rl.model import NEG_INF, PolicyValueNet
+from ptcg_rl.history_features import (
+    action_event_from_encoded,
+    board_snapshot_from_encoded,
+    pack_action_history,
+    pack_board_history,
+    pack_log_history_from_obs,
+)
+from ptcg_rl.model import (
+    build_policy_model,
+    checkpoint_arch,
+    checkpoint_board_history_dims,
+    checkpoint_feature_dims,
+    checkpoint_hierarchical_plan,
+    checkpoint_history_k,
+    checkpoint_log_history_k,
+    checkpoint_opp_history_k,
+    checkpoint_plan_dim,
+    checkpoint_width,
+)
 from ptcg_rl.numpy_policy import NumpyPolicy
 from tools.bc2_train import (
     _configure_cuda_memory_limit,
@@ -42,6 +62,12 @@ from tools.bc2_train import (
 )
 from tools.eval_baseline_delta import read_manifest_entries
 from tools.eval_round_robin import Entry, clean_entry_name, parse_entry, policy_action, read_deck
+
+
+_ACTOR_POLICY: NumpyPolicy | None = None
+_ACTOR_CANDIDATE_DECK: list[int] = []
+_ACTOR_OPPONENTS: list[Entry] = []
+_ACTOR_ARGS: SimpleNamespace | None = None
 
 
 METRIC_FIELDS = [
@@ -75,37 +101,27 @@ def has_cg_engine() -> bool:
 
 def checkpoint_config(path: str) -> dict:
     with np.load(path) as z:
-        ec = int(z["card_emb.weight"].shape[1])
-        width = ec / 64.0
-        state_in = int(z["state_fc1.weight"].shape[1])
-        slot_feat_dim = state_in - 5 * ec
-        legacy_feat_dim = state_in - 3 * ec
-        slot_state = 8 <= slot_feat_dim <= 256
-        state_feat_dim = slot_feat_dim if slot_state else legacy_feat_dim
-        option_context = "context_emb.weight" in z.files
-        opt_extra = 0
-        if option_context:
-            opt_extra = (
-                z["context_emb.weight"].shape[1]
-                + z["select_type_emb.weight"].shape[1]
-                + z["area_emb.weight"].shape[1]
-                + z["index_emb.weight"].shape[1]
-                + z["inplay_area_emb.weight"].shape[1]
-                + z["inplay_index_emb.weight"].shape[1]
-            )
-        opt_feat_dim = int(z["opt_fc.weight"].shape[1]) - (
-            2 * ec
-            + int(z["attack_emb.weight"].shape[1])
-            + int(z["opt_type_emb.weight"].shape[1])
-            + opt_extra
-        )
-    return {
-        "width": float(width),
-        "slot_state": bool(slot_state),
-        "option_context": bool(option_context),
-        "state_feat_dim": int(state_feat_dim),
-        "opt_feat_dim": int(opt_feat_dim),
-    }
+        state_feat_dim, opt_feat_dim, option_context, slot_state = checkpoint_feature_dims(z)
+        board_history_k, board_history_feat_dim = checkpoint_board_history_dims(z)
+        state_layers = 0
+        while f"state_layers.{state_layers}.q.weight" in z.files:
+            state_layers += 1
+        return {
+            "arch": checkpoint_arch(z.files),
+            "width": float(checkpoint_width(z)),
+            "slot_state": bool(slot_state),
+            "option_context": bool(option_context),
+            "state_feat_dim": int(state_feat_dim),
+            "opt_feat_dim": int(opt_feat_dim),
+            "plan_dim": int(checkpoint_plan_dim(z)),
+            "hierarchical_plan": bool(checkpoint_hierarchical_plan(z)),
+            "history_k": int(checkpoint_history_k(z)),
+            "opp_history_k": int(checkpoint_opp_history_k(z)),
+            "log_history_k": int(checkpoint_log_history_k(z)),
+            "board_history_k": int(board_history_k),
+            "board_history_feat_dim": int(board_history_feat_dim),
+            "state_layers": max(1, int(state_layers)),
+        }
 
 
 def legal_random(sel: dict) -> list[int]:
@@ -120,18 +136,133 @@ def legal_random(sel: dict) -> list[int]:
     return random.sample(range(len(opts)), k) if k > 0 else []
 
 
+def _history_numpy_from_policy(policy: NumpyPolicy, obs: dict) -> dict[str, np.ndarray] | None:
+    try:
+        hist = policy._history_arrays(obs)  # noqa: SLF001 - rollout must match submission-time history.
+    except Exception:
+        return None
+    if not hist:
+        return None
+    return {k: np.asarray(v).copy() for k, v in hist.items()}
+
+
+def _history_numpy_from_trackers(
+    action_history: list[dict],
+    board_history: list[dict],
+    obs: dict,
+    args: argparse.Namespace,
+) -> dict[str, np.ndarray] | None:
+    out: dict[str, np.ndarray] = {}
+    if int(getattr(args, "history_k", 0)) > 0:
+        out.update({k: np.asarray(v) for k, v in pack_action_history(action_history, args.history_k).items()})
+    if int(getattr(args, "opp_history_k", 0)) > 0:
+        opp = pack_action_history([], args.opp_history_k)
+        out.update({f"opp_{k}": np.asarray(v) for k, v in opp.items()})
+    if int(getattr(args, "log_history_k", 0)) > 0:
+        logs = pack_log_history_from_obs(obs, args.log_history_k)
+        out.update({f"log_{k}": np.asarray(v) for k, v in logs.items()})
+    if int(getattr(args, "board_history_k", 0)) > 0:
+        boards = pack_board_history(
+            board_history,
+            args.board_history_k,
+            int(getattr(args, "board_history_feat_dim", 0) or 0),
+        )
+        out["board_cards"] = np.asarray(boards["cards"])
+        out["board_feats"] = np.asarray(boards["feats"])
+        out["board_mask"] = np.asarray(boards["mask"])
+    return out or None
+
+
+def _history_torch(
+    history: dict[str, np.ndarray] | None,
+    device: torch.device,
+) -> dict[str, torch.Tensor] | None:
+    if not history:
+        return None
+    return {k: torch.as_tensor(np.asarray(v), device=device).unsqueeze(0) for k, v in history.items()}
+
+
+def _legalize_action(action: list[int], sel: dict) -> tuple[list[int], bool]:
+    opts = sel.get("option", [])
+    n = len(opts)
+    mn = int(sel.get("minCount", 0) or 0)
+    mx = int(sel.get("maxCount", 0) or 0)
+    if n == 0 or mx <= 0:
+        return [], True
+    picks = [int(p) for p in action if 0 <= int(p) < n]
+    picks = list(dict.fromkeys(picks))[:mx]
+    stopped = len(picks) < mx and len(picks) >= mn
+    if mn <= len(picks) <= mx:
+        return picks, stopped
+    fallback = legal_random(sel)
+    return fallback, len(fallback) < mx and len(fallback) >= mn
+
+
+def _state_potential(decision) -> float:
+    """Small general potential for dense RL shaping from current-player features."""
+    f = np.asarray(decision.state_feats, dtype=np.float32)
+    def at(i: int) -> float:
+        return float(f[i]) if i < len(f) else 0.0
+
+    prize_term = 2.0 * (at(7) - at(6))
+    setup_term = 0.35 * at(60) + 0.20 * at(76) + 0.12 * at(56)
+    pressure_term = 0.35 * at(63) + 0.20 * at(62)
+    safety_term = -0.25 * at(25) - 0.10 * at(61)
+    tempo_term = 0.08 * at(55) - 0.05 * at(5)
+    return float(np.clip(prize_term + setup_term + pressure_term + safety_term + tempo_term, -4.0, 4.0))
+
+
+def assign_episode_rewards(decisions: list, outcome: str, args: argparse.Namespace) -> float:
+    terminal = (
+        float(args.win_reward)
+        if outcome == "win"
+        else float(args.loss_reward)
+        if outcome == "loss"
+        else float(args.draw_reward)
+    )
+    for d in decisions:
+        d.reward = 0.0
+    shaping = float(getattr(args, "shaping_weight", 0.0) or 0.0)
+    if shaping > 0 and len(decisions) > 1:
+        potentials = [_state_potential(d) for d in decisions]
+        for i, d in enumerate(decisions[:-1]):
+            d.reward += shaping * (potentials[i + 1] - potentials[i])
+    turn_penalty = float(getattr(args, "turn_penalty", 0.0) or 0.0)
+    if turn_penalty:
+        for d in decisions:
+            d.reward -= turn_penalty
+    if decisions:
+        decisions[-1].reward += terminal
+    return terminal
+
+
+@torch.no_grad()
+def refresh_old_policy_stats(model: nn.Module, samples: list, minibatch: int) -> None:
+    """Fill logprob/value for sampled actions under the pre-update policy."""
+    model.eval()
+    for start in range(0, len(samples), max(1, int(minibatch))):
+        mb = samples[start : start + max(1, int(minibatch))]
+        logprob, _, value = model.evaluate_actions(mb)
+        for d, lp, val in zip(mb, logprob.detach().cpu().numpy(), value.detach().cpu().numpy()):
+            d.logprob = float(lp)
+            d.value = float(val)
+
+
 @torch.no_grad()
 def sample_trainable_action(
-    model: PolicyValueNet,
+    model: nn.Module,
     decision,
     *,
     greedy: bool = False,
+    history: dict[str, torch.Tensor] | None = None,
+    temperature: float = 1.0,
+    top_k: int = 0,
 ) -> tuple[list[int], bool, float, float]:
     dev = next(model.parameters()).device
     board = torch.from_numpy(decision.board_cards).unsqueeze(0).to(dev)
     hand = torch.from_numpy(decision.hand_cards).unsqueeze(0).to(dev)
     feats = torch.from_numpy(decision.state_feats).unsqueeze(0).to(dev)
-    h = model.encode_state(board, hand, feats)
+    h = model.encode_state(board, hand, feats, history)
     value = float(model.value(h)[0])
 
     n_options = len(decision.opt_type)
@@ -153,6 +284,15 @@ def sample_trainable_action(
     while len(picks) < max_count:
         avail[0, n_options] = len(picks) >= min_count
         logits = model.option_logits(h, opts, picked_sum, avail)
+        if float(temperature) != 1.0:
+            logits = logits / max(float(temperature), 1e-6)
+        if not greedy and int(top_k) > 0:
+            legal = torch.nonzero(avail[0], as_tuple=True)[0]
+            if legal.numel() > int(top_k):
+                keep = legal[torch.topk(logits[0, legal], int(top_k)).indices]
+                top_mask = torch.zeros_like(avail)
+                top_mask[0, keep] = True
+                logits = logits.masked_fill(~top_mask, -1e9)
         logp = F.log_softmax(logits, dim=-1)
         if greedy:
             idx = int(logp.argmax(dim=-1)[0])
@@ -179,7 +319,7 @@ def outcome_for_candidate(result: int, candidate_side: int) -> str:
 
 
 def play_training_game(
-    model: PolicyValueNet,
+    model: nn.Module,
     candidate_deck: list[int],
     opponent: Entry,
     encoder: FastEncoder,
@@ -211,6 +351,12 @@ def play_training_game(
         }
 
     try:
+        if opponent.policy is not None and hasattr(opponent.policy, "reset_history"):
+            opponent.policy.reset_history()
+        if getattr(opponent, "planner", None) is not None:
+            opponent.planner.reset(opponent.deck)
+        action_history: list[dict] = []
+        board_history: list[dict] = []
         model.eval()
         for steps in range(args.max_turns):
             cur = obs.get("current") or {}
@@ -226,14 +372,33 @@ def play_training_game(
             if side == candidate_side:
                 try:
                     decision = encoder.encode(obs)
+                    hist_np = _history_numpy_from_trackers(action_history, board_history, obs, args)
                     action, stopped, logprob, value = sample_trainable_action(
-                        model, decision, greedy=args.greedy_rollout
+                        model,
+                        decision,
+                        greedy=args.greedy_rollout,
+                        history=_history_torch(hist_np, next(model.parameters()).device),
+                        temperature=args.rollout_temperature,
+                        top_k=args.rollout_top_k,
                     )
+                    action, stopped = _legalize_action(action, sel)
                     decision.action = action
                     decision.logprob = logprob
                     decision.value = value
+                    decision.history = hist_np
                     setattr(decision, "stopped", stopped)
                     decisions.append(decision)
+                    event = action_event_from_encoded(decision, action)
+                    if event is not None:
+                        action_history.append(event)
+                        if len(action_history) > max(args.history_k, 1) * 4:
+                            del action_history[:-max(args.history_k, 1) * 4]
+                    if args.board_history_k > 0:
+                        board_history.append(
+                            board_snapshot_from_encoded(decision, args.board_history_feat_dim)
+                        )
+                        if len(board_history) > max(args.board_history_k, 1) * 4:
+                            del board_history[:-max(args.board_history_k, 1) * 4]
                 except Exception:
                     action = legal_random(sel)
             else:
@@ -254,9 +419,7 @@ def play_training_game(
         battle_finish()
 
     outcome = outcome_for_candidate(result, candidate_side)
-    reward = args.win_reward if outcome == "win" else args.loss_reward if outcome == "loss" else args.draw_reward
-    if decisions:
-        decisions[-1].reward = float(reward)
+    assign_episode_rewards(decisions, outcome, args)
     return decisions, {
         "outcome": outcome,
         "opponent": opponent.name,
@@ -352,6 +515,210 @@ def load_opponents(specs: list[str], default_deck: str, *, skip_bad_entries: boo
     return entries
 
 
+def _entry_payload(entry: Entry) -> tuple[str, str, str]:
+    return entry.name, entry.policy_path, entry.deck_path
+
+
+def _entry_from_payload(payload: tuple[str, str, str]) -> Entry:
+    name, policy_path, deck_path = payload
+    deck = read_deck(deck_path)
+    policy = None if policy_path == "random" else NumpyPolicy.load(policy_path)
+    return Entry(name, policy_path, deck_path, policy, deck)
+
+
+def _init_rollout_worker(
+    policy_path: str,
+    candidate_deck_path: str,
+    opponent_payloads: list[tuple[str, str, str]],
+    args_payload: dict,
+) -> None:
+    global _ACTOR_POLICY, _ACTOR_CANDIDATE_DECK, _ACTOR_OPPONENTS, _ACTOR_ARGS
+    _ACTOR_POLICY = NumpyPolicy.load(policy_path)
+    _ACTOR_CANDIDATE_DECK = read_deck(candidate_deck_path)
+    _ACTOR_OPPONENTS = [_entry_from_payload(p) for p in opponent_payloads]
+    _ACTOR_ARGS = SimpleNamespace(**args_payload)
+
+
+def _actor_play_training_game(task: tuple[int, int, int]) -> tuple[list, dict]:
+    from cg.game import battle_finish, battle_select, battle_start
+
+    if _ACTOR_POLICY is None or _ACTOR_ARGS is None:
+        raise RuntimeError("rollout worker was not initialized")
+
+    game_index, seed, opponent_index = task
+    args = _ACTOR_ARGS
+    random.seed(seed)
+    np.random.seed(seed % (2**32 - 1))
+    policy = _ACTOR_POLICY
+    opponent = _ACTOR_OPPONENTS[int(opponent_index) % len(_ACTOR_OPPONENTS)]
+    if hasattr(policy, "reset_history"):
+        policy.reset_history()
+    if opponent.policy is not None and hasattr(opponent.policy, "reset_history"):
+        opponent.policy.reset_history()
+
+    swapped = bool(game_index % 2)
+    candidate_side = 1 if swapped else 0
+    first_deck, second_deck = (
+        (opponent.deck, _ACTOR_CANDIDATE_DECK)
+        if swapped
+        else (_ACTOR_CANDIDATE_DECK, opponent.deck)
+    )
+    obs, sd = battle_start(first_deck, second_deck)
+    decisions = []
+    result = 2
+    steps = 0
+    if obs is None:
+        return decisions, {
+            "outcome": "draw",
+            "opponent": opponent.name,
+            "steps": 0,
+            "candidate_side": candidate_side,
+        }
+
+    try:
+        for steps in range(int(args.max_turns)):
+            cur = obs.get("current") or {}
+            res = int(cur.get("result", -1))
+            if res != -1:
+                result = res if res in (0, 1) else 2
+                break
+            sel = obs.get("select")
+            if sel is None:
+                result = 2
+                break
+            side = int(cur.get("yourIndex", 0))
+            if side == candidate_side:
+                try:
+                    decision = policy.encoder.encode(obs)
+                    decision.history = _history_numpy_from_policy(policy, obs)
+                    action = policy.select(
+                        obs,
+                        greedy=bool(args.greedy_rollout),
+                        temperature=float(args.rollout_temperature),
+                        top_k=int(args.rollout_top_k),
+                        update_history=False,
+                    )
+                    action, stopped = _legalize_action(action, sel)
+                    decision.action = action
+                    setattr(decision, "stopped", stopped)
+                    decisions.append(decision)
+                    try:
+                        policy._remember_decision(decision, action)  # noqa: SLF001
+                    except Exception:
+                        pass
+                except Exception:
+                    action = legal_random(sel)
+            else:
+                action = policy_action(
+                    opponent,
+                    obs,
+                    use_mcts=bool(args.opponent_mcts),
+                    sims=int(args.opponent_mcts_sims),
+                    time_budget=float(args.opponent_time_budget),
+                )
+            obs = battle_select(action)
+            if obs is None:
+                result = 2
+                break
+        else:
+            result = 2
+    finally:
+        battle_finish()
+
+    outcome = outcome_for_candidate(result, candidate_side)
+    assign_episode_rewards(decisions, outcome, args)
+    return decisions, {
+        "outcome": outcome,
+        "opponent": opponent.name,
+        "steps": steps,
+        "candidate_side": candidate_side,
+    }
+
+
+def sample_opponent_index(opponents: list[Entry], weights: dict[str, float], mode: str) -> int:
+    if mode == "uniform":
+        return int(np.random.randint(len(opponents)))
+    raw = np.asarray([max(float(weights.get(opp.name, 1.0)), 1e-6) for opp in opponents], dtype=np.float64)
+    probs = raw / raw.sum()
+    return int(np.random.choice(len(opponents), p=probs))
+
+
+def collect_parallel_rollouts(
+    model: nn.Module,
+    opponents: list[Entry],
+    weights: dict[str, float],
+    args: argparse.Namespace,
+    *,
+    iteration: int,
+    global_game: int,
+) -> tuple[list[list], list[dict], int, float]:
+    actor_dir = Path(args.actor_tmp_dir)
+    actor_dir.mkdir(parents=True, exist_ok=True)
+    actor_policy = actor_dir / f"rl_actor_policy_{os.getpid()}_{iteration:04d}.npz"
+    _save_npz(model, str(actor_policy))
+    tasks = []
+    for local_game in range(args.games_per_iter):
+        game_index = global_game + local_game
+        tasks.append((
+            game_index,
+            args.seed + game_index * 1009,
+            sample_opponent_index(opponents, weights, args.opponent_weight_mode),
+        ))
+    args_payload = {
+        "max_turns": args.max_turns,
+        "greedy_rollout": args.greedy_rollout,
+        "rollout_temperature": args.rollout_temperature,
+        "rollout_top_k": args.rollout_top_k,
+        "opponent_mcts": args.opponent_mcts,
+        "opponent_mcts_sims": args.opponent_mcts_sims,
+        "opponent_time_budget": args.opponent_time_budget,
+        "win_reward": args.win_reward,
+        "loss_reward": args.loss_reward,
+        "draw_reward": args.draw_reward,
+        "shaping_weight": args.shaping_weight,
+        "turn_penalty": args.turn_penalty,
+    }
+    opponent_payloads = [_entry_payload(o) for o in opponents]
+    episodes: list[list] = []
+    games_meta: list[dict] = []
+    t0 = time.time()
+    workers = max(1, min(int(args.rollout_workers), int(args.games_per_iter)))
+    try:
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            initializer=_init_rollout_worker,
+            initargs=(str(actor_policy), args.deck, opponent_payloads, args_payload),
+        ) as ex:
+            futs = [ex.submit(_actor_play_training_game, task) for task in tasks]
+            for done, fut in enumerate(as_completed(futs), 1):
+                decisions, meta = fut.result()
+                if decisions:
+                    episodes.append(decisions)
+                games_meta.append(meta)
+                if args.progress_every and (
+                    done == 1 or done % args.progress_every == 0 or done == args.games_per_iter
+                ):
+                    wins = sum(1 for row in games_meta if row["outcome"] == "win")
+                    losses = sum(1 for row in games_meta if row["outcome"] == "loss")
+                    draws = sum(1 for row in games_meta if row["outcome"] == "draw")
+                    n_decisions = sum(len(ep) for ep in episodes)
+                    elapsed = time.time() - t0
+                    rate = done / max(elapsed, 1e-9)
+                    print(
+                        f"  iter {iteration} parallel rollout {done}/{args.games_per_iter} "
+                        f"W/L/D={wins}/{losses}/{draws} wr={wins/done:.3f} "
+                        f"decisions={n_decisions} {rate:.2f} games/s",
+                        flush=True,
+                    )
+    finally:
+        if not args.keep_actor_policy:
+            try:
+                actor_policy.unlink()
+            except FileNotFoundError:
+                pass
+    return episodes, games_meta, global_game + args.games_per_iter, time.time() - t0
+
+
 def setup_anchor_corpus(args: argparse.Namespace, state_feat_dim: int, opt_feat_dim: int):
     if args.bc_anchor_weight <= 0:
         return None, []
@@ -374,6 +741,17 @@ def setup_anchor_corpus(args: argparse.Namespace, state_feat_dim: int, opt_feat_
         win_weight=args.bc_anchor_win_weight,
         loss_weight=args.bc_anchor_loss_weight,
         draw_weight=args.bc_anchor_draw_weight,
+        history_k=max(0, int(getattr(args, "history_k", 0))),
+        opp_history_k=max(0, int(getattr(args, "opp_history_k", 0))),
+        log_history_k=max(0, int(getattr(args, "log_history_k", 0))),
+        board_history_k=max(0, int(getattr(args, "board_history_k", 0))),
+        board_history_feat_dim=max(0, int(getattr(args, "board_history_feat_dim", 0))),
+        split_by_game=(
+            int(getattr(args, "history_k", 0)) > 0
+            or int(getattr(args, "opp_history_k", 0)) > 0
+            or int(getattr(args, "log_history_k", 0)) > 0
+            or int(getattr(args, "board_history_k", 0)) > 0
+        ),
         load_progress_every=args.bc_anchor_load_progress_every,
     )
     indices = corpus.all_indices()
@@ -391,7 +769,7 @@ def sample_anchor_batch(corpus: BCCorpus, indices: list, batch_size: int, device
 
 
 def ppo_update(
-    model: PolicyValueNet,
+    model: nn.Module,
     optimizer: torch.optim.Optimizer,
     samples: list,
     args: argparse.Namespace,
@@ -506,6 +884,15 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument("--iterations", type=int, default=20)
     p.add_argument("--games-per-iter", type=int, default=64)
+    p.add_argument("--rollout-workers", type=int, default=1,
+                   help="parallel CPU actor workers for game collection; 1 keeps the old in-process path")
+    p.add_argument("--rollout-temperature", type=float, default=1.15,
+                   help="sampling temperature used by NumPy actor workers")
+    p.add_argument("--rollout-top-k", type=int, default=8,
+                   help="when sampling, restrict actor choices to top K legal options; 0 disables")
+    p.add_argument("--actor-tmp-dir", default="/tmp/ptcg_rl_actor_policies")
+    p.add_argument("--keep-actor-policy", action="store_true",
+                   help="keep per-iteration actor .npz files for debugging")
     p.add_argument("--ppo-epochs", type=int, default=4)
     p.add_argument("--minibatch", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-5)
@@ -518,6 +905,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--win-reward", type=float, default=1.0)
     p.add_argument("--loss-reward", type=float, default=-1.0)
     p.add_argument("--draw-reward", type=float, default=0.0)
+    p.add_argument("--shaping-weight", type=float, default=0.0,
+                   help="dense potential-difference reward multiplier; 0 keeps terminal-only PPO")
+    p.add_argument("--turn-penalty", type=float, default=0.0,
+                   help="small per-decision penalty to discourage long non-progress loops")
     p.add_argument("--max-turns", type=int, default=700)
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--save-every", type=int, default=1)
@@ -528,10 +919,28 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cuda-memory-gb", type=float, default=0.0)
     p.add_argument("--cuda-memory-fraction", type=float, default=0.0)
     p.add_argument("--width", type=float, default=0.0, help="override width; default inferred from --policy-init")
+    p.add_argument("--arch", choices=["pointer", "cross_attn"], default="",
+                   help="override model arch; default inferred from --policy-init")
+    p.add_argument("--state-layers", type=int, default=0,
+                   help="override cross-attn state layers; default inferred from --policy-init")
     p.add_argument("--state-feat-dim", type=int, default=0, help="override state features; default inferred")
     p.add_argument("--opt-feat-dim", type=int, default=0, help="override option features; default inferred")
     p.add_argument("--legacy-state-pool", action="store_true")
     p.add_argument("--no-option-context", action="store_true")
+    p.add_argument("--plan-dim", type=int, default=-1,
+                   help="override auxiliary/hierarchical plan dim; -1 infers from checkpoint")
+    p.add_argument("--hierarchical-plan", action="store_true",
+                   help="force hierarchical plan conditioning on even if checkpoint does not contain it")
+    p.add_argument("--history-k", type=int, default=-1,
+                   help="override own action history length; -1 infers from checkpoint")
+    p.add_argument("--opp-history-k", type=int, default=-1,
+                   help="override opponent action history length; -1 infers from checkpoint")
+    p.add_argument("--log-history-k", type=int, default=-1,
+                   help="override public log history length; -1 infers from checkpoint")
+    p.add_argument("--board-history-k", type=int, default=-1,
+                   help="override board snapshot history length; -1 infers from checkpoint")
+    p.add_argument("--board-history-feat-dim", type=int, default=0,
+                   help="override board history feature width; 0 infers from checkpoint")
 
     p.add_argument("--bc-anchor-weight", type=float, default=0.0)
     p.add_argument("--bc-anchor-corpus", default="")
@@ -571,22 +980,45 @@ def main() -> None:
     torch.manual_seed(args.seed)
 
     cfg = checkpoint_config(args.policy_init)
+    arch = args.arch or cfg["arch"]
     width = args.width or cfg["width"]
     state_feat_dim = args.state_feat_dim or cfg["state_feat_dim"]
     opt_feat_dim = args.opt_feat_dim or cfg["opt_feat_dim"]
     slot_state = not args.legacy_state_pool and bool(cfg["slot_state"])
     option_context = (not args.no_option_context) and bool(cfg["option_context"])
+    plan_dim = cfg["plan_dim"] if args.plan_dim < 0 else args.plan_dim
+    hierarchical_plan = bool(args.hierarchical_plan or cfg["hierarchical_plan"])
+    history_k = cfg["history_k"] if args.history_k < 0 else args.history_k
+    opp_history_k = cfg["opp_history_k"] if args.opp_history_k < 0 else args.opp_history_k
+    log_history_k = cfg["log_history_k"] if args.log_history_k < 0 else args.log_history_k
+    board_history_k = cfg["board_history_k"] if args.board_history_k < 0 else args.board_history_k
+    board_history_feat_dim = args.board_history_feat_dim or cfg["board_history_feat_dim"]
+    state_layers = args.state_layers or cfg["state_layers"]
+    args.history_k = int(history_k)
+    args.opp_history_k = int(opp_history_k)
+    args.log_history_k = int(log_history_k)
+    args.board_history_k = int(board_history_k)
+    args.board_history_feat_dim = int(board_history_feat_dim)
 
     device = torch.device(args.device if torch.cuda.is_available() or not args.device.startswith("cuda") else "cpu")
     memory_msg = _configure_cuda_memory_limit(
         device, gb=args.cuda_memory_gb, fraction=args.cuda_memory_fraction
     )
-    model = PolicyValueNet(
+    model = build_policy_model(
+        arch=arch,
         width=width,
         slot_state=slot_state,
         option_context=option_context,
         state_feat_dim=state_feat_dim,
         opt_feat_dim=opt_feat_dim,
+        plan_dim=plan_dim,
+        hierarchical_plan=hierarchical_plan,
+        history_k=history_k,
+        opp_history_k=opp_history_k,
+        log_history_k=log_history_k,
+        board_history_k=board_history_k,
+        board_history_feat_dim=board_history_feat_dim,
+        state_layers=state_layers,
     ).to(device)
     loaded, skipped = _load_npz_init(model, args.policy_init, device, partial=False)
     if skipped:
@@ -605,9 +1037,15 @@ def main() -> None:
     print(
         f"RL fine-tune: init={args.policy_init} save={args.save} device={device} "
         f"{memory_msg + ' ' if memory_msg else ''}"
-        f"width={width:g} slot_state={slot_state} option_context={option_context} "
+        f"arch={arch} width={width:g} state_layers={state_layers} "
+        f"slot_state={slot_state} option_context={option_context} "
         f"state_feat_dim={state_feat_dim} opt_feat_dim={opt_feat_dim} "
+        f"plan_dim={plan_dim} hierarchical_plan={hierarchical_plan} "
+        f"history_k={history_k} opp_history_k={opp_history_k} "
+        f"log_history_k={log_history_k} board_history_k={board_history_k} "
         f"opponents={len(opponents)} opponent_weight_mode={args.opponent_weight_mode} "
+        f"rollout_workers={args.rollout_workers} rollout_temperature={args.rollout_temperature} "
+        f"rollout_top_k={args.rollout_top_k} shaping_weight={args.shaping_weight} "
         f"bc_anchor={bool(anchor_corpus)} anchor_weight={args.bc_anchor_weight}",
         flush=True,
     )
@@ -631,39 +1069,48 @@ def main() -> None:
     global_game = 0
     for iteration in range(1, args.iterations + 1):
         t0 = time.time()
-        samples = []
-        episodes = []
-        games_meta = []
-        for local_game in range(args.games_per_iter):
-            opponent = sample_opponent(opponents, weights, args.opponent_weight_mode)
-            decisions, meta = play_training_game(
+        if int(args.rollout_workers) > 1:
+            episodes, games_meta, global_game, t_collect = collect_parallel_rollouts(
                 model,
-                candidate_deck,
-                opponent,
-                encoder,
+                opponents,
+                weights,
                 args,
-                game_index=global_game,
-                seed=args.seed + global_game * 1009,
+                iteration=iteration,
+                global_game=global_game,
             )
-            global_game += 1
-            if decisions:
-                episodes.append(decisions)
-                samples.extend(decisions)
-            games_meta.append(meta)
-            done = local_game + 1
-            if args.progress_every and (
-                done == 1 or done % args.progress_every == 0 or done == args.games_per_iter
-            ):
-                wins = sum(1 for row in games_meta if row["outcome"] == "win")
-                losses = sum(1 for row in games_meta if row["outcome"] == "loss")
-                draws = sum(1 for row in games_meta if row["outcome"] == "draw")
-                print(
-                    f"  iter {iteration} rollout {done}/{args.games_per_iter} "
-                    f"W/L/D={wins}/{losses}/{draws} wr={wins/done:.3f} decisions={len(samples)}",
-                    flush=True,
+        else:
+            episodes = []
+            games_meta = []
+            for local_game in range(args.games_per_iter):
+                opponent = sample_opponent(opponents, weights, args.opponent_weight_mode)
+                decisions, meta = play_training_game(
+                    model,
+                    candidate_deck,
+                    opponent,
+                    encoder,
+                    args,
+                    game_index=global_game,
+                    seed=args.seed + global_game * 1009,
                 )
-
-        t_collect = time.time() - t0
+                global_game += 1
+                if decisions:
+                    episodes.append(decisions)
+                games_meta.append(meta)
+                done = local_game + 1
+                if args.progress_every and (
+                    done == 1 or done % args.progress_every == 0 or done == args.games_per_iter
+                ):
+                    wins = sum(1 for row in games_meta if row["outcome"] == "win")
+                    losses = sum(1 for row in games_meta if row["outcome"] == "loss")
+                    draws = sum(1 for row in games_meta if row["outcome"] == "draw")
+                    n_decisions = sum(len(ep) for ep in episodes)
+                    print(
+                        f"  iter {iteration} rollout {done}/{args.games_per_iter} "
+                        f"W/L/D={wins}/{losses}/{draws} wr={wins/done:.3f} decisions={n_decisions}",
+                        flush=True,
+                    )
+            t_collect = time.time() - t0
+        samples = [d for episode in episodes for d in episode]
         wins = sum(1 for row in games_meta if row["outcome"] == "win")
         losses = sum(1 for row in games_meta if row["outcome"] == "loss")
         draws = sum(1 for row in games_meta if row["outcome"] == "draw")
@@ -676,6 +1123,7 @@ def main() -> None:
             print(f"iter {iteration}: only {len(samples)} decisions collected; skipping update", flush=True)
             continue
 
+        refresh_old_policy_stats(model, samples, args.minibatch)
         for episode in episodes:
             compute_gae(episode, args.gamma, args.gae_lambda)
         stats = ppo_update(

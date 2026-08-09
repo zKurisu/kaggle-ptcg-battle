@@ -1229,8 +1229,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--policy-init", required=True,
                    help="BC2 .npz checkpoint used as an architecture template, or explicit load init")
-    p.add_argument("--init-mode", choices=["random", "load"], default="random",
-                   help="'random' uses --policy-init only as a template; 'load' is deprecated BC fine-tuning")
+    p.add_argument("--init-mode", choices=["random", "resume", "load"], default="random",
+                   help="'random' uses --policy-init only as a template; 'resume' continues an RL checkpoint; 'load' is deprecated BC fine-tuning")
     p.add_argument("--deck", required=True, help="candidate deck CSV")
     p.add_argument("--save", required=True, help="final/best output .npz path")
     p.add_argument("--save-policy", choices=["final", "best", "both"], default="final",
@@ -1452,11 +1452,14 @@ def main() -> None:
         board_history_feat_dim=board_history_feat_dim,
         state_layers=state_layers,
     ).to(device)
-    if args.init_mode == "load":
+    if args.init_mode in {"load", "resume"}:
         loaded, skipped = _load_npz_init(model, args.policy_init, device, partial=False)
         if skipped:
             raise RuntimeError(f"strict init unexpectedly skipped tensors: {skipped[:8]}")
-        init_msg = f"loaded_tensors={loaded} deprecated_finetune_mode=true"
+        if args.init_mode == "load":
+            init_msg = f"loaded_tensors={loaded} deprecated_bc_finetune_mode=true"
+        else:
+            init_msg = f"loaded_tensors={loaded} resume_rl_checkpoint=true"
     else:
         init_msg = "random_init=true template_only=true"
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)

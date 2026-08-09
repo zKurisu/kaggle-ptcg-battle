@@ -127,6 +127,8 @@ this mode:
 - run `tools/rl_train_league.py`;
 - pass `--init-mode random`;
 - use `--policy-init` only as an architecture/checkpoint-format template;
+- after the first scratch phase, use `--init-mode resume` only to continue an
+  RL checkpoint produced by the same scratch run;
 - keep `--bc-anchor-weight 0` and `--ref-kl-coef 0`;
 - train against curriculum/league opponents at scale.
 

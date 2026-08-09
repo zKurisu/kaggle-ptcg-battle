@@ -18,7 +18,7 @@ This file is the first place a new agent should read before touching the project
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
 
-## Active Remote Job: Marnie Big-Batch Restart 2026-08-09
+## Completed Remote Job: Marnie Big-Batch Restart 2026-08-09
 
 The first Marnie nightly run from `2026-08-09 01:40 CST` loaded all 31 files
 and then failed before epoch 1 with `RuntimeError: cuDNN error:
@@ -70,18 +70,42 @@ weights: win/loss/draw=1.5/0.4/0.8, first_action=1.5, option=0.15, set_loss=0
 checkpoint_every: 1
 ```
 
-Automatic post-eval after successful training:
+Run completed successfully at `2026-08-09 12:57 CST`; no fallback was needed.
+The actual run used `batch=1536`, and the best checkpoint was epoch 7:
+
+```text
+Best val=0.5242 ->
+  checkpoints/marnie_nightly_20260809/bc2_marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_b1536.npz
+
+epoch 1: train=0.5222 val=0.5303
+epoch 5: train=0.4866 val=0.5250
+epoch 6: train=0.4795 val=0.5245
+epoch 7: train=0.4743 val=0.5242
+epoch 8: train=0.4714 val=0.5245
+```
+
+Automatic post-eval:
 
 ```text
 random 500:
   logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_20260809.random_g500.log
+  result: 499/500 = 99.8%
 
 Marnie W4 baseline vs big-run delta against Ogerpon 5899/697, 300 games each:
   logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_20260809.vs_ogerpon_w4_delta_g300.csv
   logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_20260809.vs_ogerpon_w4_delta_g300.log
+  vs og5899: W4 47/300 = 15.7%, big-run 48/300 = 16.0%, delta +0.3pp
+  vs og697:  W4 40/300 = 13.3%, big-run 46/300 = 15.3%, delta +2.0pp
+  summary: avg_delta=+1.2pp, candidate=15.7%, baseline=14.5%
 ```
 
-Monitor:
+Interpretation: the larger batch/no-cuDNN restart solved the training stability
+issue and kept random performance high, but it did not materially solve Marnie
+vs Ogerpon. Treat this as a stable baseline/ablation checkpoint rather than a
+breakthrough. More epochs are unlikely to help much from this recipe: validation
+was already flat and epoch 8 slightly regressed.
+
+Reference monitor commands:
 
 ```bash
 ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "bc2_train.py.*nocudnn_bigrun|run_marnie_nightly_nocudnn_bigrun" && nvidia-smi --query-gpu=index,memory.used,memory.free,utilization.gpu --format=csv,noheader,nounits'

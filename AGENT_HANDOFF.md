@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-09 20:55 Asia/Shanghai.
+Last updated: 2026-08-09 23:16 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -17,6 +17,71 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## Active Remote Job: Scratch League RL 2026-08-09
+
+Hard constraint from the user: **BC is locked. Do not fine-tune BC anymore.**
+Existing BC checkpoints are only templates/baselines/fixed opponents. Current RL
+jobs use `tools/rl_train_league.py` with:
+
+```text
+phase1: --init-mode random
+phase2: --init-mode resume from the phase1 scratch checkpoint
+no BC anchor
+no ref-KL
+```
+
+Remote roots:
+
+```text
+logs:        logs/rl_scratch_league_20260809
+checkpoints: checkpoints/rl_scratch_league_20260809
+main script: /tmp/run_scratch_league_rl_20260809.sh
+Ogerpon retry: /tmp/run_ogerpon_scratch_retry_20260809.sh
+Lucario retry: /tmp/run_lucario_scratch_retry_20260809.sh
+```
+
+Status at 2026-08-09 23:16 CST:
+
+```text
+Marnie b8f:
+  phase1 completed, final rollout WR 0.8125
+  phase2 running on GPU0
+  latest logged phase2 iter: 26/72, WR 0.349
+  best checkpoint so far:
+    checkpoints/rl_scratch_league_20260809/marnie_b8f_scratch_phase2_best.npz
+  interpretation: running normally; hard Ogerpon opponents suppress phase2 WR.
+
+Dragapult cc2:
+  phase1 completed, final rollout WR 0.8099
+  phase2 running on GPU3
+  latest logged phase2 iter: 23/72, WR 0.193
+  adaptive sampling currently focuses heavily on Marnie.
+  interpretation: running normally, but hard phase is weak so far.
+
+Ogerpon 2a:
+  original 24GB job OOMed.
+  48GB retry running on GPU1:
+    runner log: logs/rl_scratch_league_20260809/ogerpon_2a_scratch_mem48.runner.log
+    phase1 log: logs/rl_scratch_league_20260809/ogerpon_2a_scratch_mem48_phase1.train.log
+  latest logged phase1 iter: 14/24, WR 0.570
+  note: iter13 had a one-off very high approx_kl, but training continued.
+
+Mega Lucario 43d:
+  original 24GB phase1/phase2 both OOMed.
+  48GB retry started on GPU2 at 2026-08-09 23:15 CST:
+    runner log: logs/rl_scratch_league_20260809/lucario_43d_scratch_mem48.runner.log
+    phase1 log: logs/rl_scratch_league_20260809/lucario_43d_scratch_mem48_phase1.train.log
+  log confirmed:
+    init_mode=random random_init=true template_only=true
+  interpretation: retry is the intended fix; monitor GPU2 update peak.
+```
+
+Quick monitor command:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader && for f in logs/rl_scratch_league_20260809/*scratch*metrics.csv; do echo ===$f===; tail -3 "$f"; done'
+```
 
 ## RL v3 Parallel Results 2026-08-09
 

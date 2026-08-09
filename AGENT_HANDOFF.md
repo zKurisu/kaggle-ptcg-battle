@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-09 23:16 Asia/Shanghai.
+Last updated: 2026-08-10 07:07 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -18,7 +18,7 @@ This file is the first place a new agent should read before touching the project
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
 
-## Active Remote Job: Scratch League RL 2026-08-09
+## Completed Remote Job: Scratch League RL 2026-08-09/10
 
 Hard constraint from the user: **BC is locked. Do not fine-tune BC anymore.**
 Existing BC checkpoints are only templates/baselines/fixed opponents. Current RL
@@ -41,47 +41,75 @@ Ogerpon retry: /tmp/run_ogerpon_scratch_retry_20260809.sh
 Lucario retry: /tmp/run_lucario_scratch_retry_20260809.sh
 ```
 
-Status at 2026-08-09 23:16 CST:
+Final status at 2026-08-10 07:07 CST:
 
 ```text
+All jobs finished. No matching rl_train_league/eval processes remain.
+All four A800 GPUs are idle at ~2 MiB used.
+
 Marnie b8f:
   phase1 completed, final rollout WR 0.8125
-  phase2 running on GPU0
-  latest logged phase2 iter: 26/72, WR 0.349
-  best checkpoint so far:
+  phase2 completed 72/72, final rollout WR 0.354
+  random300: 99.3% (298/300)
+  baseline-delta vs Ogerpon pool:
+    og5899: 15.0% -> 1.25%, -13.75pp
+    og697:  17.5% -> 0.0%,  -17.5pp
+    og2a:   81.25% -> 33.75%, -47.5pp
+  best checkpoint:
     checkpoints/rl_scratch_league_20260809/marnie_b8f_scratch_phase2_best.npz
-  interpretation: running normally; hard Ogerpon opponents suppress phase2 WR.
+  interpretation: random preserved, but substantially worse than BC on target
+    matchups. Do not submit as an improvement candidate.
 
 Dragapult cc2:
   phase1 completed, final rollout WR 0.8099
-  phase2 running on GPU3
-  latest logged phase2 iter: 23/72, WR 0.193
-  adaptive sampling currently focuses heavily on Marnie.
-  interpretation: running normally, but hard phase is weak so far.
+  phase2 completed 72/72, final rollout WR 0.281
+  random300: 99.7% (299/300)
+  baseline-delta vs core:
+    marnie:   11.25% -> 0.625%, -10.625pp
+    crustle3: 14.375% -> 5.625%, -8.75pp
+    lucario:  43.125% -> 35.625%, -7.5pp
+  interpretation: random preserved, but hard-matchup policy is worse than BC.
 
 Ogerpon 2a:
   original 24GB job OOMed.
-  48GB retry running on GPU1:
+  48GB retry completed:
     runner log: logs/rl_scratch_league_20260809/ogerpon_2a_scratch_mem48.runner.log
-    phase1 log: logs/rl_scratch_league_20260809/ogerpon_2a_scratch_mem48_phase1.train.log
-  latest logged phase1 iter: 14/24, WR 0.570
-  note: iter13 had a one-off very high approx_kl, but training continued.
+  phase1 completed, final rollout WR 0.719
+  phase2 completed 72/72, final rollout WR 0.328
+  random300: 97.7% (293/300)
+  baseline-delta vs Crustle:
+    crustle3:  4.375% -> 5.0%, +0.625pp
+    crustle96: 4.375% -> 5.0%, +0.625pp
+    crustleb:  5.625% -> 1.25%, -4.375pp
+  interpretation: not a meaningful breakthrough; one Crustle sig regressed.
 
 Mega Lucario 43d:
   original 24GB phase1/phase2 both OOMed.
-  48GB retry started on GPU2 at 2026-08-09 23:15 CST:
+  48GB retry completed:
     runner log: logs/rl_scratch_league_20260809/lucario_43d_scratch_mem48.runner.log
-    phase1 log: logs/rl_scratch_league_20260809/lucario_43d_scratch_mem48_phase1.train.log
-  log confirmed:
-    init_mode=random random_init=true template_only=true
-  interpretation: retry is the intended fix; monitor GPU2 update peak.
+  phase1 completed, final rollout WR 0.602
+  phase2 completed 72/72, final rollout WR 0.383
+  random300: 98.0% (294/300)
+  baseline-delta vs core:
+    marnie:   11.25% -> 0.625%, -10.625pp
+    crustle3: 15.0% -> 3.75%, -11.25pp
+    og5899:   37.5% -> 4.375%, -33.125pp
+  interpretation: random preserved, but target matchups are much worse than BC.
 ```
 
-Quick monitor command:
+Quick status command:
 
 ```bash
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader && for f in logs/rl_scratch_league_20260809/*scratch*metrics.csv; do echo ===$f===; tail -3 "$f"; done'
 ```
+
+High-level interpretation: this scratch PPO wave proves the pipeline can train
+from random to high random win rate, but it did not learn stronger policies than
+BC against fixed high-quality opponents. The next aggressive direction should
+not be BC fine-tuning; focus on changing the RL objective/curriculum/search
+signal, e.g. opponent-specific terminal decomposition, self-play league with
+much longer exploration before hard BC opponents, or planner/search-generated
+targets.
 
 ## RL v3 Parallel Results 2026-08-09
 

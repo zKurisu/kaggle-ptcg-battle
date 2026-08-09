@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Conservative PPO fine-tuning from a BC2 checkpoint against a policy pool.
+"""PPO training against a policy pool.
 
-This is intentionally a small, inspectable training loop for targeted matchup
-work. It does not replace BC training: start from a strong BC/shadow checkpoint,
-train against a curated weakness pool, and validate every saved checkpoint with
-the existing random/RR/baseline-delta tools.
+The active 2026-08-09 direction is not BC fine-tuning. BC checkpoints are locked:
+use them as baselines, opponents, submission references, or architecture
+templates. For new structural-weakness work, prefer `--init-mode random` and
+train from scratch against a curriculum/league.
 """
 from __future__ import annotations
 
@@ -93,6 +93,14 @@ METRIC_FIELDS = [
     "ref_logprob_delta",
     "bc_anchor_loss",
     "avg_reward_weight",
+    "rollout_temperature_eff",
+    "rollout_top_k_eff",
+    "entropy_coef_eff",
+    "ref_kl_coef_eff",
+    "bc_anchor_weight_eff",
+    "opponent_top_name",
+    "opponent_top_weight",
+    "league_snapshots",
     "early_stop",
     "t_collect",
     "t_update",
@@ -323,6 +331,62 @@ def apply_batch_reward_weighting(
             d.reward *= weight
             d.reward_weight = weight
     return {"avg_reward_weight": float(np.mean(weights)) if weights else 1.0}
+
+
+def _linear_schedule(start: float, final: float | None, schedule_iters: int, iteration: int) -> float:
+    if final is None or int(schedule_iters) <= 0:
+        return float(start)
+    progress = min(1.0, max(0.0, (int(iteration) - 1) / max(1, int(schedule_iters) - 1)))
+    return float(start + progress * (float(final) - float(start)))
+
+
+def _linear_schedule_int(start: int, final: int | None, schedule_iters: int, iteration: int) -> int:
+    if final is None or int(schedule_iters) <= 0:
+        return int(start)
+    value = _linear_schedule(float(start), float(final), schedule_iters, iteration)
+    return int(round(value))
+
+
+def apply_iteration_schedule(args: argparse.Namespace, iteration: int) -> dict[str, float | int]:
+    """Mutate runtime knobs for the current iteration and return loggable values."""
+    schedule_iters = int(getattr(args, "schedule_iters", 0) or 0)
+    args.rollout_temperature = _linear_schedule(
+        args._base_rollout_temperature,
+        args.rollout_temperature_final,
+        schedule_iters,
+        iteration,
+    )
+    args.rollout_top_k = _linear_schedule_int(
+        args._base_rollout_top_k,
+        args.rollout_top_k_final,
+        schedule_iters,
+        iteration,
+    )
+    args.entropy_coef = _linear_schedule(
+        args._base_entropy_coef,
+        args.entropy_final_coef,
+        schedule_iters,
+        iteration,
+    )
+    args.ref_kl_coef = _linear_schedule(
+        args._base_ref_kl_coef,
+        args.ref_kl_final_coef,
+        schedule_iters,
+        iteration,
+    )
+    args.bc_anchor_weight = _linear_schedule(
+        args._base_bc_anchor_weight,
+        args.bc_anchor_final_weight,
+        schedule_iters,
+        iteration,
+    )
+    return {
+        "rollout_temperature_eff": float(args.rollout_temperature),
+        "rollout_top_k_eff": int(args.rollout_top_k),
+        "entropy_coef_eff": float(args.entropy_coef),
+        "ref_kl_coef_eff": float(args.ref_kl_coef),
+        "bc_anchor_weight_eff": float(args.bc_anchor_weight),
+    }
 
 
 @torch.no_grad()
@@ -722,6 +786,162 @@ def sample_opponent_index(opponents: list[Entry], weights: dict[str, float], mod
     return int(np.random.choice(len(opponents), p=probs))
 
 
+def summarize_opponents(
+    opponents: list[Entry],
+    weights: dict[str, float],
+    games_meta: list[dict],
+) -> tuple[list[dict], dict[str, str | float]]:
+    counts: dict[str, int] = {}
+    wins: dict[str, int] = {}
+    draws: dict[str, int] = {}
+    for meta in games_meta:
+        name = str(meta.get("opponent", ""))
+        counts[name] = counts.get(name, 0) + 1
+        if meta.get("outcome") == "win":
+            wins[name] = wins.get(name, 0) + 1
+        elif meta.get("outcome") == "draw":
+            draws[name] = draws.get(name, 0) + 1
+
+    rows = []
+    for opp in opponents:
+        n = counts.get(opp.name, 0)
+        w = wins.get(opp.name, 0)
+        d = draws.get(opp.name, 0)
+        rows.append({
+            "opponent": opp.name,
+            "games": n,
+            "wins": w,
+            "losses": max(0, n - w - d),
+            "draws": d,
+            "win_rate": w / max(n, 1),
+            "weight": float(weights.get(opp.name, 1.0)),
+            "policy": opp.policy_path,
+            "deck": opp.deck_path,
+        })
+
+    top = max(rows, key=lambda r: float(r["weight"])) if rows else {"opponent": "", "weight": 0.0}
+    return rows, {
+        "opponent_top_name": str(top["opponent"]),
+        "opponent_top_weight": float(top["weight"]),
+    }
+
+
+def append_opponent_stats(path: str, iteration: int, rows: list[dict]) -> None:
+    if not path:
+        return
+    fields = [
+        "iter",
+        "opponent",
+        "games",
+        "wins",
+        "losses",
+        "draws",
+        "win_rate",
+        "weight",
+        "policy",
+        "deck",
+    ]
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    exists = out.exists()
+    with out.open("a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        if not exists:
+            writer.writeheader()
+        for row in rows:
+            formatted = dict(row)
+            formatted["iter"] = iteration
+            formatted["win_rate"] = f"{float(formatted['win_rate']):.6f}"
+            formatted["weight"] = f"{float(formatted['weight']):.6f}"
+            writer.writerow(formatted)
+
+
+def update_adaptive_opponent_weights(
+    opponents: list[Entry],
+    weights: dict[str, float],
+    base_weights: dict[str, float],
+    games_meta: list[dict],
+    args: argparse.Namespace,
+) -> None:
+    mode = str(getattr(args, "opponent_weight_mode", "uniform") or "uniform")
+    if not mode.startswith("adaptive"):
+        return
+    counts: dict[str, int] = {}
+    wins: dict[str, int] = {}
+    for meta in games_meta:
+        opp = str(meta.get("opponent", ""))
+        counts[opp] = counts.get(opp, 0) + 1
+        if meta.get("outcome") == "win":
+            wins[opp] = wins.get(opp, 0) + 1
+
+    min_games = int(getattr(args, "opponent_adaptive_min_games", 4) or 0)
+    coef = float(getattr(args, "opponent_adaptive_coef", 2.0) or 0.0)
+    ema = float(getattr(args, "opponent_adaptive_ema", 0.35) or 0.0)
+    lo = float(getattr(args, "opponent_weight_min", 0.2) or 0.0)
+    hi = float(getattr(args, "opponent_weight_max", 6.0) or 0.0)
+    for opp in opponents:
+        n = counts.get(opp.name, 0)
+        if n < min_games:
+            continue
+        wr = wins.get(opp.name, 0) / max(n, 1)
+        base = float(base_weights.get(opp.name, 1.0))
+        if mode == "adaptive_inverse_winrate":
+            target = base * (1.0 + coef * max(0.0, 0.5 - wr))
+        else:
+            target = base * (1.0 + coef * (1.0 - wr))
+        if hi > 0:
+            target = min(target, hi)
+        if lo > 0:
+            target = max(target, lo)
+        old = float(weights.get(opp.name, base))
+        weights[opp.name] = (1.0 - ema) * old + ema * target
+
+
+def maybe_add_league_snapshot(
+    model: nn.Module,
+    opponents: list[Entry],
+    weights: dict[str, float],
+    base_weights: dict[str, float],
+    snapshots: list[Entry],
+    args: argparse.Namespace,
+    *,
+    iteration: int,
+    win_rate: float,
+    force: bool = False,
+) -> None:
+    every = int(getattr(args, "league_snapshot_every", 0) or 0)
+    if not force and every <= 0:
+        return
+    if not force and iteration < int(getattr(args, "league_start_iter", 1) or 1):
+        return
+    if not force and iteration % every != 0 and iteration != 1:
+        return
+    min_wr = float(getattr(args, "league_min_batch_win_rate", 0.0) or 0.0)
+    if not force and win_rate < min_wr:
+        return
+    snap_dir_arg = getattr(args, "league_snapshot_dir", "") or getattr(args, "checkpoint_dir", "")
+    if not snap_dir_arg:
+        return
+    snap_dir = Path(snap_dir_arg)
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    snap_path = snap_dir / f"league_iter{iteration:04d}_wr{win_rate:.3f}.npz"
+    _save_npz(model, str(snap_path))
+    name = clean_entry_name(f"league_iter{iteration:04d}_wr{win_rate:.3f}")
+    deck = read_deck(args.deck)
+    entry = Entry(name, str(snap_path), args.deck, NumpyPolicy.load(str(snap_path)), deck)
+    opponents.append(entry)
+    snapshots.append(entry)
+    weight = float(getattr(args, "league_snapshot_weight", 1.0) or 1.0)
+    weights[entry.name] = weight
+    base_weights[entry.name] = weight
+    max_snaps = int(getattr(args, "league_max_snapshots", 0) or 0)
+    while max_snaps > 0 and len(snapshots) > max_snaps:
+        old = snapshots.pop(0)
+        opponents[:] = [opp for opp in opponents if opp.name != old.name]
+        weights.pop(old.name, None)
+        base_weights.pop(old.name, None)
+
+
 def collect_parallel_rollouts(
     model: nn.Module,
     opponents: list[Entry],
@@ -799,7 +1019,11 @@ def collect_parallel_rollouts(
 
 
 def setup_anchor_corpus(args: argparse.Namespace, state_feat_dim: int, opt_feat_dim: int):
-    if args.bc_anchor_weight <= 0:
+    max_weight = max(
+        float(getattr(args, "bc_anchor_weight", 0.0) or 0.0),
+        float(getattr(args, "bc_anchor_final_weight", 0.0) or 0.0),
+    )
+    if max_weight <= 0:
         return None, []
     if not args.bc_anchor_corpus:
         raise ValueError("--bc-anchor-weight requires --bc-anchor-corpus")
@@ -1003,7 +1227,10 @@ def append_metrics(path: str, row: dict) -> None:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--policy-init", required=True, help="BC2 .npz checkpoint to fine-tune")
+    p.add_argument("--policy-init", required=True,
+                   help="BC2 .npz checkpoint used as an architecture template, or explicit load init")
+    p.add_argument("--init-mode", choices=["random", "load"], default="random",
+                   help="'random' uses --policy-init only as a template; 'load' is deprecated BC fine-tuning")
     p.add_argument("--deck", required=True, help="candidate deck CSV")
     p.add_argument("--save", required=True, help="final/best output .npz path")
     p.add_argument("--save-policy", choices=["final", "best", "both"], default="final",
@@ -1023,7 +1250,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--manifest-archetype-regex", action="append", default=[])
     p.add_argument("--tmp-manifest-dir", default="/tmp")
     p.add_argument("--skip-bad-entries", action="store_true")
-    p.add_argument("--opponent-weight-mode", choices=["uniform", "manifest"], default="uniform")
+    p.add_argument("--opponent-weight-mode",
+                   choices=["uniform", "manifest", "adaptive_lossrate", "adaptive_inverse_winrate"],
+                   default="uniform")
+    p.add_argument("--opponent-adaptive-coef", type=float, default=2.0,
+                   help="adaptive opponent sampler multiplier; larger values focus harder opponents")
+    p.add_argument("--opponent-adaptive-ema", type=float, default=0.35,
+                   help="EMA applied when updating adaptive opponent weights from batch results")
+    p.add_argument("--opponent-adaptive-min-games", type=int, default=4,
+                   help="minimum games against an opponent before adapting its weight")
+    p.add_argument("--opponent-weight-min", type=float, default=0.2)
+    p.add_argument("--opponent-weight-max", type=float, default=6.0)
     p.add_argument("--opponent-mcts", action="store_true")
     p.add_argument("--opponent-mcts-sims", type=int, default=48)
     p.add_argument("--opponent-time-budget", type=float, default=4.0)
@@ -1034,8 +1271,12 @@ def parse_args() -> argparse.Namespace:
                    help="parallel CPU actor workers for game collection; 1 keeps the old in-process path")
     p.add_argument("--rollout-temperature", type=float, default=1.15,
                    help="sampling temperature used by NumPy actor workers")
+    p.add_argument("--rollout-temperature-final", type=float, default=None,
+                   help="linearly anneal rollout temperature to this value over --schedule-iters")
     p.add_argument("--rollout-top-k", type=int, default=8,
                    help="when sampling, restrict actor choices to top K legal options; 0 disables")
+    p.add_argument("--rollout-top-k-final", type=int, default=None,
+                   help="linearly anneal rollout top-k to this value over --schedule-iters")
     p.add_argument("--actor-tmp-dir", default="/tmp/ptcg_rl_actor_policies")
     p.add_argument("--keep-actor-policy", action="store_true",
                    help="keep per-iteration actor .npz files for debugging")
@@ -1055,6 +1296,8 @@ def parse_args() -> argparse.Namespace:
                    help="reference checkpoint for action-level KL; default is --policy-init")
     p.add_argument("--ref-kl-coef", type=float, default=0.0,
                    help="penalty coefficient for squared logprob drift from the reference policy")
+    p.add_argument("--ref-kl-final-coef", type=float, default=None,
+                   help="linearly anneal reference KL coefficient to this value over --schedule-iters")
     p.add_argument("--reward-weight-mode", choices=["none", "opponent_inverse_winrate", "opponent_lossrate"],
                    default="none",
                    help="batch-level episode reward reweighting before GAE")
@@ -1063,6 +1306,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--reward-weight-max", type=float, default=2.5)
     p.add_argument("--value-coef", type=float, default=0.5)
     p.add_argument("--entropy-coef", type=float, default=0.003)
+    p.add_argument("--entropy-final-coef", type=float, default=None,
+                   help="linearly anneal entropy coefficient to this value over --schedule-iters")
+    p.add_argument("--schedule-iters", type=int, default=0,
+                   help="number of iterations for temperature/top-k/entropy/KL/anchor schedules")
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--gae-lambda", type=float, default=0.95)
     p.add_argument("--grad-clip", type=float, default=0.5)
@@ -1107,6 +1354,8 @@ def parse_args() -> argparse.Namespace:
                    help="override board history feature width; 0 infers from checkpoint")
 
     p.add_argument("--bc-anchor-weight", type=float, default=0.0)
+    p.add_argument("--bc-anchor-final-weight", type=float, default=None,
+                   help="linearly anneal BC anchor weight to this value over --schedule-iters")
     p.add_argument("--bc-anchor-corpus", default="")
     p.add_argument("--bc-anchor-archetype", default="")
     p.add_argument("--bc-anchor-score-bands", nargs="+", default=[])
@@ -1128,6 +1377,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--bc-anchor-set-loss-negative-weight", type=float, default=0.25)
     p.add_argument("--bc-anchor-load-progress-every", type=int, default=0)
 
+    p.add_argument("--opponent-stats-csv", default="",
+                   help="append per-opponent rollout stats and adaptive weights here")
+    p.add_argument("--league-bootstrap-current", action="store_true",
+                   help="add the initial policy as a league opponent before the first rollout")
+    p.add_argument("--league-snapshot-dir", default="",
+                   help="directory for league opponent snapshots; default is --checkpoint-dir")
+    p.add_argument("--league-snapshot-every", type=int, default=0,
+                   help="add the current policy to the opponent pool every N iterations")
+    p.add_argument("--league-start-iter", type=int, default=1)
+    p.add_argument("--league-max-snapshots", type=int, default=6)
+    p.add_argument("--league-snapshot-weight", type=float, default=1.0)
+    p.add_argument("--league-min-batch-win-rate", type=float, default=0.0,
+                   help="skip adding league snapshots if the latest training batch is below this win rate")
+
     p.add_argument("--dry-run", action="store_true", help="load model/opponent/anchor and exit")
     return p.parse_args()
 
@@ -1142,6 +1405,11 @@ def main() -> None:
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    args._base_rollout_temperature = float(args.rollout_temperature)
+    args._base_rollout_top_k = int(args.rollout_top_k)
+    args._base_entropy_coef = float(args.entropy_coef)
+    args._base_ref_kl_coef = float(args.ref_kl_coef)
+    args._base_bc_anchor_weight = float(args.bc_anchor_weight)
 
     cfg = checkpoint_config(args.policy_init)
     arch = args.arch or cfg["arch"]
@@ -1184,12 +1452,19 @@ def main() -> None:
         board_history_feat_dim=board_history_feat_dim,
         state_layers=state_layers,
     ).to(device)
-    loaded, skipped = _load_npz_init(model, args.policy_init, device, partial=False)
-    if skipped:
-        raise RuntimeError(f"strict init unexpectedly skipped tensors: {skipped[:8]}")
+    if args.init_mode == "load":
+        loaded, skipped = _load_npz_init(model, args.policy_init, device, partial=False)
+        if skipped:
+            raise RuntimeError(f"strict init unexpectedly skipped tensors: {skipped[:8]}")
+        init_msg = f"loaded_tensors={loaded} deprecated_finetune_mode=true"
+    else:
+        init_msg = "random_init=true template_only=true"
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
     ref_model = None
-    if float(args.ref_kl_coef or 0.0) > 0:
+    if max(
+        float(args.ref_kl_coef or 0.0),
+        float(args.ref_kl_final_coef or 0.0),
+    ) > 0:
         ref_path = args.ref_policy or args.policy_init
         ref_model = build_policy_model(
             arch=arch,
@@ -1221,11 +1496,14 @@ def main() -> None:
         default_deck=args.deck,
         skip_bad_entries=args.skip_bad_entries,
     )
+    base_weights = dict(weights)
+    league_snapshots: list[Entry] = []
     anchor_corpus, anchor_indices = setup_anchor_corpus(args, state_feat_dim, opt_feat_dim)
 
     print(
-        f"RL fine-tune: init={args.policy_init} save={args.save} device={device} "
+        f"RL train: init={args.policy_init} save={args.save} device={device} "
         f"{memory_msg + ' ' if memory_msg else ''}"
+        f"init_mode={args.init_mode} {init_msg} "
         f"arch={arch} width={width:g} state_layers={state_layers} "
         f"slot_state={slot_state} option_context={option_context} "
         f"state_feat_dim={state_feat_dim} opt_feat_dim={opt_feat_dim} "
@@ -1234,10 +1512,15 @@ def main() -> None:
         f"log_history_k={log_history_k} board_history_k={board_history_k} "
         f"opponents={len(opponents)} opponent_weight_mode={args.opponent_weight_mode} "
         f"rollout_workers={args.rollout_workers} rollout_temperature={args.rollout_temperature} "
-        f"rollout_top_k={args.rollout_top_k} shaping_weight={args.shaping_weight} "
+        f"rollout_temperature_final={args.rollout_temperature_final} "
+        f"rollout_top_k={args.rollout_top_k} rollout_top_k_final={args.rollout_top_k_final} "
+        f"schedule_iters={args.schedule_iters} shaping_weight={args.shaping_weight} "
         f"bc_anchor={bool(anchor_corpus)} anchor_weight={args.bc_anchor_weight} "
-        f"ref_kl_coef={args.ref_kl_coef} target_kl={args.target_kl} "
+        f"anchor_final_weight={args.bc_anchor_final_weight} "
+        f"ref_kl_coef={args.ref_kl_coef} ref_kl_final_coef={args.ref_kl_final_coef} "
+        f"target_kl={args.target_kl} "
         f"adv_norm={args.advantage_normalization} reward_weight={args.reward_weight_mode} "
+        f"league_every={args.league_snapshot_every} league_max={args.league_max_snapshots} "
         f"save_policy={args.save_policy}",
         flush=True,
     )
@@ -1249,6 +1532,17 @@ def main() -> None:
         print(f"  ... {len(opponents) - 20} more opponents", flush=True)
     if anchor_corpus is not None:
         print(f"BC anchor stats: {anchor_corpus.stats} samples={len(anchor_indices)}", flush=True)
+    if (
+        args.init_mode == "load"
+        or max(float(args.bc_anchor_weight or 0.0), float(args.bc_anchor_final_weight or 0.0)) > 0
+        or max(float(args.ref_kl_coef or 0.0), float(args.ref_kl_final_coef or 0.0)) > 0
+    ):
+        print(
+            "WARNING: BC is considered locked for the current project direction. "
+            "init-mode=load, BC anchor, or ref-KL means this run is a deprecated "
+            "fine-tuning/control run, not the main path.",
+            flush=True,
+        )
     if args.dry_run:
         return
 
@@ -1256,10 +1550,24 @@ def main() -> None:
     Path(args.save).parent.mkdir(parents=True, exist_ok=True)
     if args.checkpoint_dir:
         Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+    if args.league_bootstrap_current:
+        maybe_add_league_snapshot(
+            model,
+            opponents,
+            weights,
+            base_weights,
+            league_snapshots,
+            args,
+            iteration=0,
+            win_rate=0.0,
+            force=True,
+        )
+        print(f"League bootstrap added; opponents={len(opponents)}", flush=True)
 
     best_wr = -1.0
     global_game = 0
     for iteration in range(1, args.iterations + 1):
+        schedule_stats = apply_iteration_schedule(args, iteration)
         t0 = time.time()
         if int(args.rollout_workers) > 1:
             episodes, games_meta, global_game, t_collect = collect_parallel_rollouts(
@@ -1310,6 +1618,10 @@ def main() -> None:
         avg_reward = (
             wins * args.win_reward + losses * args.loss_reward + draws * args.draw_reward
         ) / max(args.games_per_iter, 1)
+        _opp_rows, _opp_weight_stats = summarize_opponents(opponents, weights, games_meta)
+        update_adaptive_opponent_weights(opponents, weights, base_weights, games_meta, args)
+        opponent_rows, opponent_weight_stats = summarize_opponents(opponents, weights, games_meta)
+        append_opponent_stats(args.opponent_stats_csv, iteration, opponent_rows)
 
         if len(samples) < 2:
             print(f"iter {iteration}: only {len(samples)} decisions collected; skipping update", flush=True)
@@ -1340,6 +1652,16 @@ def main() -> None:
         if win_rate >= best_wr:
             best_wr = win_rate
             _save_npz(model, args.save)
+        maybe_add_league_snapshot(
+            model,
+            opponents,
+            weights,
+            base_weights,
+            league_snapshots,
+            args,
+            iteration=iteration,
+            win_rate=win_rate,
+        )
 
         row = {
             "iter": iteration,
@@ -1353,6 +1675,9 @@ def main() -> None:
             "avg_decisions_per_game": len(samples) / max(args.games_per_iter, 1),
             **stats,
             **reward_stats,
+            **schedule_stats,
+            **opponent_weight_stats,
+            "league_snapshots": len(league_snapshots),
             "t_collect": t_collect,
             "t_update": t_update,
             "checkpoint": checkpoint or args.save,
@@ -1366,6 +1691,12 @@ def main() -> None:
             f"clip={stats['clip_frac']:.3f} vclip={stats['value_clip_frac']:.3f} "
             f"ref={stats['ref_kl_loss']:.4f}/{stats['ref_logprob_delta']:.3f} "
             f"bc={stats['bc_anchor_loss']:.4f} rw={reward_stats['avg_reward_weight']:.3f} "
+            f"temp={schedule_stats['rollout_temperature_eff']:.2f} "
+            f"topk={schedule_stats['rollout_top_k_eff']} "
+            f"eref={schedule_stats['ref_kl_coef_eff']:.4g} "
+            f"ebc={schedule_stats['bc_anchor_weight_eff']:.4g} "
+            f"opp_top={opponent_weight_stats['opponent_top_name']}:{opponent_weight_stats['opponent_top_weight']:.2f} "
+            f"league={len(league_snapshots)} "
             f"early={int(stats['early_stop'])} "
             f"collect={t_collect:.1f}s update={t_update:.1f}s save={checkpoint or args.save}",
             flush=True,

@@ -6493,6 +6493,58 @@ Run long commands via `/tmp` scripts on `ks`, not large inline heredocs.
 
 ## Next Work
 
+## 2026-08-09 Aggressive RL Direction
+
+Current conclusion after the failed success-trajectory/filtered-BC waves:
+
+- Do not keep treating weak-matchup wins as reliable teacher data by default.
+  The direct overfit test on successful weak-matchup trajectories did not repair
+  the weak matchup, so many of those wins are probably opponent bricks, one-off
+  tactical mistakes, or non-causal correlations.
+- The next serious attempt is RL self-exploration, not another winner-only or
+  filtered BC pass.
+- Kaggle discussion signals match this direction: strong RL reports emphasize
+  representation, value quality, refined curriculum, and large rollout scale;
+  search is useful only with a trustworthy value head; inference remains
+  CPU-only with 1.6 vCPU, 8GB RAM, and 600s total per team/game.
+
+Local code change:
+
+- `tools/rl_finetune_vs_pool.py` now supports aggressive league PPO:
+  - adaptive opponent sampling via `--opponent-weight-mode adaptive_lossrate`
+    or `adaptive_inverse_winrate`;
+  - per-opponent rollout logging via `--opponent-stats-csv`;
+  - previous-policy league snapshots via `--league-bootstrap-current`,
+    `--league-snapshot-every`, and `--league-max-snapshots`;
+  - linear schedules for rollout temperature, rollout top-k, entropy, ref-KL,
+  and BC-anchor weight.
+- This is designed to let PPO leave the BC local optimum while preserving enough
+  logging to catch collapse. It does not change the submission-time policy
+  format.
+- User explicitly requested no more fine-tuning: BC is locked. Do not run
+  weak-matchup BC/PPO fine-tunes as the main path. Existing BC checkpoints are
+  only baselines, fixed opponents, submission references, and architecture
+  templates. For future structural-weakness work, use from-scratch / major
+  retraining. The new wrapper `tools/rl_train_league.py` should be used with
+  `--init-mode random`; `--policy-init` is only a dimension/template source in
+  that mode. Keep `--bc-anchor-weight 0` and `--ref-kl-coef 0` unless the user
+  reverses this.
+
+Current remote note:
+
+- At the time this section was written, GPU0 still had the older v3 Lucario
+  run active; GPU1-3 were idle. New aggressive jobs should preferentially use
+  GPU1-3 unless GPU0 is intentionally freed.
+
+Recommended first aggressive run:
+
+- Use large rollout batches and many iterations, not a tiny smoke test.
+- Start with Lucario, Marnie, and Ogerpon because they have known weak pools and
+  existing v3/w4 baselines.
+- Validate every checkpoint with both random and focused baseline-delta. A
+  weak-pool win-rate rise without random/RR stability is an exploit of the local
+  shadow pool, not a production candidate.
+
 Immediate:
 
 1. Build balanced-per-archetype and hard-pool views from the completed shadow pool; top120 is useful but Marnie-heavy.

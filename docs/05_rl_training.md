@@ -91,6 +91,53 @@ more constrained PPO recipe:
 Current wave2 template is stored as `/tmp/run_rl_v3_wave2_20260809.sh` on `ks`.
 It runs on GPU0 only because GPU1-3 are occupied by unrelated ARC jobs.
 
+## Aggressive Self-Exploration PPO
+
+As of 2026-08-09, success-trajectory imitation is no longer the default path.
+Directly overfitting weak-matchup wins did not reliably improve the target
+matchups, which suggests many wins were either opponent bricks, one-off tactical
+errors, or otherwise not causal demonstrations. Use those trajectories for
+diagnosis, not as the main objective.
+
+The aggressive PPO path instead lets the policy explore against a hard league:
+
+- `--opponent-weight-mode adaptive_lossrate` or `adaptive_inverse_winrate`
+  updates opponent sampling weights from the latest rollout batch.
+- `--opponent-stats-csv` records per-opponent games, win rate, and updated
+  weight every iteration.
+- `--league-bootstrap-current` adds the initial policy as a league opponent.
+- `--league-snapshot-every N` periodically adds the current policy as a fixed
+  future opponent, approximating self-play without changing submission format.
+- `--rollout-temperature-final`, `--rollout-top-k-final`,
+  `--entropy-final-coef`, `--ref-kl-final-coef`, and
+  `--bc-anchor-final-weight` linearly schedule exploration and constraints over
+  `--schedule-iters`.
+
+This should be run at a much larger scale than the early PPO pilots. Community
+reports for this competition point to tens of thousands of games for weak
+models and millions for strong RL. Treat 5k games as a smoke test, not a
+verdict.
+
+User direction as of 2026-08-09: BC is locked. Do not spend more iterations on
+BC fine-tuning, including weak-matchup specialist fine-tuning. It is expected to
+damage general play while failing to repair structural weaknesses. For
+structural weaknesses, use from-scratch or otherwise major training changes. In
+this mode:
+
+- run `tools/rl_train_league.py`;
+- pass `--init-mode random`;
+- use `--policy-init` only as an architecture/checkpoint-format template;
+- keep `--bc-anchor-weight 0` and `--ref-kl-coef 0`;
+- train against curriculum/league opponents at scale.
+
+Existing BC checkpoints are still useful as baselines, fixed opponents,
+submission references, and model-shape templates. They should not be updated by
+small PPO/BC fine-tunes.
+
+Kaggle constraints still matter: submission inference is CPU-only with 1.6 vCPU,
+8GB RAM, and 600 seconds total per team per game. Keep the submitted policy
+lightweight; use GPUs and large actor counts only during training.
+
 ## Validation Gate
 
 Evaluate every saved checkpoint before treating it as useful:

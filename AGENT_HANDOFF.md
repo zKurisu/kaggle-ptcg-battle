@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-09 19:05 Asia/Shanghai.
+Last updated: 2026-08-09 19:10 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -17,6 +17,65 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## Active Remote Jobs: RL v3 Parallel 2026-08-09
+
+User preference for scheduling: before starting GPU training, check `nvidia-smi`;
+if idle memory is available, use multiple GPUs in parallel instead of single-GPU
+serial execution. Keep CPU worker count reasonable, but do not serialize merely
+out of habit.
+
+Current active PPO/RL jobs on `ks`:
+
+```text
+Primary serial runner:
+  remote script: /tmp/run_rl_v3_wave2_20260809.sh
+  runner PID: 428410
+  current child: Marnie b8f vs Ogerpon 5899/697
+  train PID: 428420 plus rollout workers
+  GPU: 0
+  logs: logs/rl_v3_wave2_20260809/marnie_b8f_vs_og5899_og697_rlv3.train.log
+  checkpoints: checkpoints/rl_v3_wave2_20260809/
+  note: this original runner still has a later Lucario stage queued. If the
+        parallel Lucario below completes first, treat the queued serial Lucario
+        as a duplicate control or skip it deliberately.
+
+Extra pointer job:
+  remote script: /tmp/run_rl_v3_parallel_extra_20260809.sh
+  runner PID: 439527
+  active child: Dragapult cc2 vs Marnie/Crustle/Lucario
+  train PID: 439538 plus rollout workers
+  GPU: 3
+  logs: logs/rl_v3_parallel_extra_20260809/dragapult_cc2_vs_marnie_crustle_lucario_rlv3p.train.log
+  checkpoints: checkpoints/rl_v3_parallel_extra_20260809/
+  note: the Lucario/Ogerpon history jobs in this first extra runner failed at
+        startup with `CUDNN_STATUS_NOT_INITIALIZED`; do not use those failed
+        outputs.
+
+Extra history no-cuDNN jobs:
+  remote script: /tmp/run_rl_v3_history_nocudnn_extra_20260809.sh
+  runner PID: 443457
+  env: PTCG_DISABLE_CUDNN=1
+  active children:
+    GPU1 Mega Lucario 43d vs Marnie/Crustle/Ogerpon
+    GPU2 Ogerpon 2a vs Crustle 3cd/b141
+  logs: logs/rl_v3_parallel_extra_nocudnn_20260809/
+  checkpoints: checkpoints/rl_v3_parallel_extra_nocudnn_20260809/
+```
+
+`tools/rl_finetune_vs_pool.py` now honors `PTCG_DISABLE_CUDNN=1`, matching
+`tools/bc2_train.py` and `tools/bc2_accuracy.py`. This is required for
+history/GRU checkpoints on the remote A800 environment; otherwise `.to(cuda)`
+can fail before training starts.
+
+Monitor:
+
+```bash
+ssh ks 'nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/rl_v3_wave2_20260809/marnie_b8f_vs_og5899_og697_rlv3.train.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/rl_v3_parallel_extra_20260809/dragapult_cc2_vs_marnie_crustle_lucario_rlv3p.train.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/rl_v3_parallel_extra_nocudnn_20260809/history.runner.log'
+```
 
 ## Completed Remote Job: RL v2 Wave1 2026-08-09
 

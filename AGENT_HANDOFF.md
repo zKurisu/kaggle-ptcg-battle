@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-10 07:24 Asia/Shanghai.
+Last updated: 2026-08-10 07:52 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -18,7 +18,7 @@ This file is the first place a new agent should read before touching the project
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
 
-## Active Remote Job: Search Teacher Wave1 2026-08-10
+## Completed Remote Job: Search Teacher Wave1 2026-08-10
 
 Reason: scratch PPO learned high random win rate but became worse than BC on
 hard fixed opponents. The current direction is no longer PPO hyperparameter
@@ -60,7 +60,7 @@ Active remote wave:
 
 ```text
 remote script: /tmp/run_search_teacher_wave1_20260810.sh
-runner PID: 1290943
+runner PID: 1290943, completed status=0 at 2026-08-10 07:27 CST
 logs root: logs/search_teacher_20260810
 
 pairs:
@@ -75,20 +75,60 @@ per pair:
            4 worker processes
 ```
 
-Monitor:
-
-```bash
-ssh -F /home/jie/.ssh/config ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "run_search_teacher_wave1|build_weakness_state_bank.py|search_action_teacher.py" && for f in logs/search_teacher_20260810/wave1_*.log; do echo ===$f===; tail -12 "$f"; done'
-```
-
-Next interpretation step after wave1 finishes:
+Wave1 summary:
 
 ```text
-1. Summarize each wave1_*_teacher_best.csv by improved_score rate and mean
-   delta_score.
-2. Inspect repeated best-action motifs by card/action type.
-3. If motifs are consistent, convert them into explicit route/rule candidates
-   or into planner-distillation labels. Do not fine-tune BC.
+summary file: logs/search_teacher_20260810/wave1_summary.csv
+motifs file:  logs/search_teacher_20260810/wave1_motifs.csv
+
+dragcc2_vs_marnie:
+  states=24, improved_score=18/24, strong>=0.20=14
+  mean_delta_score=+0.276, mean WR 0.052 -> 0.156
+
+lucario43_vs_marnie:
+  states=24, improved_score=20/24, strong>=0.20=18
+  mean_delta_score=+0.450, mean WR 0.240 -> 0.458
+
+marnie_vs_og5899:
+  states=24, improved_score=17/24, strong>=0.20=16
+  mean_delta_score=+0.349, mean WR 0.240 -> 0.406
+
+og2a_vs_crustle3:
+  states=24, improved_score=19/24, strong>=0.20=19
+  mean_delta_score=+0.341, mean WR 0.156 -> 0.328
+```
+
+Important negative validation:
+
+```text
+tools/eval_search_guided.py was added to apply the search teacher online during
+real local battles. Two Ogerpon-vs-Crustle smoke runs failed:
+
+ungated online search:
+  logs/search_teacher_20260810/online_og2a_vs_crustle3_search_guided_g4.log
+  result: 0/4 wins
+  issue: search changed setup/YES-NO/early decisions and introduced bad choices.
+
+gated online search:
+  logs/search_teacher_20260810/online_og2a_vs_crustle3_search_guided_gated_g8.log
+  gate: turn>=4, context=0, option_count>=3
+  result: 0/8 wins
+  changed decisions: 205/373, positive delta_score on 205/373, mean +0.273
+  issue: many local positive deltas did not compose into whole-game wins; some
+  best actions are still suspicious, e.g. END or delay actions.
+```
+
+Current interpretation:
+
+```text
+The search teacher is promising as an offline signal generator, not as a direct
+online greedy policy. Do not use online search-guided policy for submission.
+Next step should be high-confidence teacher filtering and route/rule conversion:
+  - exclude setup/YES-NO/non-context=0 states;
+  - exclude END/STOP best actions unless terminal rollout WR improves strongly;
+  - require delta_score >= 0.20 and either best WR improves or motif repeats;
+  - mine repeated motifs per matchup and encode them as route rules or
+    scratch distillation labels.
 ```
 
 ## Completed Remote Job: Scratch League RL 2026-08-09/10

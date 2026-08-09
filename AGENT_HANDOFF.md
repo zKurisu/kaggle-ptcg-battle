@@ -6533,9 +6533,21 @@ Local code change:
 
 Current remote note:
 
-- At the time this section was written, GPU0 still had the older v3 Lucario
-  run active; GPU1-3 were idle. New aggressive jobs should preferentially use
-  GPU1-3 unless GPU0 is intentionally freed.
+- The older v3 Lucario fine-tune and its follow-up baseline-delta evaluation
+  were stopped after the user locked BC and rejected further fine-tuning.
+- Scratch league RL wave started on all four GPUs:
+  - runner: `/tmp/run_scratch_league_rl_20260809.sh`
+  - runner log: `logs/rl_scratch_league_20260809/runner.log`
+  - checkpoints: `checkpoints/rl_scratch_league_20260809/`
+  - logs: `logs/rl_scratch_league_20260809/`
+  - decks: Marnie b8f, Ogerpon 2a507, Mega Lucario 43d, Dragapult cc2.
+  - phase 1: `--init-mode random`, random/curriculum opponents, no BC anchor,
+    no ref-KL.
+  - phase 2: `--init-mode resume` from phase-1 scratch checkpoint, hard pool +
+    adaptive league, no BC anchor, no ref-KL.
+- Initial runtime check: Marnie/Dragapult pointer templates roll out about
+  9-11 games/s on 10 workers. Ogerpon/Lucario history/cross-attn templates roll
+  out about 1.4-1.5 games/s, much slower but still progressing.
 
 Recommended first aggressive run:
 

@@ -6880,6 +6880,67 @@ Kaggle:
 - Do not submit Ogerpon top3 again unless there is a concrete fix.
 - `Crustle Wall v10pop` is currently a useful probe around 920, not proof of final strength.
 
+2026-08-10 Kaggle replay/environment update:
+
+- Remote 0809 episode zip was parsed with a temporary fast `orjson`
+  analyzer because `tools/build_ladder_pool.py` standard-json parsing was too
+  slow under concurrent rollout load.
+- Fast environment outputs on `ks`:
+  - `logs/kaggle_env_fast_20260810/band_archetype_0809.csv`
+  - `logs/kaggle_env_fast_20260810/band_archetype_0805_0809.csv`
+  - `logs/kaggle_env_fast_20260810/archetype_matchups_0809_600p.csv`
+  - `logs/kaggle_env_fast_20260810/deck_sig_matchups_0809_900p.csv`
+  - `logs/ladder_pool_0809_fast_all/pool_manifest.csv`
+  - `logs/ladder_pool_0805_0809_fast_all/pool_manifest.csv`
+- 0809 environment, by weight:
+  - 1100-1199: Marnie is dominant, then Mega Lopunny.
+  - 1000-1099: Alakazam is dominant, then Ogerpon/Dragapult/Crustle.
+  - 1200+: Dragapult and Mega Lucario dominate.
+  - 900-999: Crustle/Festival/Ogerpon/Marnie are the main climb gate.
+  - 700-799: Ogerpon is the largest archetype, so a submission starting from
+    600 must not fold to Ogerpon even if it is aimed at high-rank Marnie/Lopunny.
+- Recent jie replay rows on `ks`:
+  - `logs/kaggle_replay_recent_20260810_fast/*.csv`
+  - `55370364` Marnie v12hist bigbatch: 60 games, 34-26, WR 0.567.
+  - `55364746` w4 Marnie resubmit: 74 games, 44-30, WR 0.595.
+  - `55356700` w4 Marnie resubmit: 59 games, 34-25, WR 0.576.
+  - `55356873` Ogerpon v7sig rerere: 40 games, 22-18, WR 0.550.
+  - `55328252` history-k Marnie: 77 games, 43-34, WR 0.558.
+  - `55349290` seqplan Lucario: 33 games, 14-19, WR 0.424.
+  - `55349364` seqplan Festival: 42 games, 21-21, WR 0.500.
+  - `55294007` shadow Lopunny f144: 35 games, 17-18, WR 0.486.
+- Main replay conclusion:
+  - Current strong Marnie submissions only run about 56-60% in pulled replay
+    samples, but this is enough to stay around 950+ because they avoid broad
+    collapse.
+  - Marnie is consistently weak to f144 Mega Lopunny in live replay; local RR
+    underestimates that specific danger.
+  - Ogerpon still looks overvalued by local weighted RR. Recent live samples
+    are only about 55%, not stable enough for a 600-start climb.
+  - Our Lucario/history/seqplan submissions did not replicate real 1200+
+    Lucario quality; do not select Lucario just because the archetype is good.
+- Packaged, not submitted, on `ks`:
+  - Primary: `submissions/env0809_20260810/w4_marnie_sig2_2c22fa76_env0809.tar.gz`
+  - Primary/exploratory: `submissions/env0809_20260810/w4_cynthia_sig1_52f46739_env0809.tar.gz`
+  - Backup: `submissions/env0809_20260810/w4_alakazam_sig1_7f9a5389_env0809_backup.tar.gz`
+  - Backup/riskier: `submissions/env0809_20260810/w4_lopunny_sig3_f1445356_env0809_backup.tar.gz`
+- Reasoning:
+  - Marnie 2c22 is an unsubmitted exact deck/model and is more balanced than
+    b8f in local RR against mirror/Lopunny/Alakazam/Crustle.
+  - Cynthia 52f is unsubmitted and actual 0809 ladder matrix has it doing well
+    into b8f Marnie, f144 Lopunny, and 7f9 Alakazam, but it may be exposed to
+    Ogerpon/Crustle during the 600-to-900 climb.
+  - Alakazam 7f9 is a stable backup because the archetype/signature is common
+    and previously Alakazam reached about 900, but it is capped by current
+    Marnie/Dragapult pressure.
+  - Lopunny f144 matches the high-rank environment but shadow f144 already
+    failed online; only submit the w4 specialist if explicitly testing whether
+    the pure specialist fixes the shadow quality issue.
+- During this analysis, the long rule-guided rollout workers were temporarily
+  `SIGSTOP`ed to free CPU and then resumed with `SIGCONT`. They were not
+  killed. Check `logs/rule_guided_20260810b/stage1b.runner.log` if continuing
+  that run.
+
 Remote operations:
 
 - Avoid killing LLaMA Factory or `/home/byer/PTCG/...` jobs unless the user explicitly asks.

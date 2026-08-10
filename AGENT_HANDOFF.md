@@ -6990,6 +6990,42 @@ Remote operations:
 - Keep CUDA memory caps around `--cuda-memory-gb 8` while shared GPU jobs are active.
 - If starting more long-running jobs, write logs under a distinct `logs/...` directory and record command/status here.
 
+2026-08-10 public strategy source update:
+
+- New source catalog: `data/public_strategy_sources_v1.csv`.
+  - High-priority strategy sources: Limitless Play/Labs for matchup priors and
+    lists, TCGplayer/PokeBeach/Japanese note.com/YouTube VODs for sequencing,
+    official Pokemon card database for card text.
+  - Medium-priority discussion sources: PokeBeach forums, Reddit r/pkmntcg and
+    r/PTCGL, public Discord/manual search, X/Twitter public search.
+  - Paid/private sources such as Metafy or Discord private channels must not be
+    scraped or bypassed; use only user-provided notes or public/manual content.
+- New helper: `tools/plan_public_strategy_search.py`.
+  - Example smoke-test outputs:
+    - `logs/public_strategy_search/ogerpon_vs_crustle_tasks.csv` rows=264.
+    - `logs/public_strategy_search/marnie_vs_ogerpon_tasks.csv` rows=264.
+  - Use it to generate source-specific query tasks before writing new rules.
+- Important Ogerpon-vs-Crustle caveat:
+  - Public Limitless/TCG Ogerpon wins vs Crustle may rely on Cornerstone Mask
+    Ogerpon ex / Demolish, which can attack through effects on the opponent
+    Active.
+  - Local Kaggle Ogerpon `5899c772bace` and `697a82e582d5` do not contain
+    Cornerstone Mask Ogerpon ex, so those lists cannot directly execute the
+    main public anti-Crustle route.
+  - `2f538fcfa698` has Cornerstone, while `2a5072194fdf` has broader box pieces
+    such as Wellspring/Mega Kangaskhan/Meowth/Lillie's Clefairy. Treat those as
+    separate route families, not as small signature variations.
+- Rule/planner infrastructure:
+  - Added `opportunity_plan` to `RULE_MODES`.
+  - Added stateful `OpportunityPlanner` and unified
+    `apply_rule_decision`/`make_rule_planner` helpers.
+  - Updated `main.py`, `tools/eval_bc.py`, `tools/eval_round_robin.py`,
+    `tools/eval_rule_overlay_stats.py`, `tools/generate_rollout_bc.py`, and
+    `tools/build_weakness_state_bank.py` to use the unified rule path.
+  - `opportunity_plan` is experimental. It is meant for short TTL opportunity
+    windows, not broad matchup route forcing. Validate with trigger stats and
+    focused+broad RR before any submission packaging.
+
 ## Update Checklist
 
 Whenever changing active state, update:

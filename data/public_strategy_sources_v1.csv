@@ -1,0 +1,29 @@
+source_name,source_type,access,language,url,priority,use_for,notes
+Limitless Play,stats_decklists,public,en,https://play.limitlesstcg.com/decks,high,matchup_stats_and_top_lists,Use for current archetype matchup rates and successful decklists. Statistics are priors, not play lines.
+Limitless Labs,stats_decklists,public,en,https://labs.limitlesstcg.com/,high,large_event_matchup_stats,Use event-level matchup tables and Day 2 filters when available.
+TCGplayer Deck Guides,article_guides,public,en,https://www.tcgplayer.com/content/pokemon,high,deck_plan_and_matchup_notes,Good for detailed sequencing, core engine notes, and tech-card rationale.
+PokeBeach Articles,article_guides,public,en,https://www.pokebeach.com/,high,meta_articles_and_counterplay,PokeBeach articles often discuss poor matchups and specific tech attempts.
+PokeBeach Forums,forum,public,en,https://www.pokebeach.com/forums/,medium,public_discussion_followups,Useful comments and article threads; require manual judgement.
+Bulbapedia TCG Archetypes,wiki,public,en,https://bulbapedia.bulbagarden.net/wiki/Category:Pok%C3%A9mon_TCG_archetypes,medium,archetype_game_plan_summary,Good for stable archetype summaries and key-card roles.
+Official Pokemon Card Database,card_text,public,en,https://www.pokemon.com/us/pokemon-tcg/pokemon-cards/,high,card_text_rules,Use to validate exact card effects before writing a rule.
+Pokemon Community Forums,forum,public,en,https://community.pokemon.com/en-us/categories/tcg,medium,public_rule_and_matchup_questions,Useful for rules interactions such as Cornerstone Ogerpon vs Crustle.
+Reddit r/pkmntcg,forum,public,en,https://www.reddit.com/r/pkmntcg/,medium,deck_help_and_meta_threads,Public posts can reveal practical counterplay, but quality varies.
+Reddit r/PTCGL,forum,public,en,https://www.reddit.com/r/PTCGL/,medium,tcg_live_logs_and_complaints,Useful for simulator/player behavior and ladder pain points.
+rPokemonTCG Discord,social_manual,public_invite,en,https://discord.com/invite/pokemontcg,medium,manual_search_discussion,Do not scrape private channels; use public/manual notes only.
+Tricky Gym Discord,social_manual,public_invite,en,https://discord.gg/trickygym,medium,manual_search_discussion,Useful for GLC and competitive discussion; manual only.
+AzulGG YouTube,video_vod,public,en,https://www.youtube.com/@AzulGG,high,gameplay_vod_and_sequencing,Watch deck gameplay and tournament VODs for multi-turn lines.
+Tricky Gym YouTube,video_vod,public,en,https://www.youtube.com/@TrickyGym,medium,gameplay_vod_and_counterplay,Creative deck and matchup gameplay.
+OmniPoke YouTube,video_vod,public,en,https://www.youtube.com/@OmniPoke,medium,meta_breakdowns_and_deck_guides,Good source for metagame overviews and deck tech.
+Celio's Network YouTube,video_vod,public,en,https://www.youtube.com/@CeliosNetwork,medium,meta_breakdowns,Good source for fast meta context and card evaluations.
+LittleDarkFury YouTube,video_vod,public,en,https://www.youtube.com/@LittleDarkFury,medium,rogue_and_counter_decklines,Can reveal off-meta answers to dominant decks.
+Cut or Tap,article_video_guides,public_mixed,en,https://www.cutortap.com/,medium,sequencing_and_game_theory,Useful for general sequencing/search/game-theory concepts.
+TCMG Top Cut,article_guides,public,en_pt,https://tcmgtopcut.com/en/articles,medium,tournament_reports_and_meta_analysis,Has event reports and deck analysis from competitive players.
+SixPrizes,article_guides,public_legacy,en,https://usps.sixprizes.com/,low,general_strategy_legacy,Mostly legacy but useful for high-level theory and archetype principles.
+PokéMetaLab,logs_stats,public,en,https://www.pokemetalab.com/,medium,ptcgl_log_review_and_meta,Can convert TCG Live logs into turn-by-turn replay; useful if logs are available.
+TrainerHill Battle Journal,tracker_stats,public_limited,en,https://plus.trainerhill.com/,medium,personal_matchup_tracking_concepts,Useful for feature ideas around matchup tags and notes.
+PokemonMeta,stats,public,en,https://www.pokemonmeta.com/,low,winrate_prior,Caution: often Pocket-focused; verify format before using.
+PokeDuel,tracker_stats,public_app,en,https://play.google.com/store/apps/details?id=com.aaronli.pokeduel,low,tracker_feature_reference,Useful for how players log matchup notes; not a direct data source.
+Japanese note.com,article_guides,public_mixed,ja,https://note.com/search?q=%E3%83%9D%E3%82%B1%E3%82%AB%20%E5%AF%BE%E9%9D%A2%20%E7%AB%8B%E3%81%A1%E5%9B%9E%E3%82%8A,high,japanese_deck_guides_and_matchup_plans,Search terms: ポケカ デッキ解説 対面 立ち回り. Some high-value articles are paid.
+Japanese YouTube,video_vod,public,ja,https://www.youtube.com/results?search_query=%E3%83%9D%E3%82%B1%E3%82%AB+%E5%AF%BE%E9%9D%A2+%E7%AB%8B%E3%81%A1%E5%9B%9E%E3%82%8A,medium,japanese_gameplay_and_sequencing,Use translated queries for deck names such as マリィのオーロンゲ and オーガポン.
+X Twitter Public Search,social_manual,public_mixed,multi,https://x.com/search,medium,player_comments_and_threads,Manual only unless API access is provided; useful around tournament dates and player handles.
+Metafy Guides,paid_guides,paid,en,https://metafy.gg/,medium,expert_matchup_guides,Use only if user has access or guide text is provided; do not bypass paywalls.

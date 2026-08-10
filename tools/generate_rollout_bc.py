@@ -35,8 +35,8 @@ sys.path.insert(0, str(_WS))
 from ptcg_rl.deck_registry import deck_signature
 from ptcg_rl.encoder import OPT_FEAT_DIM, STATE_FEAT_DIM, FastEncoder
 from ptcg_rl.numpy_policy import NumpyPolicy
-from ptcg_rl.resource_planner import ResourcePlanner
-from ptcg_rl.rule_overlay import RULE_MODES, apply_rule_overlay
+from ptcg_rl.resource_planner import apply_rule_decision, make_rule_planner
+from ptcg_rl.rule_overlay import RULE_MODES
 from tools.bc_extract_v2 import FEATURE_VERSION, classify
 from tools.eval_round_robin import (
     Entry,
@@ -177,7 +177,7 @@ def _select_candidate_action(
     epsilon_random: float,
     mcts_sims: int,
     time_budget: float,
-    planner: ResourcePlanner | None = None,
+    planners: dict[str, object] | None = None,
 ) -> tuple[list[int], str]:
     sel = obs.get("select") or {}
     if not sel.get("option"):
@@ -197,13 +197,14 @@ def _select_candidate_action(
             action = entry.policy.select(obs, greedy=False, temperature=actor.temperature)
         else:
             action = entry.policy.select(obs, greedy=True)
-        if actor.rules == "resource_plan" and planner is not None:
-            decision = planner.decide(obs, action, entry.deck)
-            action = decision.action
-            if decision.reason:
-                actor_label = f"{actor.raw}|{decision.reason}"
-        elif actor.rules:
-            decision = apply_rule_overlay(obs, action, entry.deck, mode=actor.rules)
+        if actor.rules:
+            decision = apply_rule_decision(
+                obs,
+                action,
+                entry.deck,
+                mode=actor.rules,
+                planner=(planners or {}).get(actor.rules),
+            )
             action = decision.action
             if decision.reason:
                 actor_label = f"{actor.raw}|{decision.reason}"
@@ -289,7 +290,10 @@ def _play_rollout_game(
     first, second = (candidate, opponent) if candidate_first else (opponent, candidate)
     candidate_side = 0 if candidate_first else 1
     game_actor = _choose_actor(actors, rng) if actor_scope == "game" else None
-    candidate_planner = ResourcePlanner(candidate.deck) if any(a.rules == "resource_plan" for a in actors) else None
+    candidate_planners = {
+        mode: make_rule_planner(mode, candidate.deck)
+        for mode in {a.rules for a in actors if a.rules in ("resource_plan", "opportunity_plan")}
+    }
     for entry in (first, second):
         if entry.policy is not None and hasattr(entry.policy, "reset_history"):
             entry.policy.reset_history()
@@ -337,7 +341,7 @@ def _play_rollout_game(
                     epsilon_random=epsilon_random,
                     mcts_sims=mcts_sims,
                     time_budget=time_budget,
-                    planner=candidate_planner,
+                    planners=candidate_planners,
                 )
                 stats["decisions_seen"] += 1
                 row = _encode_decision(encoder, obs, action, actor_label)

@@ -10,14 +10,12 @@ for p in [HERE, os.path.dirname(HERE)]:  # repo root + workspace root
         sys.path.insert(0, p)
 
 from ptcg_rl.numpy_policy import NumpyPolicy
-from ptcg_rl.resource_planner import ResourcePlanner
-from ptcg_rl.rule_overlay import apply_rule_overlay
+from ptcg_rl.resource_planner import apply_rule_decision, make_rule_planner
 
 with open(os.path.join(HERE, "deck.csv")) as f:
     MY_DECK = [int(l.strip()) for l in f if l.strip()]
 
 policy = NumpyPolicy.load(os.path.join(HERE, "policy.npz"))
-planner = ResourcePlanner(MY_DECK)
 
 
 def _load_rule_mode() -> str:
@@ -33,6 +31,7 @@ def _load_rule_mode() -> str:
 
 
 RULE_MODE = _load_rule_mode()
+planner = make_rule_planner(RULE_MODE, MY_DECK)
 
 # BC checkpoints only train the policy head. Keep MCTS off until RL/PPO trains
 # a meaningful value head for leaf evaluation.
@@ -54,7 +53,8 @@ def agent(obs_dict: dict) -> list[int]:
     if obs_dict.get("select") is None:
         if hasattr(policy, "reset_history"):
             policy.reset_history()
-        planner.reset(MY_DECK)
+        if planner is not None:
+            planner.reset(MY_DECK)
         return list(MY_DECK)
 
     sel = obs_dict.get("select", {})
@@ -67,10 +67,8 @@ def agent(obs_dict: dict) -> list[int]:
         try:
             picks = policy.select_mcts(obs_dict, MY_DECK,
                                        sims=MCTS_SIMS, time_budget=MCTS_TIME_BUDGET)
-            if RULE_MODE == "resource_plan":
-                picks = planner.decide(obs_dict, picks, MY_DECK).action
-            elif RULE_MODE:
-                picks = apply_rule_overlay(obs_dict, picks, MY_DECK, mode=RULE_MODE).action
+            if RULE_MODE:
+                picks = apply_rule_decision(obs_dict, picks, MY_DECK, mode=RULE_MODE, planner=planner).action
             picks = [p for p in picks if 0 <= p < n]
             picks = list(dict.fromkeys(picks))
             if mn <= len(picks) <= mc: return picks[:mc]
@@ -79,10 +77,8 @@ def agent(obs_dict: dict) -> list[int]:
     # Greedy fallback
     try:
         picks = policy.select(obs_dict, greedy=True, temperature=1.2)
-        if RULE_MODE == "resource_plan":
-            picks = planner.decide(obs_dict, picks, MY_DECK).action
-        elif RULE_MODE:
-            picks = apply_rule_overlay(obs_dict, picks, MY_DECK, mode=RULE_MODE).action
+        if RULE_MODE:
+            picks = apply_rule_decision(obs_dict, picks, MY_DECK, mode=RULE_MODE, planner=planner).action
         picks = [p for p in picks if 0 <= p < n]
         picks = list(dict.fromkeys(picks))
         if mn <= len(picks) <= mc: return picks[:mc]

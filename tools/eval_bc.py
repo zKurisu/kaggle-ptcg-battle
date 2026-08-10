@@ -11,8 +11,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from ptcg_rl.numpy_policy import NumpyPolicy
 from ptcg_rl.deck_registry import registry_deck_for_policy
-from ptcg_rl.resource_planner import ResourcePlanner
-from ptcg_rl.rule_overlay import RULE_MODES, apply_rule_overlay
+from ptcg_rl.resource_planner import apply_rule_decision, make_rule_planner
+from ptcg_rl.rule_overlay import RULE_MODES
 
 _WORKER_POLICY = None
 _WORKER_DECK = None
@@ -52,14 +52,9 @@ def _policy_action(policy, obs, deck, use_mcts=False, sims=48, time_budget=4.0,
             act = policy.select(obs, greedy=True)
     except Exception:
         act = []
-    if rules == "resource_plan" and planner is not None:
+    if rules:
         try:
-            act = planner.decide(obs, act, deck).action
-        except Exception:
-            pass
-    elif rules:
-        try:
-            act = apply_rule_overlay(obs, act, deck, mode=rules).action
+            act = apply_rule_decision(obs, act, deck, mode=rules, planner=planner).action
         except Exception:
             pass
     act = [a for a in act if 0 <= a < n]
@@ -76,7 +71,7 @@ def _play_one_game(policy, deck, game_index, use_mcts=False, sims=48,
     our_side = 0 if game_index % 2 == 0 else 1
     if hasattr(policy, "reset_history"):
         policy.reset_history()
-    planner = ResourcePlanner(deck) if rules == "resource_plan" else None
+    planner = make_rule_planner(rules, deck)
     obs, sd = battle_start(deck, deck)
     if obs is None:
         return 0, 1

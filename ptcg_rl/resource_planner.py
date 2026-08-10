@@ -27,6 +27,7 @@ from ptcg_rl.rule_overlay import (
     TEAM_ROCKET_MEWTWO_EX,
     RuleDecision,
     ULTRA_BALL,
+    apply_rule_overlay,
     _active_card_id,
     _bench_card_ids,
     _find_type,
@@ -66,6 +67,11 @@ class ResourceSnapshot:
     my_board: set[int] = field(default_factory=set)
     opp_board: set[int] = field(default_factory=set)
     my_discard: set[int] = field(default_factory=set)
+    opp_discard: set[int] = field(default_factory=set)
+    my_board_energy: dict[int, int] = field(default_factory=dict)
+    opp_board_energy: dict[int, int] = field(default_factory=dict)
+    my_damaged_board: set[int] = field(default_factory=set)
+    opp_damaged_board: set[int] = field(default_factory=set)
     flags: dict[str, bool] = field(default_factory=dict)
     known_self: Counter[int] = field(default_factory=Counter)
     estimated_unseen: Counter[int] = field(default_factory=Counter)
@@ -149,6 +155,38 @@ def _board_energy_by_card(player: dict) -> dict[int, int]:
     return out
 
 
+def _damage_count(pokemon: dict | None) -> int:
+    if not pokemon:
+        return 0
+    for key in (
+        "damage",
+        "damageCount",
+        "damageCounter",
+        "damageCounters",
+        "damage_counter",
+        "damage_counters",
+    ):
+        value = pokemon.get(key)
+        if value is None:
+            continue
+        try:
+            return max(int(value), 0)
+        except Exception:
+            pass
+    return 0
+
+
+def _damaged_board_ids(player: dict) -> set[int]:
+    out: set[int] = set()
+    for p in (player.get("active") or []) + (player.get("bench") or []):
+        if not p:
+            continue
+        cid = int(p.get("id") or 0)
+        if cid and _damage_count(p) > 0:
+            out.add(cid)
+    return out
+
+
 class ResourcePlanner:
     """Stateful explicit planner for resource and route-aware rule overlays.
 
@@ -201,6 +239,11 @@ class ResourcePlanner:
             my_board=_board_ids(me),
             opp_board=_board_ids(opp),
             my_discard=_zone_ids(me, "discard"),
+            opp_discard=_zone_ids(opp, "discard"),
+            my_board_energy=_board_energy_by_card(me),
+            opp_board_energy=_board_energy_by_card(opp),
+            my_damaged_board=_damaged_board_ids(me),
+            opp_damaged_board=_damaged_board_ids(opp),
             flags=_visible_matchup_flags(opp),
             known_self=known,
             estimated_unseen=estimated,
@@ -526,3 +569,342 @@ class ResourcePlanner:
                 if picks:
                     return self._take_once_or_limited(f"stage_no_idle_setup:{opt_type}", picks[0], 4)
         return None
+
+
+class OpportunityPlanner(ResourcePlanner):
+    """Stateful matchup-opportunity planner.
+
+    ``ResourcePlanner`` commits to a broad matchup route as soon as the opponent
+    archetype is visible. That helped expose bad BC habits, but broad routes
+    often override too many ordinary decisions. This planner only switches when
+    a concrete public-information window is visible, then keeps a short TTL so
+    the policy can execute a small sequence instead of one isolated action.
+    """
+
+    def reset(self, deck: list[int] | None = None) -> None:
+        super().reset(deck)
+        self.active_window = ""
+        self.window_ttl = 0
+        self.window_last_turn = -1
+        self.window_counts: Counter[str] = Counter()
+
+    def _tick_window(self, snap: ResourceSnapshot) -> None:
+        if snap.turn != self.window_last_turn:
+            if self.window_last_turn >= 0 and self.window_ttl > 0:
+                self.window_ttl -= 1
+            self.window_last_turn = snap.turn
+        if self.window_ttl <= 0:
+            self.active_window = ""
+
+    def _activate_window(self, name: str, ttl: int) -> None:
+        if self.active_window != name:
+            self.active_window = name
+            self.window_ttl = ttl
+            return
+        self.window_ttl = max(self.window_ttl, ttl)
+
+    def _take_window_limited(self, reason: str, pick: int, limit: int) -> RuleDecision | None:
+        if self.window_counts[reason] >= limit:
+            return None
+        self.window_counts[reason] += 1
+        window = self.active_window or "instant"
+        return RuleDecision([pick], f"opportunity:{reason}:window={window}:ttl={self.window_ttl}")
+
+    def _detect_windows(self, snap: ResourceSnapshot) -> None:
+        if not self.plan:
+            return
+        arch = self.plan.archetype
+        if arch == "Teal Mask Ogerpon" and snap.flags.get("crustle"):
+            if DWEBBLE in snap.opp_board and CRUSTLE not in snap.opp_board:
+                self._activate_window("ogerpon_dwebble_punish", 3)
+                return
+            if snap.my_board & SECONDARY_OGERPON_ROUTE and snap.opp_active == CRUSTLE:
+                self._activate_window("ogerpon_secondary_escape", 2)
+                return
+            if snap.opp_active == CRUSTLE:
+                self._activate_window("ogerpon_wall_disrupt", 2)
+                return
+
+        if arch == "Marnie Grimmsnarl" and snap.flags.get("ogerpon"):
+            if MARNIE_GRIMMSNARL_EX in snap.my_board:
+                self._activate_window("marnie_spread_convert", 3)
+                return
+            if snap.my_board & {MARNIE_IMPIDIMP, MARNIE_MORGREM} or MARNIE_IMPIDIMP not in snap.my_discard:
+                self._activate_window("marnie_setup_race", 3)
+                return
+
+        if arch == "Crustle Wall" and any(snap.flags.get(k) for k in EX_HEAVY_FLAGS):
+            if CRUSTLE in snap.my_board:
+                self._activate_window("crustle_wall_pressure", 3)
+                return
+            if DWEBBLE in snap.my_board:
+                self._activate_window("crustle_ascension_window", 3)
+                return
+
+        if arch == "Cynthia Garchomp" and snap.flags.get("crustle"):
+            if 387 in snap.my_board or snap.my_active == CYNTHIA_GARCHOMP_EX:
+                self._activate_window("cynthia_spiritomb_counter", 2)
+                return
+
+        if arch == "Mega Lucario" and (
+            snap.flags.get("marnie") or snap.flags.get("crustle") or snap.flags.get("ogerpon")
+        ):
+            if not {LUCARIO_LUNATONE, LUCARIO_SOLROCK}.issubset(snap.my_board):
+                self._activate_window("lucario_engine_gap", 3)
+                return
+
+    def decide(self, obs: dict, action: list[int], deck: list[int] | None = None) -> RuleDecision:
+        if deck is not None and Counter(int(c) for c in deck) != self.deck_counts:
+            self.reset(deck)
+        sel = obs.get("select") or {}
+        options = sel.get("option") or []
+        if not options:
+            return RuleDecision(action)
+        mn = int(sel.get("minCount", 0) or 0)
+        mc = int(sel.get("maxCount", 0) or 0)
+        if mn != 1 or mc != 1:
+            return RuleDecision(action)
+        if not action or action[0] < 0 or action[0] >= len(options):
+            action = []
+
+        snap = self._snapshot(obs)
+        self._tick_window(snap)
+        self._detect_windows(snap)
+        chosen_type = _option_type(options[action[0]]) if action else END
+        chosen_card = _option_card(obs, options[action[0]]) if action else 0
+
+        if self.active_window == "ogerpon_dwebble_punish":
+            decision = self._opp_ogerpon_dwebble_punish(obs, options, chosen_type, chosen_card, snap)
+            if decision is not None:
+                return decision
+        if self.active_window in ("ogerpon_secondary_escape", "ogerpon_wall_disrupt"):
+            decision = self._opp_ogerpon_wall_window(obs, options, chosen_type, chosen_card, snap)
+            if decision is not None:
+                return decision
+        if self.active_window == "marnie_setup_race":
+            decision = self._opp_marnie_setup_race(obs, options, chosen_type, chosen_card, snap)
+            if decision is not None:
+                return decision
+        if self.active_window == "marnie_spread_convert":
+            decision = self._opp_marnie_spread_convert(obs, options, chosen_type, chosen_card, snap)
+            if decision is not None:
+                return decision
+        if self.active_window in ("crustle_ascension_window", "crustle_wall_pressure"):
+            decision = self._opp_crustle_window(obs, options, chosen_type, chosen_card, snap)
+            if decision is not None:
+                return decision
+        if self.active_window == "cynthia_spiritomb_counter":
+            decision = self._opp_cynthia_spiritomb(obs, options, chosen_type, chosen_card, snap)
+            if decision is not None:
+                return decision
+        if self.active_window == "lucario_engine_gap":
+            decision = self._opp_lucario_engine(obs, options, chosen_type, chosen_card, snap)
+            if decision is not None:
+                return decision
+
+        return RuleDecision(action)
+
+    def _opp_ogerpon_dwebble_punish(
+        self,
+        obs: dict,
+        options: list[dict],
+        chosen_type: int,
+        chosen_card: int,
+        snap: ResourceSnapshot,
+    ) -> RuleDecision | None:
+        if snap.opp_active != DWEBBLE and DWEBBLE in snap.opp_board:
+            boss = _first_exact_card(obs, options, PLAY, BOSS_ORDERS)
+            if boss is not None and chosen_card != BOSS_ORDERS:
+                if chosen_type in (PLAY, ATTACH, ABILITY, END, ATTACK):
+                    return self._take_window_limited("ogerpon_boss_dwebble_before_wall", boss, 2)
+
+        if snap.opp_active == DWEBBLE:
+            attacks = _find_type(options, ATTACK)
+            if attacks and chosen_type in (END, PLAY, ABILITY):
+                return self._take_window_limited("ogerpon_attack_dwebble_window", attacks[0], 3)
+            attach = _find_type(options, ATTACH)
+            if attach and chosen_type in (ABILITY, END):
+                return self._take_window_limited("ogerpon_attach_for_dwebble_window", attach[0], 3)
+
+        if chosen_type == ABILITY and chosen_card == OGERPON_EX:
+            attach = _find_type(options, ATTACH)
+            if attach:
+                return self._take_window_limited("ogerpon_attach_before_draw_in_punish_window", attach[0], 3)
+
+        return None
+
+    def _opp_ogerpon_wall_window(
+        self,
+        obs: dict,
+        options: list[dict],
+        chosen_type: int,
+        chosen_card: int,
+        snap: ResourceSnapshot,
+    ) -> RuleDecision | None:
+        secondary_online = bool(snap.my_board & SECONDARY_OGERPON_ROUTE)
+        if snap.my_active == OGERPON_EX and snap.opp_active == CRUSTLE and chosen_type == ATTACK:
+            retreats = _find_type(options, RETREAT)
+            if retreats and secondary_online:
+                return self._take_window_limited("ogerpon_pivot_to_secondary_when_wall_online", retreats[0], 2)
+            boss = _first_exact_card(obs, options, PLAY, BOSS_ORDERS)
+            if boss is not None and len(snap.opp_board - {CRUSTLE, DWEBBLE}) > 0:
+                return self._take_window_limited("ogerpon_boss_around_established_wall", boss, 2)
+            judge = _first_exact_card(obs, options, PLAY, JUDGE)
+            if judge is not None and snap.opp_hand_count >= 5:
+                return self._take_window_limited("ogerpon_judge_wall_large_hand", judge, 2)
+
+        if not secondary_online and self._remaining_any(snap, SECONDARY_OGERPON_ROUTE) > 0:
+            route_pick = _first_card_by_types(obs, options, OGERPON_CRUSTLE_ROUTE_CARDS, (PLAY, ABILITY))
+            if route_pick is not None and chosen_card not in OGERPON_CRUSTLE_ROUTE_CARDS:
+                if chosen_type in (END, ABILITY, PLAY):
+                    return self._take_window_limited("ogerpon_build_secondary_after_wall_seen", route_pick, 4)
+        return None
+
+    def _opp_marnie_setup_race(
+        self,
+        obs: dict,
+        options: list[dict],
+        chosen_type: int,
+        chosen_card: int,
+        snap: ResourceSnapshot,
+    ) -> RuleDecision | None:
+        if MARNIE_IMPIDIMP not in snap.my_board:
+            impidimp = _first_exact_card(obs, options, PLAY, MARNIE_IMPIDIMP)
+            if impidimp is not None and chosen_card != MARNIE_IMPIDIMP:
+                return self._take_window_limited("marnie_find_impidimp_in_race", impidimp, 3)
+        if snap.my_active == MARNIE_IMPIDIMP and chosen_type in (PLAY, ATTACH, ABILITY, END):
+            morgrem = _first_exact_card(obs, options, EVOLVE, MARNIE_MORGREM)
+            if morgrem is not None:
+                return self._take_window_limited("marnie_evolve_morgrem_in_race", morgrem, 2)
+        if snap.my_active == MARNIE_MORGREM and chosen_type in (PLAY, ATTACH, ABILITY, END):
+            grimmsnarl = _first_exact_card(obs, options, EVOLVE, MARNIE_GRIMMSNARL_EX)
+            if grimmsnarl is not None:
+                return self._take_window_limited("marnie_evolve_grimmsnarl_in_race", grimmsnarl, 2)
+        return None
+
+    def _opp_marnie_spread_convert(
+        self,
+        obs: dict,
+        options: list[dict],
+        chosen_type: int,
+        chosen_card: int,
+        snap: ResourceSnapshot,
+    ) -> RuleDecision | None:
+        punk = _first_exact_card(obs, options, ABILITY, MARNIE_GRIMMSNARL_EX)
+        if punk is not None and chosen_type in (END, PLAY, ATTACH, ABILITY):
+            return self._take_window_limited("marnie_punk_up_when_online", punk, 3)
+        convert_cards = {MUNKIDORI, SPIKEMUTH_GYM}
+        convert = _first_card_by_types(obs, options, convert_cards, (PLAY, ABILITY))
+        if convert is not None and chosen_type in (END, ATTACH):
+            return self._take_window_limited("marnie_convert_spread_window", convert, 3)
+        if chosen_type == END:
+            attacks = _find_type(options, ATTACK)
+            if attacks and not _has_any_attach(options):
+                return self._take_window_limited("marnie_attack_after_engine_window", attacks[0], 3)
+        judge = _first_exact_card(obs, options, PLAY, JUDGE)
+        if judge is not None and snap.opp_hand_count >= 6 and chosen_type in (END, ABILITY):
+            return self._take_window_limited("marnie_disrupt_ogerpon_large_hand", judge, 2)
+        return None
+
+    def _opp_crustle_window(
+        self,
+        obs: dict,
+        options: list[dict],
+        chosen_type: int,
+        chosen_card: int,
+        snap: ResourceSnapshot,
+    ) -> RuleDecision | None:
+        if CRUSTLE not in snap.my_board:
+            crustle = _first_exact_card(obs, options, EVOLVE, CRUSTLE)
+            if crustle is not None and chosen_card != CRUSTLE:
+                return self._take_window_limited("crustle_evolve_wall_in_ex_window", crustle, 4)
+            if snap.my_active == DWEBBLE:
+                attacks = [
+                    i for i, opt in enumerate(options)
+                    if _option_type(opt) == ATTACK and _option_card(obs, opt) == DWEBBLE
+                ]
+                if attacks and chosen_type in (END, PLAY, ATTACH, ABILITY):
+                    return self._take_window_limited("crustle_ascend_before_ex_attacks", attacks[0], 2)
+
+        if snap.my_active == CRUSTLE:
+            if chosen_type == RETREAT:
+                attacks = _find_type(options, ATTACK)
+                if attacks:
+                    return self._take_window_limited("crustle_keep_wall_active_in_window", attacks[0], 3)
+            if chosen_type == END:
+                for opt_type in (ATTACK, ATTACH, ABILITY):
+                    picks = _find_type(options, opt_type)
+                    if picks:
+                        return self._take_window_limited(f"crustle_no_idle_wall_window:{opt_type}", picks[0], 4)
+        return None
+
+    def _opp_cynthia_spiritomb(
+        self,
+        obs: dict,
+        options: list[dict],
+        chosen_type: int,
+        chosen_card: int,
+        snap: ResourceSnapshot,
+    ) -> RuleDecision | None:
+        if snap.my_active == CYNTHIA_GARCHOMP_EX and snap.opp_active == CRUSTLE and chosen_type == ATTACK:
+            retreats = _find_type(options, RETREAT)
+            if retreats and 387 in snap.my_board:
+                return self._take_window_limited("cynthia_pivot_spiritomb_vs_wall", retreats[0], 2)
+        spiritomb = _first_exact_card(obs, options, PLAY, 387)
+        if spiritomb is not None and chosen_card != 387 and snap.opp_active == CRUSTLE:
+            return self._take_window_limited("cynthia_play_spiritomb_counter", spiritomb, 2)
+        return None
+
+    def _opp_lucario_engine(
+        self,
+        obs: dict,
+        options: list[dict],
+        chosen_type: int,
+        chosen_card: int,
+        snap: ResourceSnapshot,
+    ) -> RuleDecision | None:
+        if LUCARIO_LUNATONE not in snap.my_board:
+            lunatone = _first_exact_card(obs, options, PLAY, LUCARIO_LUNATONE)
+            if lunatone is not None and chosen_type in (END, ATTACK, ATTACH):
+                return self._take_window_limited("lucario_take_lunatone_engine_window", lunatone, 2)
+        if LUCARIO_SOLROCK not in snap.my_board:
+            solrock = _first_exact_card(obs, options, PLAY, LUCARIO_SOLROCK)
+            if solrock is not None and chosen_type in (END, ATTACK, ATTACH):
+                return self._take_window_limited("lucario_take_solrock_engine_window", solrock, 2)
+        lunar = _first_exact_card(obs, options, ABILITY, LUCARIO_LUNATONE)
+        if lunar is not None and chosen_type in (END, ATTACK):
+            return self._take_window_limited("lucario_lunar_cycle_window", lunar, 2)
+        search = _first_card_by_types(obs, options, LUCARIO_ENGINE_ROUTE, (PLAY,))
+        if search is not None and chosen_type in (END, ATTACK):
+            return self._take_window_limited("lucario_engine_search_window", search, 3)
+        return None
+
+
+def _has_any_attach(options: list[dict]) -> bool:
+    return bool(_find_type(options, ATTACH))
+
+
+STATEFUL_RULE_MODES = ("resource_plan", "opportunity_plan")
+
+
+def make_rule_planner(mode: str, deck: list[int] | None = None) -> ResourcePlanner | OpportunityPlanner | None:
+    if mode == "resource_plan":
+        return ResourcePlanner(deck)
+    if mode == "opportunity_plan":
+        return OpportunityPlanner(deck)
+    return None
+
+
+def apply_rule_decision(
+    obs: dict,
+    action: list[int],
+    deck: list[int] | None,
+    *,
+    mode: str = "",
+    planner: ResourcePlanner | OpportunityPlanner | None = None,
+) -> RuleDecision:
+    if mode in STATEFUL_RULE_MODES and planner is not None:
+        return planner.decide(obs, action, deck)
+    if mode:
+        return apply_rule_overlay(obs, action, deck, mode=mode)
+    return RuleDecision(action)

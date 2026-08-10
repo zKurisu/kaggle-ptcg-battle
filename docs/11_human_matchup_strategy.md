@@ -147,6 +147,50 @@ Current seeds:
   rule-guided rollout selected Starmie weak pairs while `DeckPlan` had no
   Starmie route, which made `resource_plan` a no-op for that archetype.
 
+## Public Source Catalog
+
+The structured catalog is:
+
+```text
+data/public_strategy_sources_v1.csv
+```
+
+Use it before writing new strategy rules. The workflow is:
+
+1. Start with a confirmed weak pair from Kaggle replay, filtered RR, or
+   Limitless-style statistics.
+2. Search high-priority article/video/forum sources for that exact archetype
+   pair and for the key card interaction.
+3. Validate that the named cards exist in the exact Kaggle deck signature.
+4. Translate only simulator-observable opportunities into rules or teacher
+   rollouts.
+5. Record the source and whether the idea is direct, transferable, or blocked
+   by decklist mismatch.
+
+Important source notes:
+
+- Limitless gives matchup rates and lists, but not turn-by-turn winning lines.
+  Treat a 30% matchup win rate as evidence that some route exists somewhere in
+  the public archetype, not proof that our exact Kaggle deck can execute it.
+- TCGplayer, PokeBeach, Japanese `note.com`, and YouTube VODs are the strongest
+  sources for sequencing and matchup plans.
+- Reddit, Discord, and X/Twitter can reveal practical counterplay, but use only
+  public/manual content and record uncertainty. Do not scrape private channels
+  or bypass paid guides.
+- Official card text remains mandatory for every hard rule. For example,
+  Cornerstone Mask Ogerpon ex can attack through effects on the opponent Active,
+  while pure Teal Mask Ogerpon ex cannot break Crustle by direct ex damage.
+
+Current Ogerpon-vs-Crustle caveat:
+
+- Kaggle Ogerpon `5899c772bace` and `697a82e582d5` contain Teal Mask Ogerpon ex,
+  Boss/Judge-style disruption, but no Cornerstone Mask Ogerpon ex. Public
+  Ogerpon Box advice that relies on Cornerstone/Demolish is therefore not
+  directly transferable to those signatures.
+- Ogerpon `2f538fcfa698` does contain Cornerstone Mask Ogerpon ex, and
+  `2a5072194fdf` contains a broader box route with Wellspring, Mega Kangaskhan,
+  Meowth, and Lillie's Clefairy. Those signatures need separate route rules.
+
 ## Validation Template
 
 For each seed, run this sequence:

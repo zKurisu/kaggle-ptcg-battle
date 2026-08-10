@@ -22,8 +22,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from ptcg_rl.numpy_policy import NumpyPolicy
 from ptcg_rl.deck_registry import registry_deck_for_policy
-from ptcg_rl.resource_planner import ResourcePlanner
-from ptcg_rl.rule_overlay import RULE_MODES, apply_rule_overlay
+from ptcg_rl.resource_planner import apply_rule_decision, make_rule_planner
+from ptcg_rl.rule_overlay import RULE_MODES
 
 _WORKER_A: "Entry | None" = None
 _WORKER_B: "Entry | None" = None
@@ -42,7 +42,7 @@ class Entry:
     deck: list[int]
     rules: str = ""
     mcts: bool = False
-    planner: ResourcePlanner | None = None
+    planner: object | None = None
 
 
 def read_deck(path: str) -> list[int]:
@@ -100,14 +100,9 @@ def policy_action(entry: Entry, obs: dict, use_mcts: bool, sims: int, time_budge
             picks = entry.policy.select(obs, greedy=True)
     except Exception:
         return legal_random(sel)
-    if entry.rules == "resource_plan" and entry.planner is not None:
+    if entry.rules:
         try:
-            picks = entry.planner.decide(obs, picks, entry.deck).action
-        except Exception:
-            pass
-    elif entry.rules:
-        try:
-            picks = apply_rule_overlay(obs, picks, entry.deck, mode=entry.rules).action
+            picks = apply_rule_decision(obs, picks, entry.deck, mode=entry.rules, planner=entry.planner).action
         except Exception:
             pass
 
@@ -173,7 +168,7 @@ def load_entries(specs: list[str], default_deck: str, include_random: bool,
             deck,
             entry_rules,
             name in (mcts_by_name or set()),
-            ResourcePlanner(deck) if entry_rules == "resource_plan" else None,
+            make_rule_planner(entry_rules, deck),
         ))
     if len(entries) < 2:
         raise ValueError("need at least two entries; pass --include-random or multiple --entry values")
@@ -234,7 +229,7 @@ def entry_from_payload(payload: tuple[str, str, str, str, bool]) -> Entry:
     name, policy_path, deck_path, rules, mcts = payload
     deck = read_deck(deck_path)
     policy = None if policy_path == "random" else NumpyPolicy.load(policy_path)
-    planner = ResourcePlanner(deck) if rules == "resource_plan" else None
+    planner = make_rule_planner(rules, deck)
     return Entry(name, policy_path, deck_path, policy, deck, rules, bool(mcts), planner)
 
 

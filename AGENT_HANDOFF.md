@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-10 12:06 Asia/Shanghai.
+Last updated: 2026-08-10 14:53 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -7065,6 +7065,111 @@ Remote operations:
     below the 30% target. Do not package it for submission. It is useful as a
     diagnostic and parser fix, but not strong enough as a teacher unless the
     plan becomes a true multi-turn controller/search policy.
+
+2026-08-10 rollout status/effect audit:
+
+- Current remote CPU status after cleanup: no `generate_rollout_bc`,
+  `rl_finetune_vs_pool`, PPO, `train_bc_population`, or `bc2_train.py`
+  processes are running. Load has returned to normal for a 54-core box.
+- `logs/rule_guided_20260810`:
+  - Planned 28 rollout teacher jobs, but the first wave was killed by the
+    earlier CPU overload. No npz payload exists under
+    `data/generated_rollout_bc_resource_plan_20260810`.
+- `logs/rule_guided_20260810b`:
+  - Planned 18 rollout teacher jobs.
+  - Only 5 jobs wrote complete summary CSVs; jobs 006/007 have partial logs and
+    partial npz, and the remaining jobs were not launched before cleanup.
+  - Complete CSV totals: 2000 games, 23 wins, WR 0.0115, 1479 written rows.
+  - All npz payloads including partial jobs: 31 files, 2238 rows.
+  - Row coverage is narrow:
+    - Dragapult: 1012 rows
+    - Festival Lead: 519 rows
+    - Teal Mask Ogerpon: 508 rows
+    - Mega Starmie: 199 rows
+    - No useful Marnie, Mega Lucario, Team Rocket Mewtwo, Alakazam, etc.
+  - Actor quality is poor:
+    - `greedy+rules:resource_plan`: 9/335 WR 0.0269
+    - `topk@3+rules:resource_plan`: 7/575 WR 0.0122
+    - `topk@2+rules:resource_plan`: 3/550 WR 0.0055
+  - These jobs were generated before the PLAY option card-id parser fix, and
+    used old broad `resource_plan`, not the newer Passimian `opportunity_plan`.
+  - Conclusion: do not train from `data/generated_rollout_bc_resource_plan_20260810b`.
+    It is too small, too low quality, incomplete, and generated with a known
+    parser bug.
+- Older `logs/rollout_distill_20260806` quick distill:
+  - Marnie rollout kept random WR 0.996 but did not improve the weak Ogerpon
+    rows: vs `5899` delta -0.025, vs `697` delta -0.01875, only vs easier `2a`
+    delta +0.04375.
+  - Ogerpon 2a rollout random WR collapsed to 0.834. Versus Crustle, average
+    delta was only +0.008, with one opponent negative.
+  - Cynthia rollout random WR 0.976 and vs Crustle average delta +0.046, but
+    absolute candidate WR was only 0.179, still below the 0.30 weak-matchup
+    target.
+  - Conclusion: 08-06 rollout distill is not a strong path either; at best it
+    produced a small Cynthia diagnostic, not a generally useful pipeline.
+
+2026-08-10 full workspace audit:
+
+- Remote audit command scanned
+  `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804` for files
+  modified on `2026-08-10` or paths containing `0810`, `20260810`, `08-10`,
+  or `2026-08-10`.
+- Audit outputs:
+  - `logs/workspace_audit_20260810/all_0810_or_mtime.csv`
+  - `logs/workspace_audit_20260810/mtime_20260810.csv`
+  - `logs/workspace_audit_20260810/name_0810.csv`
+- Totals: 1666 matching files, about 6.2GB.
+  - `checkpoints`: 77 files, about 4.0GB.
+  - `logs`: 1521 files, about 2.1GB.
+  - `submissions`: 4 files, about 114MB.
+  - `data`: 34 files, about 544KB.
+- Important directories found by audit:
+  - `checkpoints/rl_scratch_league_20260809`: RL scratch checkpoints modified
+    during 2026-08-10 00:00-03:28.
+  - `logs/rl_scratch_league_20260809`: corresponding train/random/delta logs.
+  - `logs/search_teacher_20260810`: state-bank, root-search teacher, motif, and
+    online guided tests.
+  - `logs/rule_guided_20260810` and `logs/rule_guided_20260810b`: planned and
+    partial rollout-teacher jobs.
+  - `logs/cornerstone_deck_ablation_20260810`: deck ablation, rule trigger
+    stats, and Passimian paired eval.
+  - `logs/kaggle_env_fast_20260810`, `logs/kaggle_replay_recent_20260810_fast`,
+    `logs/rr_pool_filters_20260810`: 0809 environment/replay/pool filtering.
+  - `submissions/env0809_20260810`: four packaged submission candidates:
+    Cynthia 52f, Marnie 2c22, Alakazam 7f9 backup, Lopunny f144 backup.
+- RL scratch effect from `logs/rl_scratch_league_20260809`:
+  - Random WR remained high:
+    - Marnie phase2 best: 298/300, WR 0.993.
+    - Dragapult phase2 best: 299/300, WR 0.997.
+    - Ogerpon 2a mem48 phase2 best: 293/300, WR 0.977.
+    - Lucario 43d mem48 phase2 best: 294/300, WR 0.980.
+  - Core paired deltas were bad:
+    - Marnie scratch vs Ogerpon: deltas -0.1375, -0.1750, -0.4750.
+    - Dragapult scratch vs core: deltas -0.1063, -0.0875, -0.0750.
+    - Ogerpon 2a mem48 vs Crustle: +0.0063, +0.0063, -0.0438.
+    - Lucario 43d mem48 vs core: -0.1063, -0.1125, -0.3313.
+  - Conclusion: scratch RL learned enough basic legality/random play but did
+    not beat BC on the weak/core matchups. Do not submit these RL scratch
+    checkpoints without further broad RR showing a reversal.
+- Search-teacher effect from `logs/search_teacher_20260810`:
+  - Offline root-search looked promising on 24 sampled loss states per pair:
+    - Dragapult vs Marnie: mean best WR 0.156 vs baseline 0.052.
+    - Lucario vs Marnie: 0.458 vs 0.240.
+    - Marnie vs Ogerpon 5899: 0.406 vs 0.240.
+    - Ogerpon 2a vs Crustle: 0.328 vs 0.156.
+  - However online search-guided Ogerpon 2a vs Crustle failed:
+    - ungated g4: 0/4.
+    - gated g8: 0/8.
+  - Conclusion: current root-search labels are useful diagnostics, but the
+    action-level heuristic does not compose into a game-winning multi-turn
+    policy yet.
+- Remote workspace hygiene note:
+  - Remote git status is very dirty and includes many untracked top-level copies
+    such as `resource_planner.py`, `rule_overlay.py`, `eval_bc.py`,
+    `generate_rollout_bc.py`, etc. These appear to be accidental scp copies to
+    the repo root. Do not delete without user approval, but do not treat them as
+    active package files. The active package files are under `ptcg_rl/` and
+    `tools/`.
 
 ## Update Checklist
 

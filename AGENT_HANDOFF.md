@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-10 08:25 Asia/Shanghai.
+Last updated: 2026-08-10 09:45 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -6940,6 +6940,49 @@ Kaggle:
   `SIGSTOP`ed to free CPU and then resumed with `SIGCONT`. They were not
   killed. Check `logs/rule_guided_20260810b/stage1b.runner.log` if continuing
   that run.
+
+2026-08-10 RR pool filtering update:
+
+- User pointed out that weak local RR opponents inflate candidate win rates.
+  Do not use the full w4/all39 pool for headline candidate scoring.
+- New tool: `tools/filter_rr_pool.py`.
+  - Inputs: candidate manifest, random audit, optional RR CSV, optional live
+    ladder manifests.
+  - Outputs manifest-compatible filtered pools with `eval_entry`,
+    `checkpoint_path`, and `deck_path` preserved.
+  - Primary gate used now: random WR `>=0.97`, timeouts `0`, and either
+    RR mean `>=0.38`, live score `>=900`, or live environment weight `>=500`.
+- Current remote outputs:
+  - `logs/rr_pool_filters_20260810/w4_env0809_strict/rr_pool_primary.csv`
+  - `logs/rr_pool_filters_20260810/w4_env0809_strict/rr_pool_balanced.csv`
+  - `logs/rr_pool_filters_20260810/w4_env0809_strict/rr_pool_environment.csv`
+  - `logs/rr_pool_filters_20260810/w4_env0809_strict/rr_pool_diagnostic_low_quality.csv`
+  - `logs/rr_pool_filters_20260810/w4_env0809_strict/rr_pool_filter_summary.txt`
+- Interpretation:
+  - `rr_pool_primary.csv`: use for headline RR/submission gating. It has 15
+    entries across 8 archetypes: Marnie, Mega Lopunny, Alakazam, Crustle,
+    Ogerpon, Cynthia, Festival, and Team Rocket Mewtwo.
+  - `rr_pool_balanced.csv`: slightly looser but still no weak fallback. It has
+    16 entries across the same 8 archetypes.
+  - `rr_pool_environment.csv`: live-ladder coverage only. Use it to detect
+    environment gaps, not as a headline score, because it includes currently
+    weak local Mega Lucario.
+  - `rr_pool_diagnostic_low_quality.csv`: do not use for candidate scoring.
+    It identifies training gaps: current local Archaludon, Dragapult, Mega
+    Lucario, Mega Starmie, N's Zoroark, and some secondary signatures are too
+    weak or missing audits/deck paths to be trusted as strong RR opponents.
+- Example headline RR command:
+
+```bash
+python3 tools/eval_round_robin.py \
+  --manifest logs/rr_pool_filters_20260810/w4_env0809_strict/rr_pool_primary.csv \
+  --games 100 \
+  --workers 32 \
+  --max-turns 700 \
+  --progress-every 20 \
+  --skip-bad-entries \
+  --out-csv logs/rr_pool_filters_20260810/w4_env0809_strict/rr_primary_g100.csv
+```
 
 Remote operations:
 

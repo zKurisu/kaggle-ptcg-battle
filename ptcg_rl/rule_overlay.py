@@ -108,6 +108,12 @@ def _option_card(obs: dict, opt: dict) -> int:
     area = opt.get("area")
     idx = opt.get("index")
     if area is None or idx is None:
+        if area is None and idx is not None and _option_type(opt) == PLAY:
+            ps = (cur.get("players") or [{}, {}])[pid]
+            cards = ps.get("hand") or []
+            idx = int(idx)
+            if 0 <= idx < len(cards) and cards[idx]:
+                return int(cards[idx].get("id") or 0)
         return int(opt.get("cardId") or 0)
     ps = (cur.get("players") or [{}, {}])[pid]
     idx = int(idx)

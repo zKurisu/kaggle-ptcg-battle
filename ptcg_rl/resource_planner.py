@@ -10,6 +10,7 @@ from ptcg_rl.rule_overlay import (
     ATTACK,
     BOSS_ORDERS,
     CRUSTLE,
+    CYNTHIA_GARCHOMP_EX,
     DWEBBLE,
     END,
     EVOLVE,
@@ -20,9 +21,11 @@ from ptcg_rl.rule_overlay import (
     MARNIE_GRIMMSNARL_EX,
     MARNIE_IMPIDIMP,
     MARNIE_MORGREM,
+    MUNKIDORI,
     OGERPON_EX,
     PLAY,
     RETREAT,
+    SPIKEMUTH_GYM,
     TEAM_ROCKET_LINE,
     TEAM_ROCKET_MEWTWO_EX,
     RuleDecision,
@@ -32,6 +35,7 @@ from ptcg_rl.rule_overlay import (
     _bench_card_ids,
     _find_type,
     _first_card_by_types,
+    _first_card_any_type,
     _first_exact_card,
     _option_card,
     _option_type,
@@ -40,7 +44,53 @@ from ptcg_rl.rule_overlay import (
 
 
 SECONDARY_OGERPON_ROUTE = {756, 1071, 272}
-OGERPON_CRUSTLE_ROUTE_CARDS = SECONDARY_OGERPON_ROUTE | {ULTRA_BALL}
+RAGING_BOLT_EX = 63
+CORNERSTONE_OGERPON_EX = 117
+WELLSPRING_OGERPON_EX = 108
+CORNERSTONE_OGERPON = 386
+FEZANDIPITI_EX = 140
+LATIAS_EX = 184
+PASSIMIAN = 978
+MEGA_KANGASKHAN_EX = 756
+MEOWTH_EX = 1071
+LILLIE_CLEFAIRY_EX = 272
+ENERGY_SWITCH = 1116
+GLASS_TRUMPET = 1098
+TERA_ORB = 1127
+CRISPIN = 1198
+CYRANO = 1205
+AREA_ZERO_UNDERDEPTHS = 1250
+PRIME_CATCHER = 1088
+FIGHTING_ENERGIES = {6, 16, 20}
+CORNERSTONE_ROUTE = {CORNERSTONE_OGERPON_EX, CORNERSTONE_OGERPON, ENERGY_SWITCH, TERA_ORB, ULTRA_BALL, CRISPIN}
+WELLSPRING_ROUTE = {WELLSPRING_OGERPON_EX, ULTRA_BALL, CRISPIN}
+PASSIMIAN_BOARD_BASICS = {
+    OGERPON_EX,
+    PASSIMIAN,
+    RAGING_BOLT_EX,
+    LATIAS_EX,
+    MEGA_KANGASKHAN_EX,
+    MEOWTH_EX,
+    LILLIE_CLEFAIRY_EX,
+    FEZANDIPITI_EX,
+    WELLSPRING_OGERPON_EX,
+    CORNERSTONE_OGERPON_EX,
+    CORNERSTONE_OGERPON,
+}
+PASSIMIAN_ROUTE = {
+    PASSIMIAN,
+    AREA_ZERO_UNDERDEPTHS,
+    ULTRA_BALL,
+    CYRANO,
+    CRISPIN,
+    ENERGY_SWITCH,
+    GLASS_TRUMPET,
+    PRIME_CATCHER,
+    RAGING_BOLT_EX,
+    LATIAS_EX,
+    MEGA_KANGASKHAN_EX,
+} | PASSIMIAN_BOARD_BASICS
+OGERPON_CRUSTLE_ROUTE_CARDS = SECONDARY_OGERPON_ROUTE | CORNERSTONE_ROUTE | WELLSPRING_ROUTE | PASSIMIAN_ROUTE | {ULTRA_BALL}
 LUCARIO_ENGINE_ROUTE = {LUCARIO_LUNATONE, LUCARIO_SOLROCK, FIGHTING_GONG, ULTRA_BALL}
 EX_HEAVY_FLAGS = ("ogerpon", "marnie", "cynthia", "trmewtwo", "lucario", "dragapult", "lopunny")
 STAGE_ROUTE_ARCHES = {
@@ -66,10 +116,15 @@ class ResourceSnapshot:
     opp_active: int = 0
     my_board: set[int] = field(default_factory=set)
     opp_board: set[int] = field(default_factory=set)
+    my_board_count: int = 0
+    opp_board_count: int = 0
+    my_bench_count: int = 0
+    opp_bench_count: int = 0
     my_discard: set[int] = field(default_factory=set)
     opp_discard: set[int] = field(default_factory=set)
     my_board_energy: dict[int, int] = field(default_factory=dict)
     opp_board_energy: dict[int, int] = field(default_factory=dict)
+    my_board_energy_ids: dict[int, tuple[int, ...]] = field(default_factory=dict)
     my_damaged_board: set[int] = field(default_factory=set)
     opp_damaged_board: set[int] = field(default_factory=set)
     flags: dict[str, bool] = field(default_factory=dict)
@@ -129,8 +184,20 @@ def _visible_self_counts(cur: dict, me: dict) -> Counter[int]:
     return counts
 
 
+def _looking_ids(obs: dict) -> set[int]:
+    return set(_iter_card_ids((obs.get("current") or {}).get("looking") or []))
+
+
 def _board_ids(player: dict) -> set[int]:
     return _zone_ids(player, "active") | _zone_ids(player, "bench")
+
+
+def _board_count(player: dict) -> int:
+    return len([p for p in (player.get("active") or []) + (player.get("bench") or []) if p])
+
+
+def _bench_count(player: dict) -> int:
+    return len([p for p in (player.get("bench") or []) if p])
 
 
 def _energy_count(pokemon: dict | None) -> int:
@@ -144,6 +211,27 @@ def _energy_count(pokemon: dict | None) -> int:
     return total
 
 
+def _energy_ids(pokemon: dict | None) -> tuple[int, ...]:
+    if not pokemon:
+        return ()
+    ids: list[int] = []
+    for key in ("energyCards", "energies"):
+        cards = pokemon.get(key) or []
+        if not isinstance(cards, list):
+            continue
+        for card in cards:
+            if isinstance(card, dict):
+                cid = int(card.get("id") or 0)
+            else:
+                try:
+                    cid = int(card or 0)
+                except Exception:
+                    cid = 0
+            if cid:
+                ids.append(cid)
+    return tuple(ids)
+
+
 def _board_energy_by_card(player: dict) -> dict[int, int]:
     out: dict[int, int] = {}
     for p in (player.get("active") or []) + (player.get("bench") or []):
@@ -153,6 +241,71 @@ def _board_energy_by_card(player: dict) -> dict[int, int]:
         if cid:
             out[cid] = max(out.get(cid, 0), _energy_count(p))
     return out
+
+
+def _board_energy_ids_by_card(player: dict) -> dict[int, tuple[int, ...]]:
+    out: dict[int, tuple[int, ...]] = {}
+    for p in (player.get("active") or []) + (player.get("bench") or []):
+        if not p:
+            continue
+        cid = int(p.get("id") or 0)
+        if cid:
+            out[cid] = _energy_ids(p)
+    return out
+
+
+def _pokemon_from_area(player: dict, area, index) -> dict | None:
+    try:
+        idx = int(index)
+    except Exception:
+        return None
+    if area == 4:
+        cards = player.get("active") or []
+    elif area == 5:
+        cards = player.get("bench") or []
+    else:
+        return None
+    if 0 <= idx < len(cards):
+        return cards[idx] or None
+    return None
+
+
+def _option_target_card(obs: dict, opt: dict) -> int:
+    cur = obs.get("current") or {}
+    players = cur.get("players") or [{}, {}]
+    you = int(cur.get("yourIndex", 0) or 0)
+    pid = int(opt.get("playerIndex", you) if opt.get("playerIndex") is not None else you)
+    if pid < 0 or pid >= len(players):
+        pid = you
+    target = _pokemon_from_area(players[pid], opt.get("inPlayArea"), opt.get("inPlayIndex"))
+    if target is None:
+        target = _pokemon_from_area(players[pid], opt.get("area"), opt.get("index"))
+    if not target:
+        return 0
+    return int(target.get("id") or 0)
+
+
+def _first_target_card_by_types(obs: dict, options: list[dict], card_ids: set[int],
+                                opt_types: tuple[int, ...]) -> int | None:
+    for opt_type in opt_types:
+        for i, opt in enumerate(options):
+            if _option_type(opt) == opt_type and _option_target_card(obs, opt) in card_ids:
+                return i
+    return None
+
+
+def _first_target_card_any_type(obs: dict, options: list[dict], card_ids: set[int]) -> int | None:
+    for i, opt in enumerate(options):
+        if _option_target_card(obs, opt) in card_ids:
+            return i
+    return None
+
+
+def _first_attack_by_card(obs: dict, options: list[dict], card_id: int) -> int | None:
+    for i, opt in enumerate(options):
+        if _option_type(opt) == ATTACK and _option_card(obs, opt) == card_id:
+            return i
+    return None
 
 
 def _damage_count(pokemon: dict | None) -> int:
@@ -238,10 +391,15 @@ class ResourcePlanner:
             opp_active=_active_card_id(opp),
             my_board=_board_ids(me),
             opp_board=_board_ids(opp),
+            my_board_count=_board_count(me),
+            opp_board_count=_board_count(opp),
+            my_bench_count=_bench_count(me),
+            opp_bench_count=_bench_count(opp),
             my_discard=_zone_ids(me, "discard"),
             opp_discard=_zone_ids(opp, "discard"),
             my_board_energy=_board_energy_by_card(me),
             opp_board_energy=_board_energy_by_card(opp),
+            my_board_energy_ids=_board_energy_ids_by_card(me),
             my_damaged_board=_damaged_board_ids(me),
             opp_damaged_board=_damaged_board_ids(opp),
             flags=_visible_matchup_flags(opp),
@@ -615,6 +773,12 @@ class OpportunityPlanner(ResourcePlanner):
             return
         arch = self.plan.archetype
         if arch == "Teal Mask Ogerpon" and snap.flags.get("crustle"):
+            if self.deck_counts.get(PASSIMIAN, 0) > 0 and (CRUSTLE in snap.opp_board or DWEBBLE in snap.opp_board):
+                self._activate_window("ogerpon_passimian_break_wall", 6)
+                return
+            if self.deck_counts.get(CORNERSTONE_OGERPON_EX, 0) > 0 and CRUSTLE in snap.opp_board:
+                self._activate_window("ogerpon_cornerstone_break_wall", 5)
+                return
             if DWEBBLE in snap.opp_board and CRUSTLE not in snap.opp_board:
                 self._activate_window("ogerpon_dwebble_punish", 3)
                 return
@@ -673,6 +837,14 @@ class OpportunityPlanner(ResourcePlanner):
         chosen_type = _option_type(options[action[0]]) if action else END
         chosen_card = _option_card(obs, options[action[0]]) if action else 0
 
+        if self.active_window == "ogerpon_passimian_break_wall":
+            decision = self._opp_ogerpon_passimian_break_wall(obs, options, chosen_type, chosen_card, snap)
+            if decision is not None:
+                return decision
+        if self.active_window == "ogerpon_cornerstone_break_wall":
+            decision = self._opp_ogerpon_cornerstone_break_wall(obs, options, chosen_type, chosen_card, snap)
+            if decision is not None:
+                return decision
         if self.active_window == "ogerpon_dwebble_punish":
             decision = self._opp_ogerpon_dwebble_punish(obs, options, chosen_type, chosen_card, snap)
             if decision is not None:
@@ -703,6 +875,220 @@ class OpportunityPlanner(ResourcePlanner):
                 return decision
 
         return RuleDecision(action)
+
+    def _opp_ogerpon_passimian_break_wall(
+        self,
+        obs: dict,
+        options: list[dict],
+        chosen_type: int,
+        chosen_card: int,
+        snap: ResourceSnapshot,
+    ) -> RuleDecision | None:
+        passimian_online = PASSIMIAN in snap.my_board
+        passimian_energy = snap.my_board_energy.get(PASSIMIAN, 0)
+        passimian_energy_ids = set(snap.my_board_energy_ids.get(PASSIMIAN, ()))
+        passimian_has_fighting = bool(passimian_energy_ids & FIGHTING_ENERGIES)
+        early = snap.turn <= 6
+        looking = _looking_ids(obs)
+
+        if looking:
+            if not passimian_online and PASSIMIAN in looking:
+                pick = _first_card_any_type(obs, options, {PASSIMIAN})
+                if pick is not None:
+                    return self._take_window_limited("ogerpon_choose_passimian_from_search", pick, 3)
+            if snap.my_board_count < 6:
+                pick = _first_card_any_type(obs, options, PASSIMIAN_BOARD_BASICS & looking)
+                if pick is not None:
+                    return self._take_window_limited("ogerpon_choose_board_basic_from_search", pick, 5)
+            if passimian_online and passimian_energy < 2:
+                pick = _first_card_any_type(obs, options, FIGHTING_ENERGIES & looking)
+                if pick is not None:
+                    return self._take_window_limited("ogerpon_choose_fighting_from_search", pick, 2)
+
+        play_area_zero = _first_exact_card(obs, options, PLAY, AREA_ZERO_UNDERDEPTHS)
+        if play_area_zero is not None and snap.my_board_count >= 3 and chosen_card != AREA_ZERO_UNDERDEPTHS:
+            if chosen_type in (END, ATTACK):
+                return self._take_window_limited("ogerpon_passimian_play_area_zero", play_area_zero, 2)
+
+        if not passimian_online:
+            play_passimian = _first_exact_card(obs, options, PLAY, PASSIMIAN)
+            if play_passimian is not None and chosen_card != PASSIMIAN:
+                if chosen_type in (PLAY, ATTACH, ABILITY, END, ATTACK):
+                    return self._take_window_limited("ogerpon_play_passimian_vs_crustle", play_passimian, 4)
+            search = _first_exact_card(obs, options, PLAY, ULTRA_BALL)
+            if search is not None and chosen_card != ULTRA_BALL:
+                if chosen_type in (END, ATTACK, ABILITY):
+                    return self._take_window_limited("ogerpon_search_passimian_vs_crustle", search, 8)
+
+        if snap.my_board_count < 7:
+            filler = _first_card_by_types(obs, options, PASSIMIAN_BOARD_BASICS, (PLAY,))
+            if filler is not None and chosen_card not in PASSIMIAN_BOARD_BASICS:
+                if chosen_type in (END, ATTACK):
+                    return self._take_window_limited("ogerpon_fill_basic_board_for_passimian", filler, 5)
+
+        if passimian_online:
+            target_passimian_attach = _first_target_card_by_types(obs, options, {PASSIMIAN}, (ATTACH,))
+            if target_passimian_attach is not None:
+                attach_card = _option_card(obs, options[target_passimian_attach])
+                needs_fighting = not passimian_has_fighting and attach_card in FIGHTING_ENERGIES
+                if needs_fighting or passimian_energy < 2:
+                    return self._take_window_limited("ogerpon_attach_to_passimian", target_passimian_attach, 8)
+
+            if passimian_energy < 2:
+                fighting_attach = _first_card_by_types(obs, options, FIGHTING_ENERGIES, (ATTACH,))
+                if fighting_attach is not None and chosen_type in (END, ATTACK, ABILITY, PLAY, ATTACH):
+                    return self._take_window_limited("ogerpon_select_fighting_for_passimian", fighting_attach, 5)
+                any_attach = _find_type(options, ATTACH)
+                if any_attach and chosen_type in (END, ATTACK, ABILITY, PLAY):
+                    return self._take_window_limited("ogerpon_select_energy_for_passimian", any_attach[0], 8)
+                accel = _first_card_by_types(obs, options, {CRISPIN, ENERGY_SWITCH, GLASS_TRUMPET}, (PLAY,))
+                if accel is not None and chosen_card not in {CRISPIN, ENERGY_SWITCH, GLASS_TRUMPET}:
+                    if chosen_type in (END, ATTACK, ABILITY, PLAY):
+                        return self._take_window_limited("ogerpon_accelerate_passimian", accel, 6)
+
+            if snap.opp_active == DWEBBLE and snap.my_active == PASSIMIAN:
+                attack = _first_attack_by_card(obs, options, PASSIMIAN)
+                if attack is None:
+                    attacks = _find_type(options, ATTACK)
+                    attack = attacks[0] if attacks else None
+                if attack is not None and chosen_type in (END, PLAY, ABILITY, ATTACH):
+                    return self._take_window_limited("ogerpon_passimian_attack_dwebble_before_wall", attack, 4)
+
+            target_passimian = _first_target_card_any_type(obs, options, {PASSIMIAN})
+            if target_passimian is not None and chosen_type in (END, ATTACK, RETREAT, PLAY, ABILITY, ATTACH):
+                if passimian_energy < 2 or snap.my_active != PASSIMIAN:
+                    return self._take_window_limited("ogerpon_choose_passimian_target_prompt", target_passimian, 8)
+
+            if snap.my_active != PASSIMIAN and passimian_energy >= 2:
+                retreats = _find_type(options, RETREAT)
+                if retreats and chosen_type in (END, ATTACK, ABILITY, PLAY):
+                    return self._take_window_limited("ogerpon_pivot_to_passimian_wall_breaker", retreats[0], 4)
+                switch = _first_exact_card(obs, options, PLAY, PRIME_CATCHER)
+                if switch is not None and chosen_type in (END, ATTACK, ABILITY):
+                    return self._take_window_limited("ogerpon_prime_catcher_to_unlock_passimian", switch, 2)
+
+            if snap.my_active == PASSIMIAN:
+                attack = _first_attack_by_card(obs, options, PASSIMIAN)
+                if attack is None:
+                    attacks = _find_type(options, ATTACK)
+                    attack = attacks[0] if attacks else None
+                if attack is not None and chosen_type in (END, PLAY, ABILITY, ATTACH, RETREAT):
+                    return self._take_window_limited("ogerpon_passimian_coordinated_throwing", attack, 10)
+
+        if early:
+            kang = _first_exact_card(obs, options, ABILITY, MEGA_KANGASKHAN_EX)
+            if kang is not None and chosen_type in (END, ATTACK):
+                return self._take_window_limited("ogerpon_early_kangaskhan_engine_for_passimian", kang, 2)
+            bolt = _first_exact_card(obs, options, PLAY, RAGING_BOLT_EX)
+            if bolt is not None and snap.my_board_count < 6 and chosen_card != RAGING_BOLT_EX:
+                if chosen_type in (END, ATTACK, ATTACH, ABILITY):
+                    return self._take_window_limited("ogerpon_play_raging_bolt_for_wall_route", bolt, 2)
+
+        if snap.my_active == OGERPON_EX and snap.opp_active == CRUSTLE and chosen_type == ATTACK:
+            route_pick = _first_card_by_types(obs, options, PASSIMIAN_ROUTE, (PLAY, ABILITY, ATTACH))
+            if route_pick is not None:
+                return self._take_window_limited("ogerpon_skip_blank_teal_attack_for_passimian_route", route_pick, 8)
+            retreats = _find_type(options, RETREAT)
+            if retreats and passimian_online:
+                return self._take_window_limited("ogerpon_retreat_blank_teal_into_passimian_plan", retreats[0], 4)
+
+        if snap.opp_active == DWEBBLE and chosen_type == END:
+            attacks = _find_type(options, ATTACK)
+            if attacks:
+                return self._take_window_limited("ogerpon_attack_dwebble_inside_passimian_route", attacks[0], 4)
+            attach = _find_type(options, ATTACH)
+            if attach:
+                return self._take_window_limited("ogerpon_attach_before_dwebble_attack_inside_passimian_route", attach[0], 4)
+
+        if chosen_type == END:
+            route_pick = _first_card_by_types(obs, options, {PASSIMIAN, AREA_ZERO_UNDERDEPTHS}, (PLAY,))
+            if route_pick is None and passimian_online:
+                route_pick = _first_card_by_types(obs, options, {PASSIMIAN}, (ATTACK, ATTACH))
+            if route_pick is not None:
+                return self._take_window_limited("ogerpon_no_idle_in_passimian_wall_route", route_pick, 4)
+
+        return None
+
+    def _opp_ogerpon_cornerstone_break_wall(
+        self,
+        obs: dict,
+        options: list[dict],
+        chosen_type: int,
+        chosen_card: int,
+        snap: ResourceSnapshot,
+    ) -> RuleDecision | None:
+        cornerstone_online = CORNERSTONE_OGERPON_EX in snap.my_board
+        cornerstone_energy = snap.my_board_energy.get(CORNERSTONE_OGERPON_EX, 0)
+        cornerstone_energy_ids = set(snap.my_board_energy_ids.get(CORNERSTONE_OGERPON_EX, ()))
+        cornerstone_has_fighting = bool(cornerstone_energy_ids & FIGHTING_ENERGIES)
+
+        if not cornerstone_online:
+            play_cornerstone = _first_exact_card(obs, options, PLAY, CORNERSTONE_OGERPON_EX)
+            if play_cornerstone is not None and chosen_card != CORNERSTONE_OGERPON_EX:
+                if chosen_type in (PLAY, ATTACH, ABILITY, END, ATTACK):
+                    return self._take_window_limited("ogerpon_play_cornerstone_vs_crustle", play_cornerstone, 3)
+            search = _first_card_by_types(obs, options, {TERA_ORB, ULTRA_BALL}, (PLAY,))
+            if search is not None and chosen_card not in {TERA_ORB, ULTRA_BALL}:
+                if chosen_type in (PLAY, ATTACH, ABILITY, END, ATTACK):
+                    return self._take_window_limited("ogerpon_search_cornerstone_vs_crustle", search, 5)
+            # If no Cornerstone is currently reachable, do not burn the turn on
+            # blank Teal Mask attacks into an established wall.
+            if snap.my_active == OGERPON_EX and snap.opp_active == CRUSTLE and chosen_type == ATTACK:
+                boss = _first_exact_card(obs, options, PLAY, BOSS_ORDERS)
+                if boss is not None and len(snap.opp_board - {CRUSTLE, DWEBBLE}) > 0:
+                    return self._take_window_limited("ogerpon_boss_while_finding_cornerstone", boss, 2)
+                judge = _first_exact_card(obs, options, PLAY, JUDGE)
+                if judge is not None and snap.opp_hand_count >= 5:
+                    return self._take_window_limited("ogerpon_judge_while_finding_cornerstone", judge, 2)
+            return None
+
+        attach_to_cornerstone = _first_target_card_by_types(
+            obs, options, {CORNERSTONE_OGERPON_EX}, (ATTACH,)
+        )
+        if attach_to_cornerstone is not None:
+            attach_card = _option_card(obs, options[attach_to_cornerstone])
+            need_fighting = not cornerstone_has_fighting and attach_card in FIGHTING_ENERGIES
+            need_energy = cornerstone_energy < 3
+            if need_fighting or need_energy:
+                target_card = _option_target_card(obs, options[attach_to_cornerstone])
+                if chosen_type in (PLAY, ABILITY, END, ATTACK, ATTACH) and target_card == CORNERSTONE_OGERPON_EX:
+                    return self._take_window_limited("ogerpon_attach_to_cornerstone", attach_to_cornerstone, 5)
+
+        if cornerstone_energy < 3:
+            energy_switch = _first_exact_card(obs, options, PLAY, ENERGY_SWITCH)
+            if energy_switch is not None and chosen_card != ENERGY_SWITCH:
+                if chosen_type in (PLAY, ABILITY, END, ATTACK):
+                    return self._take_window_limited("ogerpon_energy_switch_to_cornerstone_route", energy_switch, 4)
+            crispin = _first_exact_card(obs, options, PLAY, CRISPIN)
+            if crispin is not None and chosen_card != CRISPIN:
+                if chosen_type in (PLAY, ABILITY, END, ATTACK):
+                    return self._take_window_limited("ogerpon_crispin_cornerstone_route", crispin, 3)
+
+        target_cornerstone = _first_target_card_any_type(obs, options, {CORNERSTONE_OGERPON_EX})
+        if target_cornerstone is not None and chosen_type in (END, ATTACK, RETREAT, PLAY, ABILITY, ATTACH):
+            return self._take_window_limited("ogerpon_choose_cornerstone_target_prompt", target_cornerstone, 6)
+
+        if snap.my_active != CORNERSTONE_OGERPON_EX and cornerstone_online and cornerstone_energy >= 3:
+            retreats = _find_type(options, RETREAT)
+            if retreats and chosen_type in (ATTACK, END, ABILITY, PLAY):
+                return self._take_window_limited("ogerpon_pivot_to_ready_cornerstone", retreats[0], 3)
+            prime = _first_exact_card(obs, options, PLAY, PRIME_CATCHER)
+            if prime is not None and chosen_type in (ATTACK, END, ABILITY):
+                return self._take_window_limited("ogerpon_prime_catcher_cornerstone_pivot", prime, 2)
+
+        if snap.my_active == CORNERSTONE_OGERPON_EX:
+            attack = _first_attack_by_card(obs, options, CORNERSTONE_OGERPON_EX)
+            if attack is None:
+                attacks = _find_type(options, ATTACK)
+                attack = attacks[0] if attacks else None
+            if attack is not None and chosen_type in (END, PLAY, ABILITY, ATTACH):
+                return self._take_window_limited("ogerpon_demolish_crustle", attack, 6)
+
+        if snap.my_active == OGERPON_EX and snap.opp_active == CRUSTLE and chosen_type == ATTACK:
+            pick = _first_target_card_any_type(obs, options, {CORNERSTONE_OGERPON_EX})
+            if pick is not None:
+                return self._take_window_limited("ogerpon_take_cornerstone_step_over_blank_attack", pick, 4)
+        return None
 
     def _opp_ogerpon_dwebble_punish(
         self,

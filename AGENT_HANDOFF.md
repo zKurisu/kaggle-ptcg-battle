@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-10 09:45 Asia/Shanghai.
+Last updated: 2026-08-10 12:06 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -7025,6 +7025,46 @@ Remote operations:
   - `opportunity_plan` is experimental. It is meant for short TTL opportunity
     windows, not broad matchup route forcing. Validate with trigger stats and
     focused+broad RR before any submission packaging.
+
+2026-08-10 CPU cleanup and Ogerpon-vs-Crustle rule probe:
+
+- Remote slowness was caused by old PTCG rollout/eval jobs, not current GPU
+  training. `uptime` initially showed a very high 15-minute load; top CPU was
+  from orphaned/long `tools/generate_rollout_bc.py` and old
+  `eval_rule_overlay_stats.py` work under:
+  - `data/generated_rollout_bc_resource_plan_20260810b`
+  - `logs/rule_guided_20260810b`
+  - `logs/cornerstone_deck_ablation_20260810`
+- Cleaned only these PTCG-related stale processes. Do not kill `/home/byer/ARC`
+  or other byer jobs unless explicitly requested. After cleanup, remote load
+  fell to roughly single digits on the 1-minute window.
+- Added/fixed rule diagnostics:
+  - `tools/eval_rule_overlay_stats_fast.py` is a bounded parallel trigger
+    audit tool. Use it instead of the old serial stats script for matchup rule
+    probes.
+  - Fixed `ptcg_rl/rule_overlay.py::_option_card` for PLAY options shaped like
+    `{"type": 7, "index": n}`. These index the current player's hand. Without
+    this fix, rule code parsed many played cards as card id 0 and could not see
+    Ultra Ball, Cyrano, Area Zero, Passimian, etc.
+- Ogerpon 2a vs Crustle analysis:
+  - Historical corpus showed `2a5072194fdf` has real Kaggle games around the
+    30% decision/game-level range into Crustle, unlike `697a82e582d5` and
+    `5899c772bace`, but local BC still only scores single digits.
+  - Mining established-Crustle wins showed the real 2a route is likely
+    Passimian + wide Basic board + early attacks, not Cornerstone. Do not cut
+    `978 Passimian` from 2a deck variants.
+  - Added Passimian route cards to `DeckPlan` and added
+    `ogerpon_passimian_break_wall` in `OpportunityPlanner`.
+  - Focused paired eval:
+    `logs/cornerstone_deck_ablation_20260810/passimian_rules_2a_vs_crustle_g240.csv`
+    showed only a small gain:
+    - vs `3cd5039c`: base 0.071, rules 0.096, delta +0.025
+    - vs `b141ae29`: base 0.087, rules 0.117, delta +0.029
+    - average rule WR 0.106, avg delta +0.027
+  - Conclusion: current Passimian overlay is directionally positive but far
+    below the 30% target. Do not package it for submission. It is useful as a
+    diagnostic and parser fix, but not strong enough as a teacher unless the
+    plan becomes a true multi-turn controller/search policy.
 
 ## Update Checklist
 

@@ -34,6 +34,7 @@ sys.path.insert(0, str(_WS))
 
 from ptcg_rl.encoder import FastEncoder
 from ptcg_rl.numpy_policy import NumpyPolicy
+from ptcg_rl.resource_planner import ResourcePlanner
 from ptcg_rl.rule_overlay import RULE_MODES, apply_rule_overlay
 from tools.eval_round_robin import Entry, parse_entry, read_deck
 from tools.trace_matchup_decisions import ACTION_TYPES, card_name, type_name
@@ -139,7 +140,13 @@ def policy_ranking(policy: NumpyPolicy | None, obs: dict[str, Any], limit: int) 
     ]
 
 
-def choose_action(entry: Entry, obs: dict[str, Any], rng: random.Random, rules: str = "") -> tuple[list[int], str]:
+def choose_action(
+    entry: Entry,
+    obs: dict[str, Any],
+    rng: random.Random,
+    rules: str = "",
+    planner: ResourcePlanner | None = None,
+) -> tuple[list[int], str]:
     sel = obs.get("select") or {}
     if not sel.get("option"):
         return [], "empty"
@@ -149,7 +156,12 @@ def choose_action(entry: Entry, obs: dict[str, Any], rng: random.Random, rules: 
             action = legal_random(sel, rng)
         else:
             action = entry.policy.select(obs, greedy=True, update_history=True)
-        if rules:
+        if rules == "resource_plan" and planner is not None:
+            decision = planner.decide(obs, action, entry.deck)
+            action = decision.action
+            if decision.reason:
+                label = f"{label}|rules:{decision.reason}"
+        elif rules:
             decision = apply_rule_overlay(obs, action, entry.deck, mode=rules)
             action = decision.action
             if decision.reason:
@@ -376,6 +388,8 @@ def play_game(
     candidate_side = 1 if swapped else 0
     for entry in (first, second):
         reset_entry(entry)
+    candidate_planner = ResourcePlanner(candidate.deck) if args.candidate_rules == "resource_plan" else None
+    opponent_planner = ResourcePlanner(opponent.deck) if args.opponent_rules == "resource_plan" else None
 
     obs, _ = battle_start(first.deck, second.deck)
     records: list[dict[str, Any]] = []
@@ -421,7 +435,7 @@ def play_game(
                             pre_history = {k: np.asarray(v).tolist() for k, v in hist.items()}
                     except Exception:
                         pre_history = None
-                action, source = choose_action(entry, obs, rng, args.candidate_rules)
+                action, source = choose_action(entry, obs, rng, args.candidate_rules, candidate_planner)
                 if saved_this_game < args.states_per_game:
                     try:
                         encoded = encoder.encode(obs)
@@ -448,7 +462,7 @@ def play_game(
                             records.append(rec)
                             saved_this_game += 1
             else:
-                action, _ = choose_action(entry, obs, rng, args.opponent_rules)
+                action, _ = choose_action(entry, obs, rng, args.opponent_rules, opponent_planner)
 
             obs = battle_select(action)
             if obs is None:

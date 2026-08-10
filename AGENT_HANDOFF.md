@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-10 07:52 Asia/Shanghai.
+Last updated: 2026-08-10 08:25 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -130,6 +130,100 @@ Next step should be high-confidence teacher filtering and route/rule conversion:
   - mine repeated motifs per matchup and encode them as route rules or
     scratch distillation labels.
 ```
+
+## Active Remote Job: Rule-Guided Rollout Stage1b 2026-08-10
+
+Current user direction: rules must be used for training, and rule hypotheses
+must be grounded in Kaggle/community/top-strategy ideas. BC is still locked:
+do not fine-tune existing BC checkpoints. Use generated rule/search/planner
+data only for scratch/retraining experiments.
+
+Sources incorporated:
+
+- Kaggle topic `724362`: top methods inferred from 30k games; top appears more
+  like model + bounded search/RL, but search needs a good value estimate.
+- Kaggle topic `717697`: RL journey notes emphasize representation, replay
+  analysis, broad card exposure, and curriculum; random self-play alone is not
+  enough.
+- Kaggle topic `708586`: simulator behavior is authoritative over official TCG
+  differences.
+- PTCG strategy/community notes: official Mega Lucario route
+  (Solrock/Lunatone/Fighting Gong/Poke Pad/Premium Power Pro), Marnie
+  Grimmsnarl engine, Ogerpon/Kangaskhan box secondary/search route, and Crustle
+  anti-ex wall.
+
+Code/data changes made:
+
+- `tools/generate_rollout_bc.py`: `+rules:resource_plan` now instantiates
+  `ResourcePlanner` per game and uses true stateful route decisions. Previously
+  this was effectively a no-op because it called stateless `apply_rule_overlay`.
+- `tools/build_weakness_state_bank.py`: same `resource_plan` support for
+  state-bank/action-source traces.
+- `ptcg_rl/resource_planner.py`: expanded routes beyond Ogerpon/Marnie/Lucario:
+  Crustle anti-ex wall, Team Rocket board-count route, generic stage/setup
+  route, and Mega Starmie route.
+- `ptcg_rl/deck_plans.py`: added Mega Starmie plan:
+  Staryu/Mega Starmie ex + Duskull/Dusclops/Dusknoir + Hilda/Grand Tree/Wally.
+- `tools/filter_search_teacher_labels.py`: new high-confidence filter for
+  `*_teacher_best.csv`. Default excludes STOP/END/YES/NO/NUMBER/CARD and keeps
+  only clear `delta_score` labels.
+- `data/matchup_strategy_seeds_v1.csv` and
+  `data/matchup_strategy_seed_cards_v1.csv`: added Lucario route, Ogerpon box
+  route, and Mega Starmie route seeds/card mappings.
+- `docs/11_human_matchup_strategy.md`: updated with Kaggle constraints,
+  no-finetune rule, rule-guided rollout commands, and search-label filtering.
+
+Remote sync status:
+
+- Synced changed source/data/docs to:
+  `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804`.
+- A mistaken `scp` placed four duplicate files in the remote repo root; they
+  were removed. Official files under `data/`, `docs/`, and `tools/` were
+  verified present after cleanup.
+
+Important operational note:
+
+- First attempt `/tmp/run_rule_guided_stage1_20260810.sh` used
+  `parallel_jobs=4`, `workers=24`, spawned about 100 rollout processes, and
+  pushed ks load above 1700. It was killed before producing NPZ files. Do not
+  repeat that concurrency.
+- Active safer run:
+  - script: `/tmp/run_rule_guided_stage1b_20260810.sh`
+  - runner log: `logs/rule_guided_20260810b/stage1b.runner.log`
+  - rollout plan: `logs/rule_guided_20260810b/rollout_teacher/rollout_teacher_plan.csv`
+  - generated corpus: `data/generated_rollout_bc_resource_plan_20260810b`
+  - settings: `max_jobs=18`, `games=400`, `workers=12`, `parallel_jobs=2`,
+    `keep_outcomes=nonloss`, `rule_mode=resource_plan`.
+  - coverage in plan: Dragapult 3, Festival Lead 3, Marnie 3, Mega Lucario 1,
+    Mega Starmie 3, Ogerpon 3, Team Rocket Mewtwo 2.
+  - At first check it had 2 rollout jobs and 27 matching processes. CPU was
+    busy but not overloaded. No NPZ had been flushed yet because workers were
+    still around 1/33 games.
+
+Stage1b pre-results:
+
+- Search teacher filter read 96 labels and kept 12:
+  - rejects: low_best_score=50, low_delta_score=28, excluded_type:END=6.
+  - top kept motifs: Lucario vs Marnie Premium Power Pro, ATTACK, Spikemuth
+    Gym; one Ogerpon vs Crustle Boss's Orders; one Marnie vs Ogerpon darkness
+    attach.
+- Interpretation: search labels are useful as offline motifs, not direct online
+  greedy policy. Filtered label count is small, so the main data source is the
+  `resource_plan` rollout teacher, not search labels alone.
+
+Next actions after Stage1b:
+
+1. Check `logs/rule_guided_20260810b/rollout_teacher/rollout_teacher_summary_final.csv`
+   and generated NPZ actor modes. Confirm `actor_mode` contains `resource:...`
+   labels; otherwise planner still did not trigger.
+2. If per-job nonloss/win rates are too low or rows are tiny, do not train.
+   Tighten route rules or target only the archetypes with generated wins.
+3. If rows are adequate, train scratch policies only, e.g. v12 full corpus plus
+   `--aux-corpus data/generated_rollout_bc_resource_plan_20260810b --aux-repeat 8`.
+   Do not use `--init` from BC; at most compare pointer/cross-attn/history
+   scratch runs.
+4. Validate against random, focused weakness pairs, balanced shadow RR, and
+   Kaggle replay-derived opponents before considering a submission candidate.
 
 ## Completed Remote Job: Scratch League RL 2026-08-09/10
 

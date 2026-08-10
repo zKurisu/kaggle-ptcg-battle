@@ -93,8 +93,16 @@ DEFAULT_GROUPS = {
 
 DEFAULT_RULE_MODE_BY_SEED = {
     "marnie_vs_ogerpon_setup": "marnie_setup",
+    "marnie_core_engine": "resource_plan",
+    "crustle_wall_plan": "resource_plan",
+    "crustle_resource_pressure": "resource_plan",
+    "ogerpon_vs_crustle_dwebble_punish": "resource_plan",
     "ogerpon_vs_crustle_no_futile_attack": "ogerpon_no_futile_crustle",
     "cynthia_vs_crustle_spiritomb": "cynthia_spiritomb_crustle",
+    "dragapult_setup_vs_marnie_crustle": "resource_plan",
+    "lucario_engine_route": "resource_plan",
+    "ogerpon_box_route": "resource_plan",
+    "mega_starmie_route": "resource_plan",
 }
 
 

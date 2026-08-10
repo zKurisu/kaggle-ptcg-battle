@@ -7,6 +7,7 @@ from ptcg_rl.deck_plans import DeckPlan, infer_plan
 from ptcg_rl.rule_overlay import (
     ABILITY,
     ATTACH,
+    ATTACK,
     BOSS_ORDERS,
     CRUSTLE,
     DWEBBLE,
@@ -22,6 +23,8 @@ from ptcg_rl.rule_overlay import (
     OGERPON_EX,
     PLAY,
     RETREAT,
+    TEAM_ROCKET_LINE,
+    TEAM_ROCKET_MEWTWO_EX,
     RuleDecision,
     ULTRA_BALL,
     _active_card_id,
@@ -38,6 +41,15 @@ from ptcg_rl.rule_overlay import (
 SECONDARY_OGERPON_ROUTE = {756, 1071, 272}
 OGERPON_CRUSTLE_ROUTE_CARDS = SECONDARY_OGERPON_ROUTE | {ULTRA_BALL}
 LUCARIO_ENGINE_ROUTE = {LUCARIO_LUNATONE, LUCARIO_SOLROCK, FIGHTING_GONG, ULTRA_BALL}
+EX_HEAVY_FLAGS = ("ogerpon", "marnie", "cynthia", "trmewtwo", "lucario", "dragapult", "lopunny")
+STAGE_ROUTE_ARCHES = {
+    "Alakazam",
+    "Cynthia Garchomp",
+    "Dragapult",
+    "Festival Lead",
+    "Mega Lopunny",
+    "Mega Starmie",
+}
 
 
 @dataclass
@@ -242,6 +254,33 @@ class ResourcePlanner:
             else:
                 self.phase = "payoff_fallback"
             return
+        if self.plan.archetype == "Crustle Wall" and any(snap.flags.get(k) for k in EX_HEAVY_FLAGS):
+            self._commit_route("crustle_wall_vs_ex")
+            if CRUSTLE in snap.my_board:
+                self.phase = "wall_online"
+            elif DWEBBLE in snap.my_board:
+                self.phase = "evolve_wall"
+            else:
+                self.phase = "find_dwebble"
+            return
+        if self.plan.archetype == "Team Rocket Mewtwo":
+            self._commit_route("rocket_board_count")
+            if TEAM_ROCKET_MEWTWO_EX in snap.my_board and len(snap.my_board & set(TEAM_ROCKET_LINE)) >= 3:
+                self.phase = "mewtwo_ready"
+            else:
+                self.phase = "build_rocket_board"
+            return
+        if self.plan.archetype in STAGE_ROUTE_ARCHES:
+            self._commit_route("stage_route")
+            primary = set(self.plan.primary_attackers)
+            setup = set(self.plan.setup_basics)
+            if primary and snap.my_board & primary:
+                self.phase = "primary_online"
+            elif snap.my_board & (set(self.plan.evolution_chain) - setup):
+                self.phase = "complete_line"
+            else:
+                self.phase = "find_basic"
+            return
         if self.route:
             self.phase = "inactive"
 
@@ -282,6 +321,21 @@ class ResourcePlanner:
 
         if self.route == "lucario_engine_resource":
             decision = self._decide_lucario_engine(obs, options, chosen_type, chosen_card, snap)
+            if decision is not None:
+                return decision
+
+        if self.route == "crustle_wall_vs_ex":
+            decision = self._decide_crustle_wall(obs, options, chosen_type, chosen_card, snap)
+            if decision is not None:
+                return decision
+
+        if self.route == "rocket_board_count":
+            decision = self._decide_rocket_board(obs, options, chosen_type, chosen_card, snap)
+            if decision is not None:
+                return decision
+
+        if self.route == "stage_route":
+            decision = self._decide_stage_route(obs, options, chosen_type, chosen_card, snap)
             if decision is not None:
                 return decision
 
@@ -380,4 +434,95 @@ class ResourcePlanner:
             lunar = _first_exact_card(obs, options, ABILITY, LUCARIO_LUNATONE)
             if lunar is not None and chosen_type in (PLAY, ATTACH, END, 13):
                 return self._take_once_or_limited("lucario_lunar_cycle", lunar, 3)
+        return None
+
+    def _decide_crustle_wall(
+        self,
+        obs: dict,
+        options: list[dict],
+        chosen_type: int,
+        chosen_card: int,
+        snap: ResourceSnapshot,
+    ) -> RuleDecision | None:
+        if self.phase == "find_dwebble":
+            dwebble = _first_exact_card(obs, options, PLAY, DWEBBLE)
+            if dwebble is not None and chosen_card != DWEBBLE:
+                return self._take_once_or_limited("crustle_find_dwebble", dwebble, 4)
+        if self.phase in ("find_dwebble", "evolve_wall"):
+            crustle = _first_exact_card(obs, options, EVOLVE, CRUSTLE)
+            if crustle is not None and chosen_card != CRUSTLE:
+                return self._take_once_or_limited("crustle_evolve_wall", crustle, 4)
+            if snap.my_active == DWEBBLE and CRUSTLE not in snap.my_board:
+                dwebble_attacks = [
+                    i for i, opt in enumerate(options)
+                    if _option_type(opt) == ATTACK and _option_card(obs, opt) == DWEBBLE
+                ]
+                if dwebble_attacks and chosen_type in (PLAY, ABILITY, ATTACH, END):
+                    return self._take_once_or_limited("crustle_ascension_window", dwebble_attacks[0], 2)
+        if self.phase == "wall_online":
+            if snap.my_active == CRUSTLE and chosen_type == RETREAT:
+                attacks = [
+                    i for i, opt in enumerate(options)
+                    if _option_type(opt) == ATTACK and _option_card(obs, opt) == CRUSTLE
+                ]
+                if attacks:
+                    return self._take_once_or_limited("crustle_keep_wall_active", attacks[0], 3)
+            if snap.my_active == CRUSTLE and chosen_type == END:
+                for opt_type in (ATTACK, ATTACH, ABILITY):
+                    picks = _find_type(options, opt_type)
+                    if picks:
+                        return self._take_once_or_limited(f"crustle_no_idle_wall:{opt_type}", picks[0], 4)
+        return None
+
+    def _decide_rocket_board(
+        self,
+        obs: dict,
+        options: list[dict],
+        chosen_type: int,
+        chosen_card: int,
+        snap: ResourceSnapshot,
+    ) -> RuleDecision | None:
+        if self.phase == "build_rocket_board":
+            setup = _first_card_by_types(obs, options, set(TEAM_ROCKET_LINE), (PLAY, EVOLVE, ABILITY, ATTACH))
+            if setup is not None and chosen_card not in TEAM_ROCKET_LINE:
+                if chosen_type in (ATTACK, END, PLAY, ATTACH, ABILITY):
+                    return self._take_once_or_limited("rocket_build_board_before_payoff", setup, 8)
+            if chosen_type == END:
+                for opt_type in (EVOLVE, ABILITY, ATTACH):
+                    picks = _find_type(options, opt_type)
+                    if picks:
+                        return self._take_once_or_limited(f"rocket_no_idle_setup:{opt_type}", picks[0], 4)
+        return None
+
+    def _decide_stage_route(
+        self,
+        obs: dict,
+        options: list[dict],
+        chosen_type: int,
+        chosen_card: int,
+        snap: ResourceSnapshot,
+    ) -> RuleDecision | None:
+        if not self.plan:
+            return None
+        setup = set(self.plan.setup_basics)
+        evolution = set(self.plan.evolution_chain)
+        engine = set(self.plan.engine_cards) | set(self.plan.draw_search)
+        if self.phase == "find_basic" and setup:
+            missing_setup = {cid for cid in setup if cid not in snap.my_board}
+            pick = _first_card_by_types(obs, options, missing_setup or setup, (PLAY,))
+            if pick is not None and chosen_card not in setup:
+                return self._take_once_or_limited("stage_find_basic", pick, 4)
+        if self.phase in ("find_basic", "complete_line") and evolution:
+            evo = _first_card_by_types(obs, options, evolution, (EVOLVE,))
+            if evo is not None and chosen_type in (PLAY, ATTACH, ABILITY, END):
+                return self._take_once_or_limited("stage_complete_core_evolution", evo, 8)
+        if engine:
+            eng = _first_card_by_types(obs, options, engine, (ABILITY, PLAY))
+            if eng is not None and chosen_type in (END, ATTACK):
+                return self._take_once_or_limited("stage_use_engine_before_commit", eng, 5)
+        if chosen_type == END and snap.turn_action_count <= 6:
+            for opt_type in (EVOLVE, ABILITY, ATTACH):
+                picks = _find_type(options, opt_type)
+                if picks:
+                    return self._take_once_or_limited(f"stage_no_idle_setup:{opt_type}", picks[0], 4)
         return None

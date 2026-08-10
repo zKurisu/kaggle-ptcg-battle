@@ -26,3 +26,22 @@ dragapult_setup_vs_marnie_crustle,Drakloak,120,setup_engine,own_deck,Recon Direc
 dragapult_setup_vs_marnie_crustle,Dragapult ex,121,primary_attacker,own_deck,Phantom Dive spread payoff.
 dragapult_setup_vs_marnie_crustle,Marnie's Grimmsnarl ex,648,opponent_primary,opponent_deck_optional,One weakness target; only required for Marnie-branch opponents.
 dragapult_setup_vs_marnie_crustle,Crustle,345,opponent_wall,opponent_deck_optional,One weakness target; only required for Crustle-branch opponents.
+lucario_engine_route,Lunatone,675,engine_piece,own_deck,Official strategy engine piece; local Lucario traces also showed Lunar Cycle decisions matter.
+lucario_engine_route,Solrock,676,engine_piece,own_deck,Official strategy engine piece paired with Lunatone.
+lucario_engine_route,Fighting Gong,1142,search_engine,own_deck,Search/support route card in the Mega Lucario plan.
+lucario_engine_route,Poke Pad,1152,search_engine,own_deck,Supporter recovery/search card in the Mega Lucario plan.
+lucario_engine_route,Premium Power Pro,1141,payoff_support,own_deck,Damage payoff support before key attacks.
+lucario_engine_route,Mega Lucario ex,678,primary_attacker,own_deck,Payoff attacker after the engine route is assembled.
+ogerpon_box_route,Teal Mask Ogerpon ex,96,energy_engine,own_deck,Teal Dance engine and primary attacker.
+ogerpon_box_route,Mega Kangaskhan ex,756,secondary_attacker,own_deck,Secondary route used in Teal Mask Kangaskhan Box-style lists.
+ogerpon_box_route,Meowth ex,1071,draw_search,own_deck,Search/draw support route observed in Ogerpon top signatures.
+ogerpon_box_route,Lillie's Clefairy ex,272,secondary_attacker,own_deck,Secondary matchup coverage route in some Ogerpon lists.
+ogerpon_box_route,Ultra Ball,1121,search_engine,own_deck,Generic search bridge into the secondary route.
+mega_starmie_route,Staryu,1030,setup_basic,own_deck,Setup basic for Mega Starmie ex.
+mega_starmie_route,Mega Starmie ex,1031,primary_attacker,own_deck,Primary payoff attacker with bench pressure and effect-ignoring attack.
+mega_starmie_route,Duskull,131,damage_engine_setup,own_deck,Setup basic for Dusknoir pressure line.
+mega_starmie_route,Dusclops,132,damage_engine,own_deck,Cursed Blast damage-counter pressure.
+mega_starmie_route,Dusknoir,133,damage_engine,own_deck,Large Cursed Blast damage-counter pressure.
+mega_starmie_route,Hilda,1225,evolution_search,own_deck,Searches Evolution Pokemon and Energy.
+mega_starmie_route,Grand Tree,1249,evolution_engine,own_deck,Stadium evolution route for Stage 1/2 lines.
+mega_starmie_route,Wally's Compassion,1229,sustain_switching,own_deck,Healing/sustain route for Mega Evolution Pokemon ex.

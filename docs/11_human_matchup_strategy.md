@@ -1,6 +1,6 @@
 # 11 - Human Matchup Strategy Ingestion
 
-Last updated: 2026-08-08.
+Last updated: 2026-08-10.
 
 The goal is to turn human PTCG matchup knowledge into testable local policy
 improvements. This is not a global "play better" rule layer. Each idea must
@@ -37,6 +37,34 @@ tech choices. A strategy is usable only after confirming that the named cards
 exist in the target deck CSV and in `data/EN_Card_Data.csv`. For example, a
 human answer involving another Ogerpon mask is not transferable to a pure Teal
 Mask Ogerpon list unless that exact mask is present in the submitted deck.
+
+## Kaggle Community Constraints
+
+Relevant Kaggle discussion findings as of 2026-08-10:
+
+- `Top players' methods, revealed by 30,000 games`
+  (`https://www.kaggle.com/competitions/pokemon-tcg-ai-battle/discussion/724362`)
+  argues from action-time traces that much of the field is rule based, while
+  the very top appears to combine a loaded model with bounded search or RL.
+  A comment also warns that search helps only when the value estimate is good.
+  Our failed online search-guided probe matches that warning: root search found
+  locally higher-scoring actions but did not compose into wins.
+- `Sharing my Reinforcement Learning journey`
+  (`https://www.kaggle.com/competitions/pokemon-tcg-ai-battle/discussion/717697`)
+  emphasizes representation, curriculum, replay failure analysis, and broad
+  card/deck exposure. It also says random self-play is not enough.
+- `Differences Between the Official Pokemon TCG Rules and the Simulator
+  Behavior`
+  (`https://www.kaggle.com/competitions/pokemon-tcg-ai-battle/discussion/708586`)
+  confirms simulator behavior is authoritative. Human TCG rules can seed ideas,
+  but every rule must be validated against legal simulator options and replay
+  outcomes.
+
+Implication for this repo: do not use single-step online search directly for
+submission. Use community strategy plus replay traces to build route-level
+rules, use search only as an offline label source after strict filtering, and
+train new scratch policies from generated/planner data rather than fine-tuning
+the locked BC checkpoints.
 
 ## Translation Modes
 
@@ -104,6 +132,20 @@ Current seeds:
   active choice, Drakloak attach-from usage, and early Dreepy setup. Human deck
   guide ingestion should focus on spread setup and Devolution-style prize maps
   before adding more generic BC weights.
+- Mega Lucario route planning: official strategy material frames the deck as an
+  engine route around Solrock, Lunatone, Fighting Gong, Poke Pad, and Premium
+  Power Pro before cashing in with Mega Lucario ex. Treat this as a sequence
+  planner seed: assemble engine, cycle/support, then commit payoff attacks.
+- Ogerpon box route planning: Teal Mask Kangaskhan/Ogerpon articles emphasize
+  precise support sequencing and secondary attackers such as Mega Kangaskhan ex
+  and Meowth ex. Into Crustle, this should become a route that either removes
+  Dwebble early or builds a secondary/search route before accepting blank ex
+  attacks into an established wall.
+- Mega Starmie route planning: the 0804/0805 ladder signatures use Staryu into
+  Mega Starmie ex with Duskull/Dusclops/Dusknoir pressure, Hilda/Grand Tree
+  evolution search, and Wally's Compassion sustain. This was added after
+  rule-guided rollout selected Starmie weak pairs while `DeckPlan` had no
+  Starmie route, which made `resource_plan` a no-op for that archetype.
 
 ## Validation Template
 
@@ -122,6 +164,16 @@ For each seed, run this sequence:
 Do not submit a rule or specialist solely because focused delta improves. The
 previous complex/card-weight/success-FT experiments often improved supervised
 or narrow metrics while failing broad RR.
+
+Do not fine-tune existing BC checkpoints for these ideas. BC is locked. The
+allowed training path is:
+
+1. Validate a rule/planner with random sanity and weakness-pool RR.
+2. Generate rollout data from a rule/search/planner teacher.
+3. Train a fresh scratch policy on replay corpus plus generated teacher corpus,
+   with generated data intentionally overweighted.
+4. Compare against the locked BC baseline in random, focused weakness pools,
+   balanced shadow RR, and Kaggle replay-derived opponent pools.
 
 ## Top-Player Episode Mining
 
@@ -234,3 +286,80 @@ The summary writes:
 Rule-only probe directories are supported too. If a rule has negative or tiny
 `avg_rule_delta`, mark it as `do_not_scale_current_rule` and move back to trace,
 teacher rollout, or matchup-conditioned BC.
+
+## Rule-Guided Rollout Training
+
+`generate_rollout_bc.py` now supports true stateful `resource_plan` actors. The
+old parser accepted `+rules:resource_plan`, but it only called the stateless
+overlay and therefore did not actually use route memory. As of 2026-08-10, both
+`generate_rollout_bc.py` and `build_weakness_state_bank.py` instantiate
+`ResourcePlanner` per game when `resource_plan` is selected.
+
+Use `resource_plan` for aggressive route-level teacher data:
+
+```bash
+python3 tools/plan_rollout_teacher_jobs.py \
+  --weakness-csv logs/eval_v11_0724_0804/rr_candidates_pop_top3_shadow_ge097_g100.csv \
+  --candidate-manifest logs/eval_v11_0724_0804/candidate_manifest_pop_top3_shadow_ge097.csv \
+  --opponent-manifest logs/eval_v11_0724_0804/shadow_pools_20260805/mixed_shadow_popfallback_environment_balanced.csv \
+  --max-win-rate 0.45 \
+  --max-jobs 24 \
+  --max-per-archetype 3 \
+  --max-per-candidate 2 \
+  --rule-mode resource_plan \
+  --games 1200 \
+  --workers 24 \
+  --parallel-jobs 4 \
+  --keep-outcomes nonloss \
+  --actor-scope game \
+  --epsilon-random 0.02 \
+  --flush-every-games 40 \
+  --out-root data/generated_rollout_bc_resource_plan_20260810 \
+  --out-band weak_route_nonloss \
+  --log-dir logs/rule_guided_rollout_20260810 \
+  --out-csv logs/rule_guided_rollout_20260810/rollout_teacher_plan.csv \
+  --skipped-csv logs/rule_guided_rollout_20260810/rollout_teacher_skipped.csv \
+  --out-sh logs/rule_guided_rollout_20260810/run_rollout_teacher_jobs.sh
+```
+
+Then run:
+
+```bash
+bash logs/rule_guided_rollout_20260810/run_rollout_teacher_jobs.sh
+```
+
+Train fresh scratch policies, not fine-tunes, by mixing the generated corpus as
+an overweighted auxiliary corpus. Example for Marnie:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 -u tools/bc2_train.py \
+  --corpus data/bc_corpus_banded_v12_0701_0807 \
+  --aux-corpus data/generated_rollout_bc_resource_plan_20260810 \
+  --aux-repeat 8 \
+  --archetype "Marnie Grimmsnarl" \
+  --score-bands 1000-1099 1100-1199 1200+ \
+  --deck-sig b8f251a476e7 \
+  --arch cross_attn \
+  --state-layers 2 \
+  --width 4 \
+  --epochs 8 \
+  --batch 4096 \
+  --lr 0.0008 \
+  --winner-weight 1.5 \
+  --loser-weight 0.4 \
+  --draw-weight 0.8 \
+  --split-by-game \
+  --save checkpoints/rule_guided_20260810/bc2_marnie_b8f_resource_plan_scratch_w4.npz
+```
+
+For search-teacher output, first filter labels:
+
+```bash
+python3 tools/filter_search_teacher_labels.py \
+  --best-csv 'logs/search_teacher_20260810/*_teacher_best.csv' \
+  --min-delta-score 0.20 \
+  --min-best-score 0.05 \
+  --min-motif-count 2 \
+  --out-csv logs/search_teacher_20260810/high_conf_teacher_labels.csv \
+  --out-jsonl logs/search_teacher_20260810/high_conf_teacher_labels.jsonl
+```

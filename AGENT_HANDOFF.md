@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-11 11:15 Asia/Shanghai.
+Last updated: 2026-08-11 22:10 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -20,6 +20,94 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## DVH Marnie Historical Submission Recheck 2026-08-11
+
+User reported `/tmp/submission_marnie_dvh.tar.gz` on `ks` maintained around
+1000 Kaggle score for roughly four days and asked whether that was just an
+early-climb advantage or whether it truly holds up against the local high pool.
+
+Remote extraction/check:
+
+```text
+submission: /tmp/submission_marnie_dvh.tar.gz
+unpacked policy/deck:
+  logs/dvh_vs_high_20260811/unpack/policy.npz
+  logs/dvh_vs_high_20260811/unpack/deck.csv
+deck_sig: 3121746f2b28
+manifest: logs/dvh_vs_high_20260811/high_plus_dvh_manifest.csv
+```
+
+DVH random:
+
+```text
+logs/dvh_vs_high_20260811/random_dvh_g500.csv
+random_wr=1.000 in eval_manifest_random.py g500
+standalone eval_bc log had 499/500 = 99.8%
+```
+
+DVH plus high1100 RR:
+
+```text
+rr: logs/dvh_vs_high_20260811/rr_dvh_plus_high_g100.csv
+matrix: logs/dvh_vs_high_20260811/rr_dvh_plus_high_g100_arch_matrix.csv
+players-weighted: logs/dvh_vs_high_20260811/rr_dvh_plus_high_g100_ladder0810_players_weighted.csv
+rows-weighted: logs/dvh_vs_high_20260811/rr_dvh_plus_high_g100_ladder0810_rows_weighted.csv
+games: 100 per pair, 9 entries, 36 matchups
+```
+
+Key DVH row from the RR matrix:
+
+```text
+dvh_marnie_3121746f2b28
+macro_avg=0.753
+weighted_avg=0.758
+worst_archetype=Mega Lopunny
+worst_wr=0.680
+vs Alakazam=0.690
+vs Dragapult=0.920
+vs Mega Lopunny=0.680
+vs Mega Lucario=0.690
+vs Teal Mask Ogerpon=0.785
+```
+
+0810 ladder distribution weighted comparison:
+
+```text
+player_entries climb_weighted:
+  dvh_marnie_3121746f2b28              0.7442
+  high1100_marnie_grimmsnarl_b8f251a4 0.7253
+
+decision_rows climb_weighted:
+  dvh_marnie_3121746f2b28              0.7515
+  high1100_marnie_grimmsnarl_b8f251a4 0.7345
+```
+
+Live-loss shadow comparison, using shadows trained from recent opponents that
+beat the submitted high1100 Marnie:
+
+```text
+log: logs/live_loss_shadows_20260811/dvh_vs_high_marnie_live_loss_trained_g200.log
+csv: logs/live_loss_shadows_20260811/dvh_vs_high_marnie_live_loss_trained_g200.csv
+baseline: high_marnie_b8f
+candidate: dvh_marnie_3121746f2b28
+opponents: 6 trained live-loss shadows
+games: 200 per opponent
+
+summary:
+  dvh avg_delta=+0.027
+  dvh candidate_wr=0.732
+  high_marnie_b8f baseline_wr=0.706
+  dvh lost 1/6, worst live_loss_mega_lucario_43d6d8b0fce9 delta=-0.065
+```
+
+Interpretation: DVH's four-day 1000-ish Kaggle behavior is unlikely to be only
+an early-climb artifact. In the local high1100 pool it is at least competitive
+with, and slightly better than, the newly trained high1100 Marnie b8f. The
+important caveat is that DVH uses a different Marnie deck signature
+`3121746f2b28`, so the gain may be deck-list quality as much as policy quality.
+Future Marnie recovery should include this sig/list as a first-class training
+target instead of only retraining `b8f251a476e7`.
 
 ## Ladder Distribution 2026-08-10
 

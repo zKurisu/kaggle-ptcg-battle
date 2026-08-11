@@ -7759,6 +7759,49 @@ Remote operations:
   Marnie b8f and 2c22 trained on 1100+ only over the merged 0701-0810 v12
   corpus.
 
+2026-08-11 current RR pool and high1100 completion:
+
+- `logs/current_rr_pool_20260811` completed:
+  - Training: 44/44 done, no failures.
+  - Random: `random_g500.csv`, 44/44 entries complete.
+  - Primary RR: `rr_primary_g100.csv` and
+    `rr_primary_g100_summary.csv`, 9 primary entries.
+  - `rr_manifest_coverage.csv` was generated with 13 archetype-covering
+    entries, but coverage RR has not been run yet.
+- Current primary RR top candidates:
+  - `cur0810_marnie_grimmsnarl_b8f251a4`: random 0.980, RR
+    avg 0.588, weighted avg 0.587, min 0.480.
+  - `cur0810_mega_lucario_43d6d8b0`: random 0.984, RR avg 0.604,
+    weighted avg 0.476, min 0.400.
+  - `cur0810_festival_lead_e82dcbe6`: random 0.994, RR avg 0.552,
+    weighted avg 0.492, min 0.340.
+  - `cur0810_cynthia_garchomp_52f46739`: random 0.990, weighted avg
+    0.502, but min only 0.130 into Festival, so it is riskier.
+- `logs/high1100_specialists_20260811` completed:
+  - Training: 8/8 done, no failures.
+  - Random: `random_g500.csv`.
+  - RR: `rr_g100.csv` and `rr_g100_summary.csv`.
+- High1100 results:
+  - `high1100_marnie_grimmsnarl_b8f251a4`: random 0.998, RR
+    avg 0.730, weighted avg 0.639, min 0.550, losses 0. This is the
+    current strongest submission candidate.
+  - `high1100_alakazam_7f9a5389`: random 0.992, RR avg 0.690,
+    weighted avg 0.495, min 0.420. Strong second choice, but weak-ish
+    into high Marnie.
+  - `high1100_mega_lucario_43d6d8b0`: random 0.990, RR avg 0.573,
+    but weighted avg only 0.341 because it loses badly to high Marnie.
+  - Do not submit high1100 Ogerpon or high1100 Dragapult from this cohort:
+    random/RR are weak (`Ogerpon` random around 0.84-0.85, `Dragapult`
+    random 0.762 and RR avg 0.247).
+- Recommended submission order if choosing from completed 2026-08-11 jobs:
+  1. `high1100_marnie_grimmsnarl_b8f251a4`
+  2. `high1100_alakazam_7f9a5389`
+  3. `cur0810_mega_lucario_43d6d8b0`
+  4. `cur0810_festival_lead_e82dcbe6`
+  5. `cur0810_marnie_grimmsnarl_b8f251a4` only as an ablation against the
+     high1100 Marnie, not together with it on the same account unless testing
+     same-archetype training-window effects.
+
 ## Update Checklist
 
 Whenever changing active state, update:

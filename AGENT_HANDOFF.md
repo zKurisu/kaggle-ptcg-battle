@@ -7993,6 +7993,92 @@ band weighting:
   candidate" to "local-pool false positive until live-opponent coverage is
   rebuilt".
 
+2026-08-12 high+climb winner retraining implementation:
+
+- Objective:
+  - Test whether `high1100` specialists underperforming early Kaggle ladder is
+    caused by missing 600-1100 climb opponents/decks.
+  - Train from scratch, not fine-tune: all-date 1100+/1200+ data remains the
+    main corpus, and recent 600-1099 winner-only games from stable high-score
+    teams on the same deck sig are added through `--aux-corpus`.
+- Remote workspace:
+  `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804`.
+- Builder script uploaded to:
+  `/tmp/build_high_climb_aux.py`.
+- Source corpus:
+  `data/bc_corpus_banded_v12_0701_0810_merged_hist32_log128_board12_20260811`.
+- High target manifest:
+  `logs/high1100_specialists_20260811/manifest.csv`.
+- Generated auxiliary corpora:
+  - raw:
+    `data/bc_corpus_high_climb_winners_20260812_raw`
+  - balanced:
+    `data/bc_corpus_high_climb_winners_20260812_balanced`
+- Generated logs/manifests:
+  - `logs/high_climbwin_20260812/build_high_climb_aux.log`
+  - `logs/high_climbwin_20260812/stable_high_teams.csv`
+  - `logs/high_climbwin_20260812/aux_file_summary.csv`
+  - `logs/high_climbwin_20260812/aux_deck_sig_summary.csv`
+  - `logs/high_climbwin_20260812/aux_opponent_coverage_balanced.csv`
+  - `logs/high_climbwin_20260812/train_manifest_balanced.csv`
+- Aux construction result:
+  - 8 target deck sigs, 49 stable high teams.
+  - 58 raw/balanced source files.
+  - 283 balanced opponent coverage rows.
+  - Balanced aux rows by sig:
+    - Alakazam `7f9a538936e3`: 6,049 rows / 80 game-file chunks,
+      11 opponent archetypes.
+    - Dragapult `cc2e995b5ad0`: 25,687 rows / 209 chunks,
+      13 opponent archetypes.
+    - Marnie `b8f251a476e7`: 28,663 rows / 350 chunks,
+      13 opponent archetypes.
+    - Marnie `2c22fa761816`: 12,664 rows / 317 chunks,
+      11 opponent archetypes.
+    - Mega Lopunny `f1445356c3a7`: 11,297 rows / 150 chunks,
+      8 opponent archetypes.
+    - Mega Lucario `43d6d8b0fce9`: 4,407 rows / 66 chunks,
+      8 opponent archetypes.
+    - Ogerpon `2bd9da52c43a`: 6,694 rows / 95 chunks,
+      9 opponent archetypes.
+    - Ogerpon `90abbfb0eee0`: no recent same-sig climb-winner aux rows
+      found; training still runs on all-date high main data.
+- Training runner started on ks:
+  - PID family includes `train_shadow_manifest.py
+    logs/high_climbwin_20260812/train_manifest_balanced.csv`.
+  - Runner log: `logs/high_climbwin_20260812/runner.log`.
+  - Per-job logs:
+    `logs/high_climbwin_20260812/train_runner_logs/`.
+  - Checkpoints:
+    `checkpoints/high_climbwin_20260812/w4/`.
+  - GPUs: `0,1,2,3`, one job per GPU, `--cuda-memory-gb 24`,
+    `--batch-size 1024`, width 4 pointer architecture, no `--init`.
+  - First batch launched: Alakazam, Dragapult, Marnie b8f, Marnie 2c22.
+    Dragapult finished quickly and Mega Lopunny was launched next.
+- Post-training evaluation watcher:
+  - Script: `/tmp/run_high_climbwin_eval.sh`.
+  - Log: `logs/high_climbwin_20260812/post_eval.log`.
+  - It waits for the training runner to exit, skips eval if failed jobs are
+    reported, then runs:
+    - `eval_manifest_random.py` 500 games / 32 workers to
+      `logs/high_climbwin_20260812/random_g500.csv`.
+    - `eval_baseline_delta.py` with all highclimb candidates vs
+      `logs/current_rr_pool_20260811/rr_manifest_coverage.csv`, using
+      existing `high1100_marnie_grimmsnarl_b8f251a4` as shared baseline,
+      100 games / 32 workers, output
+      `logs/high_climbwin_20260812/highclimb_vs_coverage_g100.csv`.
+    - `baseline_delta_archetype_matrix.py` to
+      `logs/high_climbwin_20260812/highclimb_vs_coverage_g100_arch_matrix.csv`.
+    - `rr_ladder_weighted_score.py` with 0810 player and decision-row
+      distributions to:
+      `logs/high_climbwin_20260812/highclimb_vs_coverage_g100_ladder0810_players_weighted.csv`
+      and
+      `logs/high_climbwin_20260812/highclimb_vs_coverage_g100_ladder0810_rows_weighted.csv`.
+- Notes:
+  - This is still BC from scratch, not micro-finetuning. It is a data-window
+    repair experiment for the specific high1100 early-ladder failure mode.
+  - `scp` once failed due local system ssh config permissions; explicit
+    `scp -F /home/jie/.ssh/config ... ks:...` worked.
+
 ## Update Checklist
 
 Whenever changing active state, update:

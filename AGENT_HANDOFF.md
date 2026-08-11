@@ -1,13 +1,16 @@
 # Agent Handoff
 
-Last updated: 2026-08-11 09:26 Asia/Shanghai.
+Last updated: 2026-08-11 10:05 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
 ## Workspaces
 
 - Local repo: `/home/jie/Do/0_PTCG/bak/ptcg_rl_git`
-- Local branch: `v7-baseline-20260804`
+- Local branch currently checked out in `/home/jie/Do/0_PTCG/bak/ptcg_rl_git`: `master`.
+  Older handoff entries and the remote workspace name still refer to
+  `v7-baseline-20260804`; do not switch or rewrite branches unless the user
+  explicitly asks.
 - Remote training repo: `ks:/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804`
 - Remote original workspace also exists in older notes: `ks:/home/jie/Do/0_PTCG/workspace/ptcg_rl_git`
 - Current remote training data for active BC experiments:
@@ -95,6 +98,89 @@ paired baseline-delta vs old w4 over strict 2026-08-10 primary pool:
 focused Marnie vs Ogerpon 5899/697 w4, 300 games each:
   logs/bc_retrain_0801_0810_20260811/marnie_0801_0810_vs_ogerpon_w4_g300.csv
   logs/bc_retrain_0801_0810_20260811/marnie_0801_0810_vs_ogerpon_w4_g300.log
+```
+
+### Status Update 2026-08-11 10:05
+
+Important: the original runner did **not** correctly wait for its background
+training jobs. `run_train` returned PIDs from a command substitution/subshell,
+then `wait` reported:
+
+```text
+/tmp/run_bc_retrain_0801_0810_20260811.sh: line 246: wait: pid ... is not a child of this shell
+```
+
+The follow-on `eval_baseline_delta.py` error:
+
+```text
+error: the following arguments are required: --candidate
+```
+
+was caused by the eval stage starting before new checkpoints existed, so no
+candidate args were appended. Treat that as a runner/eval orchestration bug, not
+as evidence that extraction or training failed.
+
+Extraction completed successfully:
+
+```text
+corpus: data/bc_corpus_banded_v12_0801_0810_hist32_log128_board12_20260811
+summary_files: 562
+summary_rows: 7611041
+feature_version: v12_multistream_history
+state_feat: (80,)
+option_feat: (1, 64)
+own_history: (32,)
+log_history: (128,)
+board_history_cards/features: (12, 12)/(12, 32)
+```
+
+Top extracted rows by archetype:
+
+```text
+Marnie_Grimmsnarl 3,093,272
+Alakazam 1,042,480
+Mega_Lopunny 910,303
+Teal_Mask_Ogerpon 700,478
+Dragapult 662,126
+Crustle_Wall 393,796
+```
+
+Actual training status at 2026-08-11 10:05:
+
+```text
+Marnie w4legacy_b256: running, epoch 5/7 in progress.
+Marnie v12hist_init_b1536: running, epoch 2/8 in progress; epoch 1 val=0.5195.
+Marnie v12hist_scratch_b1536: running, epoch 2/10 in progress; epoch 1 val=0.6304.
+Ogerpon 5899 w4legacy: complete, best val=0.6389 at epoch 6/7.
+Ogerpon 697 w4legacy: complete, best val=0.9626 at epoch 6/7.
+```
+
+Ogerpon random g500 on the freshly retrained models:
+
+```text
+5899 new 0801-0810: 497/500 = 99.4%
+697 new 0801-0810:  487/500 = 97.4%
+old w4 5899 in the premature runner eval: 499/500 = 99.8%
+old w4 697 in the premature runner eval:  492/500 = 98.4%
+```
+
+A corrected post-eval watcher has been uploaded and started:
+
+```text
+remote script: /tmp/run_bc_retrain_0801_0810_posteval_20260811.sh
+runner log: logs/bc_retrain_0801_0810_20260811/posteval_runner.log
+posteval dir: logs/bc_retrain_0801_0810_20260811/posteval
+```
+
+It is idempotent: existing logs are skipped. It immediately runs Ogerpon strict
+pool/focused deltas, then waits until all Marnie training processes exit before
+running Marnie random and paired delta tests.
+
+Monitor the corrected watcher:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/bc_retrain_0801_0810_20260811/posteval_runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "bc2_train.py.*bc_retrain_0801_0810_20260811|run_bc_retrain_0801_0810_posteval" || true'
 ```
 
 Initial status at launch:

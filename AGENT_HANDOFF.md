@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-11 10:32 Asia/Shanghai.
+Last updated: 2026-08-11 11:15 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -20,6 +20,101 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## Ladder Distribution 2026-08-10
+
+User asked why Ogerpon is still struggling on Kaggle ladder. A single-day
+distribution analysis over the extracted v12 0801-0810 corpus was run for
+`pokemon-tcg-ai-battle-episodes-2026-08-10`.
+
+Important caveat: scores/bands are from the leaderboard snapshot used in the
+0811 extraction, not necessarily the exact score at episode time.
+
+Remote script:
+
+```text
+/tmp/analyze_0810_ladder_distribution.py
+```
+
+Outputs:
+
+```text
+logs/ladder_distribution_0810_20260811/summary.log
+logs/ladder_distribution_0810_20260811/archetype_summary_0810.csv
+logs/ladder_distribution_0810_20260811/band_archetype_players_0810.csv
+logs/ladder_distribution_0810_20260811/band_archetype_rows_0810.csv
+logs/ladder_distribution_0810_20260811/deck_sig_summary_0810.csv
+```
+
+0810 coverage:
+
+```text
+players_600+: 9065 episode-player entries
+decision_rows_600+: 743737
+max_score in this snapshot: 1185.7
+no 1200+ band in this extracted snapshot
+```
+
+Archetype distribution by episode-player entries, 600+:
+
+```text
+Marnie Grimmsnarl      2664 29.39%, max 1182.0
+Alakazam               1761 19.43%, max 1175.1
+Teal Mask Ogerpon      1067 11.77%, max 1182.0
+Mega Lopunny           1028 11.34%, max 1131.8
+Dragapult               836  9.22%, max 1163.0
+Crustle Wall            526  5.80%, max 1119.5
+Mega Lucario            366  4.04%, max 1185.7
+Festival Lead           364  4.02%, max 1103.8
+```
+
+High band 1100-1199:
+
+```text
+Mega Lucario          23.79%
+Marnie Grimmsnarl     20.89%
+Teal Mask Ogerpon     19.20%
+Dragapult             12.32%
+Mega Lopunny          11.02%
+Alakazam               3.60%
+Crustle Wall           2.83%
+```
+
+Mid band 1000-1099:
+
+```text
+Marnie Grimmsnarl     28.08%
+Alakazam              23.15%
+Dragapult             12.90%
+Mega Lopunny          12.51%
+Teal Mask Ogerpon      9.25%
+Festival Lead          7.09%
+Crustle Wall           3.98%
+```
+
+Ogerpon-specific finding:
+
+```text
+Top 0810 Ogerpon signatures by max score:
+90abbfb0eee0  max=1182.0, players=116, WR=0.690, team=palsystem
+2bd9da52c43a  max=1164.3, players= 95, WR=0.600, team=James Cox & Henry Chao
+d17573abc0e3  max=1163.0, players= 63, WR=0.667, team=Sixth Sense
+cc81a7ad2d24  max=1152.8, players= 12, WR=0.583, team=Sixth Sense
+85d941c82b94  max=1059.5, players=122, WR=0.598
+6205fc379380  max=1058.9, players=186, WR=0.575
+4fc9a6206c93  max=1048.9, players= 98, WR=0.577
+
+Old/local Ogerpon sigs:
+697a82e582d5  max=1039.6, players=175, WR=0.474
+5899c772bace  max= 965.2, players= 33, WR=0.303
+```
+
+Interpretation: Ogerpon as an archetype is not dead; it is 19.2% of the
+1100-1199 band in this snapshot. The problem is that the old `5899/697`
+signatures are no longer representative of the current high-performing Ogerpon
+population. Future Ogerpon work should prioritize extracting/training/evaluating
+`90abbfb0eee0`, `2bd9da52c43a`, `d17573abc0e3`, and `cc81a7ad2d24` before
+spending more submission attempts on old `5899/697`.
 
 ## Active Remote Job: BC Recovery Retrain 2026-08-11
 

@@ -8073,6 +8073,21 @@ band weighting:
       `logs/high_climbwin_20260812/highclimb_vs_coverage_g100_ladder0810_players_weighted.csv`
       and
       `logs/high_climbwin_20260812/highclimb_vs_coverage_g100_ladder0810_rows_weighted.csv`.
+- DVH comparison watcher:
+  - User noted DVH should remain a reference baseline after this experiment.
+  - Script uploaded to `/tmp/run_high_climbwin_dvh_compare.sh`.
+  - Log: `logs/high_climbwin_20260812/dvh_compare.log`.
+  - It waits for
+    `logs/high_climbwin_20260812/highclimb_vs_coverage_g100.csv`, then runs
+    `dvh_marnie_b8f` from
+    `logs/dvh_vs_high_20260811/unpack/policy.npz` +
+    `logs/dvh_vs_high_20260811/unpack/deck.csv` against the same
+    `logs/current_rr_pool_20260811/rr_manifest_coverage.csv` opponent pool
+    using `eval_round_robin.py --candidate-only`, 100 games / 32 workers.
+  - It then joins DVH WR with the highclimb candidate CSV and writes:
+    - `logs/high_climbwin_20260812/dvh_vs_coverage_g100.csv`
+    - `logs/high_climbwin_20260812/highclimb_vs_dvh_g100_join.csv`
+    - `logs/high_climbwin_20260812/highclimb_vs_dvh_g100_summary.csv`
 - Notes:
   - This is still BC from scratch, not micro-finetuning. It is a data-window
     repair experiment for the specific high1100 early-ladder failure mode.

@@ -7802,6 +7802,70 @@ Remote operations:
      high1100 Marnie, not together with it on the same account unless testing
      same-archetype training-window effects.
 
+2026-08-11 submission selection refined with coverage matrix and 0810 ladder
+band weighting:
+
+- Added helper tools:
+  - `tools/rr_archetype_matrix.py`: converts `eval_round_robin.py` pairwise
+    CSV into deck-vs-opponent-archetype matrices.
+  - `tools/rr_ladder_weighted_score.py`: weights an archetype matrix by a
+    score-band ladder distribution and a climb-sensitive multiplier.
+  - `tools/baseline_delta_archetype_matrix.py`: converts
+    `eval_baseline_delta.py` output into candidate-vs-opponent-archetype
+    matrices.
+- 0810 ladder distribution source:
+  - `logs/ladder_distribution_0810_20260811/archetype_summary_0810.csv`
+  - `logs/ladder_distribution_0810_20260811/band_archetype_players_0810.csv`
+  - `logs/ladder_distribution_0810_20260811/band_archetype_rows_0810.csv`
+- Important 0810 distribution facts:
+  - Overall player entries: Marnie 29.4%, Alakazam 19.4%, Ogerpon 11.8%,
+    Lopunny 11.3%, Dragapult 9.2%, Crustle 5.8%, Lucario 4.0%.
+  - 1100-1199 player entries: Lucario 23.8%, Marnie 20.9%, Ogerpon 19.2%,
+    Dragapult 12.3%, Lopunny 11.0%.
+  - 900-999 player entries: Marnie 38.2%, Alakazam 21.6%, Lopunny 11.5%,
+    Crustle 11.1%, Ogerpon 7.7%.
+  - 800-899 player entries: Ogerpon 27.4%, Marnie 22.4%, Alakazam 17.6%,
+    Other 10.8%, Dragapult 8.4%.
+  - 600/700 bands are small and noisy, but early-score impact is large, so
+    use them in a climb-sensitive view without letting them fully dominate.
+- Current coverage RR:
+  - Manifest: `logs/current_rr_pool_20260811/rr_manifest_coverage.csv`
+  - RR: `logs/current_rr_pool_20260811/rr_coverage_g100.csv`
+  - Archetype matrix:
+    `logs/current_rr_pool_20260811/rr_coverage_g100_arch_matrix.csv`
+  - 0810 weighted outputs:
+    `logs/current_rr_pool_20260811/rr_coverage_g100_ladder0810_players_weighted.csv`
+    and `..._rows_weighted.csv`
+- Coverage matrix showed that current Alakazam's high broad average is partly
+  misleading: it is 0.040 vs current TR Mewtwo. Because TR Mewtwo is rare, it
+  still ranks high by 0810 climb weight, but this is a real hard-risk matchup.
+- High-vs-coverage audit:
+  - Log/CSV:
+    `logs/current_rr_pool_20260811/high_vs_coverage/high_vs_current_marnie_coverage_g100.log`
+    and `.csv`
+  - Matrix:
+    `logs/current_rr_pool_20260811/high_vs_coverage/high_vs_coverage_arch_matrix.csv`
+  - Weighted:
+    `logs/current_rr_pool_20260811/high_vs_coverage/high_vs_coverage_ladder0810_players_weighted.csv`
+    and `..._rows_weighted.csv`
+  - `high_marnie`: 13/13 matchup wins vs coverage, macro 0.760,
+    0810 climb-weighted 0.757 (players) / 0.763 (rows), worst archetype
+    Festival 0.550. This is the strongest current submission candidate.
+  - `high_alakazam`: macro 0.732, climb-weighted 0.684 (players) /
+    0.676 (rows), but worst TR Mewtwo 0.380. It is still second-best, but
+    has a clear rare hard-risk matchup.
+  - `high_lucario`: macro 0.593 and weighted delta negative vs current
+    Marnie; not recommended for submission from this wave.
+  - `high_lopunny`: macro 0.587 and weighted delta negative vs current
+    Marnie; not recommended for submission from this wave.
+- Updated recommended submission order from 2026-08-11 trained models:
+  1. `high1100_marnie_grimmsnarl_b8f251a4`
+  2. `high1100_alakazam_7f9a5389`
+  3. `cur0810_festival_lead_e82dcbe6` as a diversified probe, not because it
+     beats high Marnie.
+  4. `cur0810_marnie_grimmsnarl_b8f251a4` only if explicitly comparing
+     current-window Marnie vs high1100 Marnie.
+
 ## Update Checklist
 
 Whenever changing active state, update:

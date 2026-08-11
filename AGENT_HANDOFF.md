@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-11 10:22 Asia/Shanghai.
+Last updated: 2026-08-11 10:32 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -230,6 +230,55 @@ At g200, the 0801-0810 retrain is not a clear replacement for old 5899 w4. The
 new 697 has a tiny broad-pool gain, but its random was lower (`97.4%`) and it
 did not materially solve Crustle. For submission, treat both as probes, not as a
 strong upgrade over old w4.
+
+Marnie `b8f251a476e7` w4legacy early eval finished before the history models:
+
+```text
+checkpoint:
+  checkpoints/bc_retrain_0801_0810_20260811/bc2_marnie_b8f_w4legacy_0801_0810_b256.npz
+training:
+  complete epoch 7/7, best val=0.6629
+random:
+  logs/bc_retrain_0801_0810_20260811/posteval/marnie_w4legacy_early_random_g500.log
+  500/500 = 100.0%
+strict primary pool:
+  logs/bc_retrain_0801_0810_20260811/posteval/marnie_w4legacy_early_vs_old_w4_primary_g200.csv
+  avg_delta=+0.029, weighted_delta=+0.036
+  candidate=0.623, old_w4_baseline=0.594, lost=3/15
+focused Ogerpon:
+  logs/bc_retrain_0801_0810_20260811/posteval/marnie_w4legacy_early_vs_ogerpon_g300.csv
+  avg_delta=+0.005, candidate=0.163, baseline=0.158, lost=2/4
+```
+
+Strict g200 notable rows:
+
+```text
+largest gains:
+  festival_lead_sig1: +0.115
+  cynthia_garchomp_sig1: +0.100
+  festival_lead_sig3: +0.080
+  mega_lopunny_sig2: +0.075
+  teal_mask_ogerpon_sig3_5899: +0.055
+
+largest losses:
+  mega_lopunny_sig3: -0.075
+  alakazam_sig1: -0.060
+  marnie_sig2: -0.010
+```
+
+Focused Ogerpon g300 rows:
+
+```text
+ogerpon5899_old: +0.013, 0.190 vs 0.177
+ogerpon697_old:  -0.010, 0.163 vs 0.173
+ogerpon5899_new: -0.017, 0.113 vs 0.130
+ogerpon697_new:  +0.033, 0.187 vs 0.153
+```
+
+Interpretation: the Marnie 0801-0810 w4legacy retrain is a plausible broad-pool
+upgrade over old w4, unlike Ogerpon 5899 where g200 erased the apparent g80
+gain. It still does not solve the Ogerpon structural weakness; focused WR
+remains around 16%.
 
 Monitor the corrected Marnie watcher:
 

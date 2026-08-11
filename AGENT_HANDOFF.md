@@ -7727,6 +7727,38 @@ Remote operations:
 - A stale old high1100 `--stage plan` process from the first inefficient
   recovery attempt was killed (`kill 3404369`). Do not restart that old form.
 
+2026-08-11 Marnie b8f w4legacy 0801-0810 score-drop diagnosis:
+
+- User reported packaged
+  `marnie_b8f_w4legacy_0801_0810_b256` only stayed around 700+ Kaggle score,
+  far below the previous 960+ Marnie result, and asked whether samples below
+  900 were accidentally mixed in.
+- Checked remote log:
+  `logs/bc_retrain_0801_0810_20260811/train_marnie_b8f_w4legacy_0801_0810_b256.log`
+- It did not train on bands below 900. The actual `BC2:` line is:
+  `Marnie Grimmsnarl ['1200+', '1100-1199', '1000-1099', '900-999']`
+  with `date_from=2026-08-01`, `date_to=2026-08-10`, and
+  `deck_sigs=['b8f251a476e7']`.
+- The 30 loaded files are 10 days times the available 1100/1000/900 bands.
+  No 800/700/600 files were loaded by that training command, even though those
+  files exist in the corpus directory.
+- Exact row/outcome count for b8f in v12 0801-0810:
+  - 1100-1199: 400,476 rows, WR 0.5538.
+  - 1000-1099: 768,668 rows, WR 0.5187.
+  - 900-999: 919,495 rows, WR 0.4704.
+  - 900+ total: 2,088,639 rows, 1,052,961 win rows, 1,034,613 loss rows,
+    1,065 draw rows.
+  - Below 900 rows for the same sig exist in the corpus: 450,833 rows, but
+    were not used by this run.
+- Current interpretation: this score drop is not caused by accidental <900
+  samples. More likely, "0801-0810 900+ non-winner-only" is a much noisier
+  label mix for b8f in the changed 0810 environment; the 900-999 band alone is
+  huge and losing-biased. Do not use this checkpoint as a strong submission
+  candidate unless later RR/random/Kaggle evidence reverses this.
+- The already-started high1100 cohort directly tests the cleaner alternative:
+  Marnie b8f and 2c22 trained on 1100+ only over the merged 0701-0810 v12
+  corpus.
+
 ## Update Checklist
 
 Whenever changing active state, update:

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-11 10:12 Asia/Shanghai.
+Last updated: 2026-08-11 10:22 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -200,7 +200,7 @@ Interpretation: the 0801-0810 Ogerpon 5899 retrain improves broad strict-pool
 RR signal but does not solve the Crustle weakness. The 697 retrain is weaker on
 the broad pool, although it slightly improves one Crustle focused row.
 
-A higher-confidence Ogerpon paired delta has also been started:
+A higher-confidence Ogerpon paired delta finished:
 
 ```text
 remote script: /tmp/run_ogerpon_rr_g200_20260811.sh
@@ -208,17 +208,34 @@ runner log: logs/bc_retrain_0801_0810_20260811/posteval/ogerpon_primary_g200_run
 outputs:
   logs/bc_retrain_0801_0810_20260811/posteval/ogerpon5899_0801_0810_vs_old_w4_primary_g200.{csv,log}
   logs/bc_retrain_0801_0810_20260811/posteval/ogerpon697_0801_0810_vs_old_w4_primary_g200.{csv,log}
-status at 2026-08-11 10:12:
-  running two eval_baseline_delta jobs in parallel, each using games=200,
-  workers=24, strict primary RR pool.
+status at 2026-08-11 10:17:
+  complete, both rc=0.
+
+5899 vs old w4, strict primary pool g200:
+  avg_delta=-0.0043, weighted_delta=-0.0144
+  candidate=0.5537, baseline=0.5580, lost=8/15
+  worst=cynthia_garchomp_sig1_52f46739:-0.0900
+  other losses include Ogerpon 697 mirror -0.0750 and Alakazam sig3 -0.0450
+  best=festival_lead_sig3 +0.0750, marnie_sig2 +0.0750
+
+697 vs old w4, strict primary pool g200:
+  avg_delta=+0.0073, weighted_delta=+0.0037
+  candidate=0.5340, baseline=0.5267, lost=6/15
+  worst=marnie_sig1 -0.0650 and alakazam_sig3 -0.0650
+  best=Ogerpon 697 mirror +0.1200 and Ogerpon 5899 mirror +0.0750
 ```
 
-Monitor the corrected watcher:
+Interpretation update: the earlier 5899 g80 improvement was mostly variance.
+At g200, the 0801-0810 retrain is not a clear replacement for old 5899 w4. The
+new 697 has a tiny broad-pool gain, but its random was lower (`97.4%`) and it
+did not materially solve Crustle. For submission, treat both as probes, not as a
+strong upgrade over old w4.
+
+Monitor the corrected Marnie watcher:
 
 ```bash
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/bc_retrain_0801_0810_20260811/posteval_runner.log'
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "bc2_train.py.*bc_retrain_0801_0810_20260811|run_bc_retrain_0801_0810_posteval" || true'
-ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/bc_retrain_0801_0810_20260811/posteval/ogerpon_primary_g200_runner.log'
 ```
 
 Initial status at launch:

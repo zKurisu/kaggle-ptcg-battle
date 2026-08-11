@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-11 10:05 Asia/Shanghai.
+Last updated: 2026-08-11 10:12 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -176,11 +176,49 @@ It is idempotent: existing logs are skipped. It immediately runs Ogerpon strict
 pool/focused deltas, then waits until all Marnie training processes exit before
 running Marnie random and paired delta tests.
 
+Ogerpon g80/g300 post-eval results already produced:
+
+```text
+5899 vs old w4, strict primary pool g80:
+  avg_delta=+0.0508, candidate=0.5808, baseline=0.5300, lost=3/15
+  worst=marnie_grimmsnarl_sig2_2c22fa76:-0.0375
+  best=alakazam_sig3_91f48d8e:+0.2000
+
+697 vs old w4, strict primary pool g80:
+  avg_delta=-0.0175, candidate=0.5192, baseline=0.5367, lost=9/15
+  worst=festival_lead_sig1_e82dcbe6:-0.1625
+  best=marnie_grimmsnarl_sig1_b8f251a4:+0.0875
+
+5899 vs Crustle focused g300:
+  avg_delta=-0.0133, candidate=0.0250, baseline=0.0383, lost=2/2
+
+697 vs Crustle focused g300:
+  avg_delta=+0.0100, candidate=0.0550, baseline=0.0450, lost=1/2
+```
+
+Interpretation: the 0801-0810 Ogerpon 5899 retrain improves broad strict-pool
+RR signal but does not solve the Crustle weakness. The 697 retrain is weaker on
+the broad pool, although it slightly improves one Crustle focused row.
+
+A higher-confidence Ogerpon paired delta has also been started:
+
+```text
+remote script: /tmp/run_ogerpon_rr_g200_20260811.sh
+runner log: logs/bc_retrain_0801_0810_20260811/posteval/ogerpon_primary_g200_runner.log
+outputs:
+  logs/bc_retrain_0801_0810_20260811/posteval/ogerpon5899_0801_0810_vs_old_w4_primary_g200.{csv,log}
+  logs/bc_retrain_0801_0810_20260811/posteval/ogerpon697_0801_0810_vs_old_w4_primary_g200.{csv,log}
+status at 2026-08-11 10:12:
+  running two eval_baseline_delta jobs in parallel, each using games=200,
+  workers=24, strict primary RR pool.
+```
+
 Monitor the corrected watcher:
 
 ```bash
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/bc_retrain_0801_0810_20260811/posteval_runner.log'
 ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "bc2_train.py.*bc_retrain_0801_0810_20260811|run_bc_retrain_0801_0810_posteval" || true'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 80 logs/bc_retrain_0801_0810_20260811/posteval/ogerpon_primary_g200_runner.log'
 ```
 
 Initial status at launch:

@@ -7632,6 +7632,101 @@ Remote operations:
     active package files. The active package files are under `ptcg_rl/` and
     `tools/`.
 
+2026-08-11 current RR pool rebuild:
+
+- User requested rebuilding a current RR pool using all current/new decks and
+  all archetypes, with date windows adjusted for enough data, then random and
+  RR testing.
+- Remote runner uploaded to:
+  - `/tmp/current_rr_pool_runner_20260811.py`
+- Active remote background command:
+  - PID observed: `3396773`
+  - Log: `logs/current_rr_pool_20260811/runner.log`
+  - Command started from remote repo:
+    `python3 -u /tmp/current_rr_pool_runner_20260811.py --stage all --top-per-arch 2 --cap-per-arch 6 --target-rows 120000 --min-train-rows 15000 --min-launch-rows 2500 --gpus 0,3 --max-parallel 2 --cuda-memory-gb 12 --batch-size 512 --random-workers 32 --rr-workers 32 --rr-games 100`
+- Selection source:
+  - `logs/ladder_distribution_0810_20260811/deck_sig_summary_0810.csv`
+  - Existing deck dirs plus recovered 0810 deck CSVs under
+    `logs/current_rr_pool_20260811/decks_extra`.
+- Corpus:
+  - `data/bc_corpus_banded_v12_0801_0810_hist32_log128_board12_20260811`
+  - v12 dims observed earlier: state 80, option 64.
+- Plan output:
+  - `logs/current_rr_pool_20260811/current_deck_plan.csv`
+  - 56 selected current signatures, 15 archetypes, 44 trainable with
+    `selected_rows >= 2500`, no missing deck paths.
+  - Per-archetype selected counts: Alakazam 6, Archaludon 1, Crustle Wall 6,
+    Cynthia Garchomp 3, Dragapult 6, Festival Lead 6, Iono Bellibolt 1,
+    Marnie Grimmsnarl 6, Mega Lopunny 2, Mega Lucario 2, Mega Starmie 2,
+    N's Zoroark 2, Other 4, Teal Mask Ogerpon 6, Team Rocket Mewtwo 3.
+  - Important current Ogerpon sigs included: `90abbfb0eee0`,
+    `2bd9da52c43a`, `d17573abc0e3`, `cc81a7ad2d24`, `85d941c82b94`,
+    `6205fc379380`.
+- Pipeline outputs when complete:
+  - Checkpoints: `checkpoints/current_rr_pool_20260811/w4/*.npz`
+  - Manifest: `logs/current_rr_pool_20260811/candidate_manifest.csv`
+  - Random audit: `logs/current_rr_pool_20260811/random_g500.csv`
+  - Primary RR manifest: `logs/current_rr_pool_20260811/rr_manifest_primary.csv`
+  - Primary RR: `logs/current_rr_pool_20260811/rr_primary_g100.csv`
+  - Summary: `logs/current_rr_pool_20260811/rr_primary_g100_summary.csv`
+- Quick status commands:
+  - `ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -80 logs/current_rr_pool_20260811/runner.log'`
+  - `ssh ks 'pgrep -af "current_rr_pool_runner_20260811|bc2_train.py.*current_rr_pool"'`
+  - `ssh ks 'nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits'`
+
+2026-08-11 high-purity 1100+ all-date specialist cohort:
+
+- User asked whether exact deck-sigs with 1100+ data from July through 0810 can
+  be trained and whether this can transfer to climbing from 600+. Current
+  working assumption: yes, as a separate high-purity specialist cohort, but it
+  must pass random/RR because pure 1100+ labels may under-cover lower-ladder
+  weird states.
+- Remote runner uploaded to:
+  - `/tmp/high1100_specialist_runner_20260811.py`
+- It builds a non-duplicated symlink corpus:
+  - Early source: `data/bc_corpus_banded_v12_0701_0807_hist32_log128_board12`
+  - Late source: `data/bc_corpus_banded_v12_0801_0810_hist32_log128_board12_20260811`
+  - Merged output:
+    `data/bc_corpus_banded_v12_0701_0810_merged_hist32_log128_board12_20260811`
+  - Feature dims checked: early and late are both state 80 / option 64,
+    feature_version `v12_multistream_history`.
+- Plan output:
+  - `logs/high1100_specialists_20260811/plan.csv`
+  - 8 entries:
+    - Stable July-to-0810 exact sigs:
+      - Alakazam `7f9a538936e3`, 1,324,654 1100+ rows,
+        2026-07-10..2026-08-10.
+      - Dragapult `cc2e995b5ad0`, 91,955 1100+ rows,
+        2026-07-26..2026-08-10.
+      - Marnie `b8f251a476e7`, 1,070,137 1100+ rows,
+        2026-07-20..2026-08-10.
+      - Marnie `2c22fa761816`, 201,719 1100+ rows,
+        2026-07-05..2026-08-10.
+    - Current high 1100+ exact sigs with enough rows but not July-stable:
+      - Mega Lopunny `f1445356c3a7`, 136,114 rows,
+        2026-08-02..2026-08-10.
+      - Mega Lucario `43d6d8b0fce9`, 121,781 rows,
+        2026-08-02..2026-08-10.
+      - Ogerpon `90abbfb0eee0`, 22,719 rows,
+        2026-08-06..2026-08-10.
+      - Ogerpon `2bd9da52c43a`, 28,444 rows,
+        2026-08-06..2026-08-10.
+- Active remote background command:
+  - PID observed: `3407914`
+  - Log: `logs/high1100_specialists_20260811/runner.log`
+  - Command:
+    `python3 -u /tmp/high1100_specialist_runner_20260811.py --stage all --include-current-high --min-1100-rows 15000 --min-current-high-rows 15000 --cap-per-arch 2 --wait-for-current-training --gpus 0,3 --max-parallel 2 --cuda-memory-gb 12 --batch-size 512 --random-workers 32 --rr-workers 32`
+  - It waits until no `bc2_train.py.*checkpoints/current_rr_pool_20260811`
+    processes are running, then trains on GPU 0/3.
+- Pipeline outputs when complete:
+  - Checkpoints: `checkpoints/high1100_specialists_20260811/w4/*.npz`
+  - Manifest: `logs/high1100_specialists_20260811/manifest.csv`
+  - Random audit: `logs/high1100_specialists_20260811/random_g500.csv`
+  - RR: `logs/high1100_specialists_20260811/rr_g100.csv`
+  - Summary: `logs/high1100_specialists_20260811/rr_g100_summary.csv`
+- A stale old high1100 `--stage plan` process from the first inefficient
+  recovery attempt was killed (`kill 3404369`). Do not restart that old form.
+
 ## Update Checklist
 
 Whenever changing active state, update:

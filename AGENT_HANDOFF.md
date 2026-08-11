@@ -7866,6 +7866,45 @@ band weighting:
   4. `cur0810_marnie_grimmsnarl_b8f251a4` only if explicitly comparing
      current-window Marnie vs high1100 Marnie.
 
+2026-08-11 correction after actual Kaggle replay for
+`high1100_marnie_grimmsnarl_b8f251a4`:
+
+- Submission:
+  - `55424557`, message `bc: high1100_marnie_b8f251a4_0811`, public score
+    885.2 at inspection time.
+  - The first replay is Kaggle self-validation/self-play and should not be
+    counted as ladder performance.
+- Replay analysis outputs on ks:
+  - `logs/kaggle_replay_0811_high1100_marnie/jie_55424557_high1100_marnie_rows_teamname.csv`
+  - `logs/kaggle_replay_0811_high1100_marnie/jie_55424557_high1100_marnie_by_deck_teamname.csv`
+  - `logs/kaggle_replay_0811_high1100_marnie/jie_55424557_high1100_marnie_path_teamname.chronological.csv`
+  - Cached replay JSONs under `logs/kaggle_replays_recent_cache_fast/55424557/`.
+- Effective ladder games after excluding the self-validation ambiguity:
+  46 known games, 29-17, 63.0% WR. By rough chronological climb phase:
+  early 6-3, mid 10-5, late 13-9. This is far below the local
+  high-vs-coverage expectation (~0.76 macro / ~0.757 climb-weighted).
+- Enriched loss attribution:
+  - Mirror/Marnie: 4-5, including same `b8f251a4` mirrors at 3-4.
+  - Alakazam: 6-4 after reclassifying unnamed Alakazam signatures.
+  - Mega Starmie: 1-2 after reclassifying unnamed Starmie signatures.
+  - Teal Mask Ogerpon: 1-2.
+  - Archaludon: 3-2, with two losses; Archaludon is not yet in the main
+    `deck_plans.py` label set, so it can leak into `Other`.
+  - Crustle: 1-1, Lucario: 2-1.
+- Interpretation:
+  - The earlier local coverage pool underrepresented live same-sig Marnie
+    mirrors, unnamed Alakazam/Starmie variants, and Archaludon. Local RR
+    therefore overestimated `high1100_marnie_b8f251a4`.
+  - The issue is not simply "missing 900-1100 samples". The current-window
+    `cur0810_marnie_b8f251a4` used 2026-08-10 900/1000/1100 bands but was
+    not enough to recover Kaggle strength. Future Marnie retraining should
+    be a new large recipe: all-date 1100+ plus recent 900-1100 winner-only
+    and explicit mirror/Alakazam/Starmie/Archaludon coverage, with those
+    opponents included in validation.
+- Downgrade `high1100_marnie_b8f251a4` from "strongest current submission
+  candidate" to "local-pool false positive until live-opponent coverage is
+  rebuilt".
+
 ## Update Checklist
 
 Whenever changing active state, update:

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-10 14:53 Asia/Shanghai.
+Last updated: 2026-08-11 09:26 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -17,6 +17,182 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## Active Remote Job: BC Recovery Retrain 2026-08-11
+
+User asked to recover historical strong BC behavior after the ladder shifted and
+new August episodes were added. This is BC retraining on an August-only window,
+not weak-matchup fine-tuning. The target is to reproduce/refresh previously good
+Marnie `b8f251a476e7` lines:
+
+- old `w4_marnie_sig1_b8f251a4`
+- old `marnie_b8f_v12hist_bigbatch_b1536_20260809`
+
+Remote runner:
+
+```text
+script: /tmp/run_bc_retrain_0801_0810_20260811.sh
+repo: /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+raw episodes: /home/jie/Do/0_PTCG/workspace/episodes_raw
+episode window: 2026-08-01 through 2026-08-10, 10 zip files
+leaderboard: /tmp/lb_0811_bc_retrain/leaderboard.csv
+leaderboard source: pokemon-tcg-ai-battle-publicleaderboard-2026-08-11T01:19:26.csv, 6717 teams
+corpus: data/bc_corpus_banded_v12_0801_0810_hist32_log128_board12_20260811
+log dir: logs/bc_retrain_0801_0810_20260811
+checkpoint dir: checkpoints/bc_retrain_0801_0810_20260811
+runner log: logs/bc_retrain_0801_0810_20260811/runner.log
+extract log: logs/bc_retrain_0801_0810_20260811/extract_v12_0801_0810_hist32_log128_board12.log
+```
+
+The runner first extracts a fresh v12 multistream-history corpus from only
+`2026-08-01..2026-08-10` with:
+
+```text
+workers=10
+action_history_k=32
+log_history_k=128
+board_history_k=12
+board_history_feat_dim=32
+```
+
+After extraction completes, it launches three parallel Marnie `b8f251a476e7`
+BC trainings:
+
+```text
+1. w4legacy_b256 on GPU0
+   save: checkpoints/bc_retrain_0801_0810_20260811/bc2_marnie_b8f_w4legacy_0801_0810_b256.npz
+   recipe: old v11all35 w4 objective, pointer/width=4, batch=256, epochs=7,
+           lr=8e-5, score bands 900+, win/loss/draw=1.5/0.4/0.8,
+           first_action=1.6, option=0.2, set_loss=0.12,
+           MAIN/ATTACH/SKILL_ORDER and EVOLVE/ATTACK weights preserved.
+
+2. v12hist_init_b1536 on GPU1
+   save: checkpoints/bc_retrain_0801_0810_20260811/bc2_marnie_b8f_v12hist_cross_init_0801_0810_b1536.npz
+   recipe: historical 2026-08-09 big-batch objective, cross_attn/width=4,
+           state_layers=2, history/log/board history enabled, batch=1536,
+           epochs=8, lr=3e-5, 56GiB cap, split-by-game.
+   init: checkpoints/v12_history_pilots_20260807/bc2_marnie_b8f_v12hist_cross_init.npz
+   note: this init variant is included because it exactly reproduces the old
+         good bigbatch recipe; it should not be confused with weak-matchup
+         fine-tuning.
+
+3. v12hist_scratch_b1536 on GPU2
+   save: checkpoints/bc_retrain_0801_0810_20260811/bc2_marnie_b8f_v12hist_cross_scratch_0801_0810_b1536.npz
+   recipe: same v12 history/cross_attn data path but no init, epochs=10,
+           lr=8e-5, batch=1536, split-by-game.
+```
+
+Automatic post-eval after training:
+
+```text
+random g500 for old w4 and all new checkpoints:
+  logs/bc_retrain_0801_0810_20260811/random_*.log
+
+paired baseline-delta vs old w4 over strict 2026-08-10 primary pool:
+  logs/bc_retrain_0801_0810_20260811/marnie_0801_0810_vs_old_w4_primary_g80.csv
+  logs/bc_retrain_0801_0810_20260811/marnie_0801_0810_vs_old_w4_primary_g80.log
+
+focused Marnie vs Ogerpon 5899/697 w4, 300 games each:
+  logs/bc_retrain_0801_0810_20260811/marnie_0801_0810_vs_ogerpon_w4_g300.csv
+  logs/bc_retrain_0801_0810_20260811/marnie_0801_0810_vs_ogerpon_w4_g300.log
+```
+
+Initial status at launch:
+
+```text
+started: 2026-08-11 09:19 Asia/Shanghai
+runner pid observed: 3228423
+extract parent observed: 3228486
+GPU before train: all four A800 effectively free, ~81GiB free each
+RAM before extract: ~39GiB used, ~962GiB available
+```
+
+Monitor:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/bc_retrain_0801_0810_20260811/runner.log'
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 120 logs/bc_retrain_0801_0810_20260811/extract_v12_0801_0810_hist32_log128_board12.log'
+ssh ks 'pgrep -af "run_bc_retrain_0801_0810_20260811|bc_extract_v2.py|bc2_train.py"'
+ssh ks 'nvidia-smi --query-gpu=index,memory.used,memory.free,utilization.gpu --format=csv,noheader,nounits'
+```
+
+### Ogerpon Add-On 2026-08-11
+
+User also asked whether any locally strong Ogerpon decks should be retrained on
+the same `2026-08-01..2026-08-10` data. Local strict RR evidence:
+
+```text
+logs/eval_deck_sig_specialists_v11all35_20260806/random_w4_all39_g200_joined.csv
+logs/eval_deck_sig_specialists_v11all35_20260806/rr_w4_random_ge097_g80_summary.txt
+logs/rr_pool_filters_20260810/w4_env0809_strict/rr_pool_primary.csv
+
+5899c772bace:
+  old w4 random: 200/200 = 1.000
+  old strict RR mean: 0.597656
+  best Ogerpon row in the strict pool.
+
+697a82e582d5:
+  old w4 random: 197/200 = 0.985
+  old strict RR mean: 0.579688
+  second-best Ogerpon row in the strict pool.
+
+2a5072194fdf:
+  old w4 random: 177/200 = 0.885
+  excluded from the strict pool. It remains strategically interesting for some
+  Crustle/Ogerpon route analysis, but is not the local-RR-good retrain target.
+```
+
+Remote watcher:
+
+```text
+script: /tmp/run_bc_retrain_0801_0810_ogerpon_20260811.sh
+log dir: logs/bc_retrain_0801_0810_ogerpon_20260811
+runner log: logs/bc_retrain_0801_0810_ogerpon_20260811/runner.log
+status at launch: waiting for logs/bc_retrain_0801_0810_20260811/extract.done
+```
+
+When the base extraction is done, it launches two scratch BC retrains using the
+old w4 objective on the fresh v12 corpus:
+
+```text
+1. Ogerpon 5899, GPU3
+   save: checkpoints/bc_retrain_0801_0810_20260811/bc2_ogerpon_5899_w4legacy_0801_0810_b256.npz
+
+2. Ogerpon 697, GPU0
+   save: checkpoints/bc_retrain_0801_0810_20260811/bc2_ogerpon_697_w4legacy_0801_0810_b256.npz
+
+recipe for both:
+  corpus: data/bc_corpus_banded_v12_0801_0810_hist32_log128_board12_20260811
+  archetype: Teal Mask Ogerpon
+  score bands: 1200+ 1100-1199 1000-1099 900-999
+  date: 2026-08-01..2026-08-10
+  width=4 pointer/legacy w4 objective, batch=256, epochs=7, lr=8e-5
+  win/loss/draw=1.5/0.4/0.8
+  first_action=1.6, option=0.2, set_loss=0.12
+  MAIN/ATTACH/SKILL_ORDER and EVOLVE/ATTACK weights preserved
+```
+
+Automatic Ogerpon post-eval:
+
+```text
+random g500 for old/new 5899 and old/new 697:
+  logs/bc_retrain_0801_0810_ogerpon_20260811/random_*.log
+
+paired baseline-delta vs old corresponding w4 over strict primary pool:
+  logs/bc_retrain_0801_0810_ogerpon_20260811/ogerpon_5899_0801_0810_vs_old_w4_primary_g80.csv
+  logs/bc_retrain_0801_0810_ogerpon_20260811/ogerpon_697_0801_0810_vs_old_w4_primary_g80.csv
+
+focused Ogerpon vs Crustle 3cd/b141 w4, 300 games each:
+  logs/bc_retrain_0801_0810_ogerpon_20260811/ogerpon_5899_0801_0810_vs_crustle_w4_g300.csv
+  logs/bc_retrain_0801_0810_ogerpon_20260811/ogerpon_697_0801_0810_vs_crustle_w4_g300.csv
+```
+
+Monitor:
+
+```bash
+ssh ks 'cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804 && tail -n 100 logs/bc_retrain_0801_0810_ogerpon_20260811/runner.log'
+ssh ks 'pgrep -af "run_bc_retrain_0801_0810_ogerpon_20260811|bc2_train.py.*ogerpon.*0801_0810"'
+```
 
 ## Completed Remote Job: Search Teacher Wave1 2026-08-10
 

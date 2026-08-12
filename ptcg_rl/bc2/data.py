@@ -260,6 +260,7 @@ class BCCorpus:
         self.history_prev: list[np.ndarray] = []
         self.step_plan_targets: list[np.ndarray] = []
         self.groups: list[list[tuple[int, int]]] = []
+        global_game_groups: dict[str, list[tuple[int, int]]] = {}
         self.step_plan_counts: Counter[str] = Counter()
         self.stats = {
             "raw": 0,
@@ -478,7 +479,15 @@ class BCCorpus:
                     file_step_plan = file_step_plan[idx]
 
             self.npz_data.append(data)
-            self.groups.extend(rows for rows in file_groups if rows)
+            if self.split_by_game:
+                for rows in file_groups:
+                    if not rows:
+                        continue
+                    _, first_si = rows[0]
+                    game_key = _trajectory_game_key(data, int(first_si))
+                    global_game_groups.setdefault(game_key, []).extend(rows)
+            else:
+                self.groups.extend(rows for rows in file_groups if rows)
             if self.history_k > 0:
                 self.history_prev.append(file_history_prev)
             if self.step_plan:
@@ -490,6 +499,8 @@ class BCCorpus:
                     f"stored={len(kept_rows)} {time.time()-file_t0:.1f}s",
                     flush=True,
                 )
+        if self.split_by_game:
+            self.groups = [rows for rows in global_game_groups.values() if rows]
 
     def split_indices(self, val_fraction: float = 0.1, seed: int = 7) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
         rng = np.random.default_rng(seed)

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-12 10:05 Asia/Shanghai.
+Last updated: 2026-08-12 10:45 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -124,6 +124,87 @@ Recommended next diagnostic path:
    condition.
 4. If training, prefer a new routed Alakazam policy with explicit opponent
    archetype inference and top-team/1200+ TRM-plan data, not a small finetune.
+
+Follow-up 2026-08-12 team-specific / trajectory audit:
+
+- Important bug found and fixed locally and on ks in `ptcg_rl/deck_plans.py`:
+  Alakazam's deck plan still used old IDs `109/245` but current 7f9 deck uses
+  `741 Abra`, `742 Kadabra`, `743 Alakazam`. This made
+  `build_trajectory_targets.py` report `setup_success=0.000` for Alakazam,
+  weakening any prior Alakazam trajectory/strategy-label experiments.
+- The plan now includes both legacy and current IDs:
+  - `signature_ids=(245, 742, 743)`
+  - `primary_attackers=(245, 743)`
+  - `setup_basics=(109, 741)`
+  - `evolution_chain=(109, 741, 742, 245, 743)`
+  - Alakazam draw/search/disruption tools now include Rare Candy, Poffin, Poke
+    Pad, Hilda, Dawn, Enhanced Hammer, Boss, Xerosic, and Nighttime Mine.
+
+New data audit outputs:
+
+- `logs/alakazam_7f9_matchup_data_audit_20260812_score1200p.log`
+- `logs/alakazam_team_data_audit_20260812.log`
+- `logs/alakazam_trajectory_target_audit_20260812/summary_planfix.log`
+- `logs/team_climb_coverage_20260812/*.csv`
+
+Alakazam 7f9 score `1200+` only:
+
+- `831,044` decision rows, `9,320` games, all from `Majkel1337` in this corpus.
+- Overall WR `5242/9320 = 0.562`.
+- Matchups:
+  - Alakazam mirror `1398/2799 = 0.499`
+  - Marnie `1142/2352 = 0.486`
+  - Crustle `1188/1716 = 0.692`
+  - Team Rocket Mewtwo `531/998 = 0.532`
+  - Cynthia `383/545 = 0.703`
+  - Dragapult `134/258 = 0.519`
+  - Festival `136/200 = 0.680`
+- This is much better than `1100-1199` vs TRM (`106/571 = 0.186` from the
+  earlier audit), so training/eval should try a strict 1200+ Majkel specialist.
+
+Team-specific Alakazam data:
+
+- `Majkel1337` Alakazam:
+  - total `12,227` games, `1,074,939` rows, WR `0.569`.
+  - deck sigs: `7f9a538936e3` `9,320` games, `91f48d8ef728` `1,853`, `5a5ea26c99b9` `1,054`.
+  - score-band coverage for 7f9 is only `1200+`; it does not include a
+    600-1100 climb path in this corpus.
+- `LiamK` Alakazam:
+  - `ca082d1c1eab`, `2,748` games, `229,827` rows, WR `0.490`.
+  - score-band coverage is only `1100-1199`.
+  - Broader low/mid ladder coverage still needs other teams/sigs, not only
+    Majkel/LiamK.
+- `James Cox & Henry Chao` are not Alakazam in the scanned data:
+  - Ogerpon `2a5072194fdf`: `1,439` games, `98,441` rows, `1000-1099`.
+  - Ogerpon `2bd9da52c43a`: `579` games, `39,018` rows, `1000/1100` bands.
+  - Useful for Ogerpon team-specific work, not Alakazam.
+
+Trajectory labels after Alakazam plan fix:
+
+- Majkel 7f9 1200+:
+  - all: `setup_success=0.295`, `tempo_success=0.289`,
+    `strategy_success=0.205`.
+  - wins: `setup_success=0.364`, `tempo_success=0.361`.
+  - TRM wins: `setup_success=0.230`, `tempo_success=0.226`.
+- LiamK ca08 1100:
+  - all: `setup_success=0.486`, `tempo_success=0.458`.
+  - wins: `setup_success=0.548`, `tempo_success=0.533`.
+  - TRM wins: `setup_success=0.500`, `tempo_success=0.500`.
+- Therefore "correct sample" filtering should be trajectory-level
+  (`strategy_success`, `setup_success`, `tempo_success`, no early-end, clean
+  opponent) instead of single-step attach/evolve heuristics. Attach/evolve
+  miss from rollout trace is a diagnostic signal, not a direct filter label.
+
+Training implication:
+
+- Try at least three Alakazam experiments before concluding:
+  1. strict `Majkel1337 + 7f9 + 1200+` specialist.
+  2. strict `LiamK + ca08 + 1100-1199` specialist, evaluated as a separate
+     Alakazam deck, not mixed into 7f9.
+  3. 7f9 routed mix: Majkel 1200+ as core plus broader 7f9 climb/high data
+     from other teams/sigs for lower-ladder opponent coverage. Do not rely on
+     Majkel alone for 600-1100 because the current corpus does not show that
+     climb path for 7f9.
 
 ## DVH Marnie Historical Submission Recheck 2026-08-11
 

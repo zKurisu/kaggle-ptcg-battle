@@ -353,6 +353,18 @@ class NumpyPolicy:
         if "history_out_fc.weight" not in self.w:
             return h
         hist = self._encode_history(history)
+        if "history_delta_fc.weight" in self.w and "history_gate_fc.weight" in self.w:
+            delta = np.tanh(_linear(
+                self.w["history_delta_fc.weight"],
+                self.w["history_delta_fc.bias"],
+                hist,
+            ))
+            gate = 1.0 / (1.0 + np.exp(-np.clip(_linear(
+                self.w["history_gate_fc.weight"],
+                self.w["history_gate_fc.bias"],
+                np.concatenate([h, hist]),
+            ), -30.0, 30.0)))
+            return _relu(h + gate * delta)
         return _relu(_linear(
             self.w["history_out_fc.weight"],
             self.w["history_out_fc.bias"],

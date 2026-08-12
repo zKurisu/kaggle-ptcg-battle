@@ -20,6 +20,20 @@ ARCH_POINTER = "pointer"
 ARCH_CROSS_ATTN = "cross_attn"
 
 
+class _SafeGRU(nn.GRU):
+    """GRU with stable parameter movement on busy CUDA hosts.
+
+    PyTorch calls ``flatten_parameters`` during ``module.to(cuda)`` for cuDNN
+    RNNs. On the shared A800 server this can fail before training starts with
+    ``CUDNN_STATUS_NOT_INITIALIZED`` even when memory is available. The history
+    encoders are short unrolled GRUs, so bypassing cuDNN flattening keeps the
+    checkpoint parameter names unchanged and matches NumPy inference.
+    """
+
+    def flatten_parameters(self) -> None:  # pragma: no cover - backend guard.
+        return None
+
+
 class PolicyValueNet(nn.Module):
     def __init__(self, width: float = 1.0, option_context: bool = True,
                  slot_state: bool = True, state_feat_dim: int = STATE_FEAT_DIM,
@@ -77,7 +91,7 @@ class PolicyValueNet(nn.Module):
                 self.opp_history_pos_emb = nn.Embedding(self.opp_history_k, ctx)
             hist_in = ec + ec + ea + eo_t + ctx + ctx + ctx + 2
             self.history_token_fc = nn.Linear(hist_in, sc)
-            self.history_gru = nn.GRU(sc, sc, batch_first=True)
+            self.history_gru = _SafeGRU(sc, sc, batch_first=True)
         if self.log_history_k > 0:
             self.log_history_type_emb = nn.Embedding(MAX_LOG_TYPE + 2, eo_t, padding_idx=0)
             self.log_history_player_emb = nn.Embedding(MAX_LOG_PLAYER + 1, ctx, padding_idx=0)
@@ -86,15 +100,17 @@ class PolicyValueNet(nn.Module):
             self.log_history_pos_emb = nn.Embedding(self.log_history_k, ctx)
             log_in = eo_t + ctx + ec + ec + ea + idx + idx + area + area + ctx + 2
             self.log_history_token_fc = nn.Linear(log_in, sc)
-            self.log_history_gru = nn.GRU(sc, sc, batch_first=True)
+            self.log_history_gru = _SafeGRU(sc, sc, batch_first=True)
         if self.board_history_k > 0:
             self.board_history_pos_emb = nn.Embedding(self.board_history_k, ctx)
             self.board_history_feat_fc = nn.Linear(self.board_history_feat_dim, sc)
             board_in = 4 * ec + sc + ctx + 1
             self.board_history_token_fc = nn.Linear(board_in, sc)
-            self.board_history_gru = nn.GRU(sc, sc, batch_first=True)
+            self.board_history_gru = _SafeGRU(sc, sc, batch_first=True)
         if self._hist > 0:
             self.history_out_fc = nn.Linear(hd + self._hist, hd)
+            self.history_delta_fc = nn.Linear(self._hist, hd)
+            self.history_gate_fc = nn.Linear(hd + self._hist, hd)
         opt_extra = ctx + ctx + area + idx + area + idx if option_context else 0
         self.opt_fc = nn.Linear(ec + ec + ea + eo_t + opt_extra + self.opt_feat_dim, oe)
         self.score_fc1 = nn.Linear(hd + oe + oe, sc)
@@ -112,6 +128,11 @@ class PolicyValueNet(nn.Module):
         if self.hierarchical_plan:
             nn.init.zeros_(self.plan_score_fc2.weight)
             nn.init.zeros_(self.plan_score_fc2.bias)
+        if self._hist > 0:
+            nn.init.zeros_(self.history_delta_fc.weight)
+            nn.init.zeros_(self.history_delta_fc.bias)
+            nn.init.zeros_(self.history_gate_fc.weight)
+            nn.init.constant_(self.history_gate_fc.bias, -4.0)
 
     def _init(self):
         for m in self.modules():
@@ -255,6 +276,10 @@ class PolicyValueNet(nn.Module):
         if self._hist <= 0:
             return h
         hist = self._encode_history(history, h.shape[0], h.device)
+        if hasattr(self, "history_delta_fc") and hasattr(self, "history_gate_fc"):
+            delta = torch.tanh(self.history_delta_fc(hist))
+            gate = torch.sigmoid(self.history_gate_fc(torch.cat([h, hist], dim=-1)))
+            return F.relu(h + gate * delta)
         return F.relu(self.history_out_fc(torch.cat([h, hist], dim=-1)))
 
     def encode_state(self, board: torch.Tensor, hand: torch.Tensor,
@@ -724,7 +749,7 @@ class CrossAttentionPolicyValueNet(nn.Module):
                 self.opp_history_pos_emb = nn.Embedding(self.opp_history_k, ctx)
             hist_in = ec + ec + ea + eo_t + ctx + ctx + ctx + 2
             self.history_token_fc = nn.Linear(hist_in, sc)
-            self.history_gru = nn.GRU(sc, sc, batch_first=True)
+            self.history_gru = _SafeGRU(sc, sc, batch_first=True)
         if self.log_history_k > 0:
             self.log_history_type_emb = nn.Embedding(MAX_LOG_TYPE + 2, eo_t, padding_idx=0)
             self.log_history_player_emb = nn.Embedding(MAX_LOG_PLAYER + 1, ctx, padding_idx=0)
@@ -733,15 +758,17 @@ class CrossAttentionPolicyValueNet(nn.Module):
             self.log_history_pos_emb = nn.Embedding(self.log_history_k, ctx)
             log_in = eo_t + ctx + ec + ec + ea + idx + idx + area + area + ctx + 2
             self.log_history_token_fc = nn.Linear(log_in, sc)
-            self.log_history_gru = nn.GRU(sc, sc, batch_first=True)
+            self.log_history_gru = _SafeGRU(sc, sc, batch_first=True)
         if self.board_history_k > 0:
             self.board_history_pos_emb = nn.Embedding(self.board_history_k, ctx)
             self.board_history_feat_fc = nn.Linear(self.board_history_feat_dim, sc)
             board_in = 4 * ec + sc + ctx + 1
             self.board_history_token_fc = nn.Linear(board_in, sc)
-            self.board_history_gru = nn.GRU(sc, sc, batch_first=True)
+            self.board_history_gru = _SafeGRU(sc, sc, batch_first=True)
         if self._hist > 0:
             self.history_out_fc = nn.Linear(hd + self._hist, hd)
+            self.history_delta_fc = nn.Linear(self._hist, hd)
+            self.history_gate_fc = nn.Linear(hd + self._hist, hd)
 
         opt_extra = ctx + ctx + area + idx + area + idx if option_context else 0
         self.opt_fc = nn.Linear(ec + ec + ea + eo_t + opt_extra + self.opt_feat_dim, oe)
@@ -767,6 +794,11 @@ class CrossAttentionPolicyValueNet(nn.Module):
         if self.hierarchical_plan:
             nn.init.zeros_(self.plan_score_fc2.weight)
             nn.init.zeros_(self.plan_score_fc2.bias)
+        if self._hist > 0:
+            nn.init.zeros_(self.history_delta_fc.weight)
+            nn.init.zeros_(self.history_delta_fc.bias)
+            nn.init.zeros_(self.history_gate_fc.weight)
+            nn.init.constant_(self.history_gate_fc.bias, -4.0)
 
     def _init(self):
         for m in self.modules():
@@ -953,6 +985,10 @@ class CrossAttentionPolicyValueNet(nn.Module):
         if self._hist <= 0:
             return h
         hist = self._encode_history(history, h.shape[0], h.device)
+        if hasattr(self, "history_delta_fc") and hasattr(self, "history_gate_fc"):
+            delta = torch.tanh(self.history_delta_fc(hist))
+            gate = torch.sigmoid(self.history_gate_fc(torch.cat([h, hist], dim=-1)))
+            return F.relu(h + gate * delta)
         return F.relu(self.history_out_fc(torch.cat([h, hist], dim=-1)))
 
     def encode_state(self, board: torch.Tensor, hand: torch.Tensor,

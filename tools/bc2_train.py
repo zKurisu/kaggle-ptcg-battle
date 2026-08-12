@@ -459,6 +459,7 @@ def _format_metrics(prefix: str, metrics: dict[str, float]) -> str:
         "set",
         "trajectory",
         "step_plan",
+        "history_consistency",
         "value",
     ]
     parts = [prefix]
@@ -494,6 +495,8 @@ def _empty_metric_sums() -> dict[str, float]:
         "trajectory_count": 0.0,
         "step_plan_sum": 0.0,
         "step_plan_count": 0.0,
+        "history_consistency_sum": 0.0,
+        "history_consistency_weight": 0.0,
         "rows": 0.0,
     }
 
@@ -516,6 +519,7 @@ def _update_metric_sums(sums: dict[str, float], parts: dict[str, torch.Tensor]) 
     value_loss = float(parts["value"].detach().cpu())
     trajectory_loss = float(parts["trajectory"].detach().cpu())
     step_plan_loss = float(parts["step_plan"].detach().cpu())
+    history_consistency = float(parts.get("history_consistency", torch.tensor(0.0)).detach().cpu())
 
     sums["loss_sum"] += loss * rows
     sums["batch_weight"] += rows
@@ -536,6 +540,8 @@ def _update_metric_sums(sums: dict[str, float], parts: dict[str, torch.Tensor]) 
     sums["trajectory_count"] += trajectory_count
     sums["step_plan_sum"] += step_plan_loss * step_plan_count
     sums["step_plan_count"] += step_plan_count
+    sums["history_consistency_sum"] += history_consistency * rows
+    sums["history_consistency_weight"] += rows
     sums["rows"] += rows
 
 
@@ -555,6 +561,7 @@ def _finalize_metric_sums(sums: dict[str, float]) -> dict[str, float]:
         "value": div("value_sum", "value_weight"),
         "trajectory": div("trajectory_sum", "trajectory_count"),
         "step_plan": div("step_plan_sum", "step_plan_count"),
+        "history_consistency": div("history_consistency_sum", "history_consistency_weight"),
         "rows": sums.get("rows", 0.0),
     }
 
@@ -564,6 +571,12 @@ def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
                value_weight=0.0,
                plan_weight=0.0, step_plan_weight=0.0,
                plan_teacher_forcing=0.0,
+               history_augment=False,
+               history_stream_drop_prob=0.0,
+               history_event_drop_prob=0.0,
+               history_tail_drop_prob=0.0,
+               history_consistency_weight=0.0,
+               history_consistency_zero_weight=0.0,
                set_loss_weight=0.0, set_loss_min_count=2,
                set_loss_negative_weight=0.25):
     training = optimizer is not None
@@ -574,7 +587,27 @@ def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
         batch_idx = indices[start : start + batch_size]
         if len(batch_idx) < 2:
             continue
-        batch = corpus.collate(batch_idx, device)
+        need_clean_batch = training and (history_consistency_weight > 0 or history_consistency_zero_weight > 0)
+        clean_batch = corpus.collate(batch_idx, device) if need_clean_batch else None
+        batch = corpus.collate(
+            batch_idx,
+            device,
+            history_augment=history_augment,
+            history_stream_drop_prob=history_stream_drop_prob,
+            history_event_drop_prob=history_event_drop_prob,
+            history_tail_drop_prob=history_tail_drop_prob,
+        )
+        consistency_history = None
+        ref_history = clean_batch.history if clean_batch is not None else None
+        if training and (history_consistency_weight > 0 or history_consistency_zero_weight > 0):
+            consistency_history = corpus.collate(
+                batch_idx,
+                device,
+                history_augment=True,
+                history_stream_drop_prob=history_stream_drop_prob,
+                history_event_drop_prob=history_event_drop_prob,
+                history_tail_drop_prob=history_tail_drop_prob,
+            ).history
         parts = sequence_loss_parts(
             model,
             batch,
@@ -584,6 +617,10 @@ def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
             plan_weight=plan_weight,
             step_plan_weight=step_plan_weight,
             plan_teacher_forcing=plan_teacher_forcing,
+            history_consistency_ref_history=ref_history,
+            history_consistency_history=consistency_history,
+            history_consistency_weight=history_consistency_weight,
+            history_consistency_zero_weight=history_consistency_zero_weight,
             set_loss_weight=set_loss_weight,
             set_loss_min_count=set_loss_min_count,
             set_loss_negative_weight=set_loss_negative_weight,
@@ -669,6 +706,18 @@ def main() -> None:
                         help="condition on this many previous board snapshots saved by v12 extraction")
     parser.add_argument("--board-history-feat-dim", type=int, default=BOARD_HISTORY_FEAT_DIM,
                         help="feature width for board history snapshots")
+    parser.add_argument("--history-augment", action="store_true",
+                        help="randomly hide history streams/events during training to reduce teacher-forcing exposure bias")
+    parser.add_argument("--history-stream-drop-prob", type=float, default=0.0,
+                        help="per-sample probability of dropping each history stream when --history-augment is set")
+    parser.add_argument("--history-event-drop-prob", type=float, default=0.0,
+                        help="per-event probability of dropping individual history events when --history-augment is set")
+    parser.add_argument("--history-tail-drop-prob", type=float, default=0.0,
+                        help="per-sample probability of truncating history to a random recent suffix when --history-augment is set")
+    parser.add_argument("--history-consistency-weight", type=float, default=0.0,
+                        help="KL multiplier between clean-history and augmented-history first-step distributions")
+    parser.add_argument("--history-consistency-zero-weight", type=float, default=0.0,
+                        help="KL multiplier between clean-history and zero-history first-step distributions")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--cuda-memory-gb", type=float, default=0.0,
                         help="cap this process' CUDA allocator to approximately N GiB; 0 disables")
@@ -872,6 +921,8 @@ def main() -> None:
             board_history_k = init_board_hist
         if board_history_k > 0 and (not args.board_history_feat_dim or args.board_history_feat_dim == BOARD_HISTORY_FEAT_DIM):
             board_history_feat_dim = init_board_feat
+    if history_k > 0 or opp_history_k > 0 or log_history_k > 0 or board_history_k > 0:
+        torch.backends.cudnn.enabled = False
     inferred_from_init = False
     state_feat_dim = int(args.state_feat_dim) if args.state_feat_dim else None
     opt_feat_dim = int(args.opt_feat_dim) if args.opt_feat_dim else None
@@ -1013,6 +1064,11 @@ def main() -> None:
         f"history_k={history_k} opp_history_k={opp_history_k} "
         f"log_history_k={log_history_k} board_history_k={board_history_k} "
         f"board_history_feat_dim={board_history_feat_dim} "
+        f"history_augment={args.history_augment} "
+        f"history_drop={args.history_stream_drop_prob}/{args.history_event_drop_prob}/"
+        f"{args.history_tail_drop_prob} "
+        f"history_consistency={args.history_consistency_weight}/"
+        f"{args.history_consistency_zero_weight} "
         f"slot_state={not args.legacy_state_pool} "
         f"state_feat_dim={state_feat_dim or 'default'} opt_feat_dim={opt_feat_dim or 'default'} "
         f"{'feature_dims_from_init ' if inferred_from_init else ''}"
@@ -1074,15 +1130,42 @@ def main() -> None:
             batch_idx = train_idx[batch_start : batch_start + args.batch_size]
             if len(batch_idx) < 2:
                 continue
+            clean_batch = (
+                corpus.collate(batch_idx, device)
+                if (args.history_consistency_weight > 0 or args.history_consistency_zero_weight > 0)
+                else None
+            )
+            batch = corpus.collate(
+                batch_idx,
+                device,
+                history_augment=args.history_augment,
+                history_stream_drop_prob=args.history_stream_drop_prob,
+                history_event_drop_prob=args.history_event_drop_prob,
+                history_tail_drop_prob=args.history_tail_drop_prob,
+            )
+            consistency_history = None
+            if args.history_consistency_weight > 0 or args.history_consistency_zero_weight > 0:
+                consistency_history = corpus.collate(
+                    batch_idx,
+                    device,
+                    history_augment=True,
+                    history_stream_drop_prob=args.history_stream_drop_prob,
+                    history_event_drop_prob=args.history_event_drop_prob,
+                    history_tail_drop_prob=args.history_tail_drop_prob,
+                ).history
             parts = sequence_loss_parts(
                 model,
-                corpus.collate(batch_idx, device),
+                batch,
                 first_action_weight=args.first_action_weight,
                 raw_policy_loss_weight=args.raw_policy_loss_weight,
                 value_weight=args.value_weight,
                 plan_weight=args.trajectory_target_loss_weight,
                 step_plan_weight=args.step_plan_loss_weight,
                 plan_teacher_forcing=args.step_plan_teacher_forcing,
+                history_consistency_ref_history=clean_batch.history if clean_batch is not None else None,
+                history_consistency_history=consistency_history,
+                history_consistency_weight=args.history_consistency_weight,
+                history_consistency_zero_weight=args.history_consistency_zero_weight,
                 set_loss_weight=args.set_loss_weight,
                 set_loss_min_count=args.set_loss_min_count,
                 set_loss_negative_weight=args.set_loss_negative_weight,

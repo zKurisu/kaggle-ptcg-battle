@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-13 06:58 Asia/Shanghai.
+Last updated: 2026-08-13 07:25 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -108,6 +108,99 @@ Remote runner completed:
   - Do not submit these history-safe Marnie models. Keep old high900win b8f as
     the current Marnie baseline unless a different ladder environment makes the
     coverage-pool metric more relevant than recent live opponents.
+
+## Implemented: Explicit History Summary And Sensitivity Loss 2026-08-13
+
+Motivation:
+
+- History-safe models fixed runtime issues but did not improve live-like
+  opponents. Checkpoint inspection showed `history_gate_fc.bias` stayed near
+  -4.0, so the history residual gate remained around 1.8%. The models mostly
+  learned to ignore raw history.
+- User requested two stronger changes:
+  1. explicitly aggregate history so the agent can use it more clearly;
+  2. add loss pressure that makes the model pay attention to history.
+
+Implemented locally and synced to ks:
+
+- `ptcg_rl/history_features.py`
+  - Added `HISTORY_SUMMARY_DIM = 48`.
+  - Added `history_summary_from_arrays(...)`, a ledger-style summary from own
+    actions, opponent actions, public logs, and board snapshots.
+  - Summary includes coarse action tempo, attach/evolve/attack/ability ratios,
+    public log player/move/damage signals, board-history occupancy/change, and
+    recent key-action flags.
+- `tools/bc_extract_v2.py`
+  - New v13-style extra key: `history_summary`.
+  - New metadata key: `history_summary_dim`.
+  - Old v12 corpus can still be used because the loader can generate summary
+    from existing raw history streams.
+- `ptcg_rl/bc2/data.py`
+  - Added `history_summary_dim`.
+  - Collate now emits `batch.history["summary"]`.
+  - If the npz lacks `history_summary`, it computes it from `own_hist`,
+    `opp_hist`, `log_hist`, and `board_hist`.
+  - If history augmentation corrupts streams, summary is recomputed after
+    corruption so the forward pass sees consistent information.
+- `ptcg_rl/model.py`
+  - Pointer and cross-attn policies now support a dedicated summary stream:
+    `history_summary_fc1/fc2`, projected to the same history latent size as
+    GRU streams.
+  - Added `history_gate_init_bias`. Old default remains -4.0. For new
+    experiments use -2.0 or -1.5 so the history gate starts open enough to
+    receive useful gradient.
+  - Added `checkpoint_history_summary_dim(...)`.
+- `ptcg_rl/numpy_policy.py`
+  - Submission-time NumPy inference now auto-detects `history_summary_fc1`.
+  - It builds the same summary from live own history, public logs, board
+    history, and zero-filled opponent-labeled history.
+- `ptcg_rl/bc2/losses.py`
+  - Added `history_sensitivity_weight` and `history_sensitivity_margin`.
+  - This is a margin/ranking loss: real-history first-action label NLL should
+    beat zero-history first-action label NLL by the configured margin.
+  - Logs `history_sensitivity` and `history_sensitivity_delta`.
+- `tools/bc2_train.py`
+  - New flags:
+    - `--history-summary` shorthand for summary dim 48.
+    - `--history-summary-dim N`.
+    - `--history-gate-init-bias`.
+    - `--history-sensitivity-weight`.
+    - `--history-sensitivity-margin`.
+  - `--best-metric history_sensitivity` is available for diagnostics, but do
+    not select submission checkpoints solely by that metric.
+
+Validation:
+
+- Local `py_compile` passed for modified files.
+- Local `git diff --check` passed.
+- `tools/bc2_train.py --help` parses.
+- Remote ks `py_compile` passed.
+- Remote real-v12-corpus smoke passed:
+  - `BCCorpus(... history_k=4, log_history_k=8, board_history_k=3,
+    history_summary_dim=48)` produced `summary_shape=(16,48)` and nonzero
+    summary mean.
+  - Tiny pointer model forward/backward with `history_sensitivity_weight=0.1`
+    passed.
+  - Temporary checkpoint loaded through `NumpyPolicy`; detected
+    `np_history_summary_dim=48`.
+
+Recommended next experiment:
+
+- Do not reuse the conservative history-safe settings unchanged.
+- Train from old high900win b8f with partial init, but reset/new history heads
+  are allowed:
+  - `--history-summary`
+  - `--history-gate-init-bias -2.0`
+  - `--history-sensitivity-weight 0.15`
+  - `--history-sensitivity-margin 0.05`
+  - avoid `--history-consistency-zero-weight` initially because it explicitly
+    pushes real and zero history to be similar.
+- Watch training logs:
+  - `history_sensitivity_delta` should become positive on train and ideally
+    non-negative on val.
+  - after training, inspect `history_gate_fc.bias`; sigmoid mean should be
+    meaningfully above 1.8%. If it stays near 1.8%, the model still ignores
+    history.
 
 Three models started in parallel at about `2026-08-12T20:05:18+08:00`:
 

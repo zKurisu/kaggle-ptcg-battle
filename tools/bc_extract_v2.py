@@ -25,10 +25,12 @@ from ptcg_rl.history_features import (
     DEFAULT_ACTION_HISTORY_K,
     DEFAULT_BOARD_HISTORY_K,
     DEFAULT_LOG_HISTORY_K,
+    HISTORY_SUMMARY_DIM,
     ACTION_FIELDS,
     LOG_FIELDS,
     action_event_from_encoded,
     board_snapshot_from_encoded,
+    history_summary_from_arrays,
     pack_action_history,
     pack_board_history,
     pack_log_history_from_obs,
@@ -192,6 +194,13 @@ def _append_decision(all_data, encoder, obs: dict, action: list,
         row["board_hist_cards"] = board_hist.get("cards")
         row["board_hist_feats"] = board_hist.get("feats")
         row["board_hist_mask"] = board_hist.get("mask")
+        row["history_summary"] = history_summary_from_arrays(
+            own_hist=history.get("own_hist") or {},
+            opp_hist=history.get("opp_hist") or {},
+            log_hist=log_hist,
+            board_hist=board_hist,
+            dim=HISTORY_SUMMARY_DIM,
+        )
     all_data[key].append(row)
     return True
 
@@ -409,9 +418,11 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
             board_hist_cards=stack('board_hist_cards', np.int16),
             board_hist_feats=stack('board_hist_feats', np.float16),
             board_hist_mask=stack('board_hist_mask', np.float16),
+            history_summary=stack('history_summary', np.float16),
             feature_version=np.array(FEATURE_VERSION, dtype=object),
             state_feat_dim=np.array(STATE_FEAT_DIM, dtype=np.int16),
             opt_feat_dim=np.array(OPT_FEAT_DIM, dtype=np.int16),
+            history_summary_dim=np.array(HISTORY_SUMMARY_DIM, dtype=np.int16),
             action_history_k=np.array(action_history_k, dtype=np.int16),
             log_history_k=np.array(log_history_k, dtype=np.int16),
             board_history_k=np.array(board_history_k, dtype=np.int16),

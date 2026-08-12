@@ -20,12 +20,13 @@ sys.path.insert(0, str(_REPO))
 
 from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, sequence_loss_parts, sequence_nll
 from ptcg_rl.deck_plans import CARD_NAMES
-from ptcg_rl.history_features import BOARD_HISTORY_FEAT_DIM
+from ptcg_rl.history_features import BOARD_HISTORY_FEAT_DIM, HISTORY_SUMMARY_DIM
 from ptcg_rl.model import (
     build_policy_model,
     checkpoint_board_history_dims,
     checkpoint_feature_dims,
     checkpoint_history_k,
+    checkpoint_history_summary_dim,
     checkpoint_log_history_k,
     checkpoint_opp_history_k,
 )
@@ -429,6 +430,11 @@ def _checkpoint_history_dims(path: str) -> tuple[int, int, int, int, int]:
         )
 
 
+def _checkpoint_history_summary_dim(path: str) -> int:
+    with np.load(path) as z:
+        return checkpoint_history_summary_dim(z)
+
+
 def _configure_cuda_memory_limit(device: torch.device, *, gb: float = 0.0, fraction: float = 0.0) -> str:
     if device.type != "cuda":
         return ""
@@ -460,6 +466,8 @@ def _format_metrics(prefix: str, metrics: dict[str, float]) -> str:
         "trajectory",
         "step_plan",
         "history_consistency",
+        "history_sensitivity",
+        "history_sensitivity_delta",
         "value",
     ]
     parts = [prefix]
@@ -497,6 +505,9 @@ def _empty_metric_sums() -> dict[str, float]:
         "step_plan_count": 0.0,
         "history_consistency_sum": 0.0,
         "history_consistency_weight": 0.0,
+        "history_sensitivity_sum": 0.0,
+        "history_sensitivity_weight": 0.0,
+        "history_sensitivity_delta_sum": 0.0,
         "rows": 0.0,
     }
 
@@ -520,6 +531,8 @@ def _update_metric_sums(sums: dict[str, float], parts: dict[str, torch.Tensor]) 
     trajectory_loss = float(parts["trajectory"].detach().cpu())
     step_plan_loss = float(parts["step_plan"].detach().cpu())
     history_consistency = float(parts.get("history_consistency", torch.tensor(0.0)).detach().cpu())
+    history_sensitivity = float(parts.get("history_sensitivity", torch.tensor(0.0)).detach().cpu())
+    history_sensitivity_delta = float(parts.get("history_sensitivity_delta", torch.tensor(0.0)).detach().cpu())
 
     sums["loss_sum"] += loss * rows
     sums["batch_weight"] += rows
@@ -542,6 +555,9 @@ def _update_metric_sums(sums: dict[str, float], parts: dict[str, torch.Tensor]) 
     sums["step_plan_count"] += step_plan_count
     sums["history_consistency_sum"] += history_consistency * rows
     sums["history_consistency_weight"] += rows
+    sums["history_sensitivity_sum"] += history_sensitivity * rows
+    sums["history_sensitivity_weight"] += rows
+    sums["history_sensitivity_delta_sum"] += history_sensitivity_delta * rows
     sums["rows"] += rows
 
 
@@ -562,6 +578,8 @@ def _finalize_metric_sums(sums: dict[str, float]) -> dict[str, float]:
         "trajectory": div("trajectory_sum", "trajectory_count"),
         "step_plan": div("step_plan_sum", "step_plan_count"),
         "history_consistency": div("history_consistency_sum", "history_consistency_weight"),
+        "history_sensitivity": div("history_sensitivity_sum", "history_sensitivity_weight"),
+        "history_sensitivity_delta": div("history_sensitivity_delta_sum", "history_sensitivity_weight"),
         "rows": sums.get("rows", 0.0),
     }
 
@@ -577,6 +595,8 @@ def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
                history_tail_drop_prob=0.0,
                history_consistency_weight=0.0,
                history_consistency_zero_weight=0.0,
+               history_sensitivity_weight=0.0,
+               history_sensitivity_margin=0.03,
                set_loss_weight=0.0, set_loss_min_count=2,
                set_loss_negative_weight=0.25):
     training = optimizer is not None
@@ -621,6 +641,8 @@ def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
             history_consistency_history=consistency_history,
             history_consistency_weight=history_consistency_weight,
             history_consistency_zero_weight=history_consistency_zero_weight,
+            history_sensitivity_weight=history_sensitivity_weight,
+            history_sensitivity_margin=history_sensitivity_margin,
             set_loss_weight=set_loss_weight,
             set_loss_min_count=set_loss_min_count,
             set_loss_negative_weight=set_loss_negative_weight,
@@ -706,6 +728,18 @@ def main() -> None:
                         help="condition on this many previous board snapshots saved by v12 extraction")
     parser.add_argument("--board-history-feat-dim", type=int, default=BOARD_HISTORY_FEAT_DIM,
                         help="feature width for board history snapshots")
+    parser.add_argument("--history-summary-dim", type=int, default=0,
+                        help=(
+                            "condition on explicit ledger-style summary scalars derived from history; "
+                            f"use {HISTORY_SUMMARY_DIM} for the default summary"
+                        ))
+    parser.add_argument("--history-summary", action="store_true",
+                        help=f"shortcut for --history-summary-dim {HISTORY_SUMMARY_DIM}")
+    parser.add_argument("--history-gate-init-bias", type=float, default=-4.0,
+                        help=(
+                            "initial residual gate bias for history streams. -4 is conservative; "
+                            "-2/-1.5 gives history more gradient early in training"
+                        ))
     parser.add_argument("--history-augment", action="store_true",
                         help="randomly hide history streams/events during training to reduce teacher-forcing exposure bias")
     parser.add_argument("--history-stream-drop-prob", type=float, default=0.0,
@@ -718,6 +752,13 @@ def main() -> None:
                         help="KL multiplier between clean-history and augmented-history first-step distributions")
     parser.add_argument("--history-consistency-zero-weight", type=float, default=0.0,
                         help="KL multiplier between clean-history and zero-history first-step distributions")
+    parser.add_argument("--history-sensitivity-weight", type=float, default=0.0,
+                        help=(
+                            "ranking loss multiplier encouraging real history to improve first-action "
+                            "label NLL over zeroed history"
+                        ))
+    parser.add_argument("--history-sensitivity-margin", type=float, default=0.03,
+                        help="margin for --history-sensitivity-weight")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--cuda-memory-gb", type=float, default=0.0,
                         help="cap this process' CUDA allocator to approximately N GiB; 0 disables")
@@ -766,6 +807,7 @@ def main() -> None:
                             "set",
                             "trajectory",
                             "step_plan",
+                            "history_sensitivity",
                         ],
                         default="loss",
                         help=(
@@ -909,8 +951,10 @@ def main() -> None:
     log_history_k = max(0, int(args.log_history_k))
     board_history_k = max(0, int(args.board_history_k))
     board_history_feat_dim = max(0, int(args.board_history_feat_dim))
+    history_summary_dim = HISTORY_SUMMARY_DIM if args.history_summary else max(0, int(args.history_summary_dim))
     if args.init:
         init_hist, init_opp_hist, init_log_hist, init_board_hist, init_board_feat = _checkpoint_history_dims(args.init)
+        init_summary_dim = _checkpoint_history_summary_dim(args.init)
         if history_k <= 0:
             history_k = init_hist
         if opp_history_k <= 0:
@@ -921,7 +965,9 @@ def main() -> None:
             board_history_k = init_board_hist
         if board_history_k > 0 and (not args.board_history_feat_dim or args.board_history_feat_dim == BOARD_HISTORY_FEAT_DIM):
             board_history_feat_dim = init_board_feat
-    if history_k > 0 or opp_history_k > 0 or log_history_k > 0 or board_history_k > 0:
+        if history_summary_dim <= 0:
+            history_summary_dim = init_summary_dim
+    if history_k > 0 or opp_history_k > 0 or log_history_k > 0 or board_history_k > 0 or history_summary_dim > 0:
         torch.backends.cudnn.enabled = False
     inferred_from_init = False
     state_feat_dim = int(args.state_feat_dim) if args.state_feat_dim else None
@@ -969,6 +1015,7 @@ def main() -> None:
         log_history_k=log_history_k,
         board_history_k=board_history_k,
         board_history_feat_dim=board_history_feat_dim,
+        history_summary_dim=history_summary_dim,
         split_by_game=(
             args.split_by_game
             or bool(trajectory_weights)
@@ -979,6 +1026,7 @@ def main() -> None:
             or opp_history_k > 0
             or log_history_k > 0
             or board_history_k > 0
+            or history_summary_dim > 0
         ),
         load_progress_every=args.load_progress_every,
     )
@@ -1012,6 +1060,10 @@ def main() -> None:
     if board_history_k > 0:
         model_kwargs["board_history_k"] = board_history_k
         model_kwargs["board_history_feat_dim"] = board_history_feat_dim
+    if history_summary_dim > 0:
+        model_kwargs["history_summary_dim"] = history_summary_dim
+    if history_k > 0 or opp_history_k > 0 or log_history_k > 0 or board_history_k > 0 or history_summary_dim > 0:
+        model_kwargs["history_gate_init_bias"] = args.history_gate_init_bias
     model = build_policy_model(
         args.arch,
         width=args.width,
@@ -1031,6 +1083,7 @@ def main() -> None:
             or opp_history_k > 0
             or log_history_k > 0
             or board_history_k > 0
+            or history_summary_dim > 0
         )
         loaded, skipped = _load_npz_init(
             model,
@@ -1064,11 +1117,15 @@ def main() -> None:
         f"history_k={history_k} opp_history_k={opp_history_k} "
         f"log_history_k={log_history_k} board_history_k={board_history_k} "
         f"board_history_feat_dim={board_history_feat_dim} "
+        f"history_summary_dim={history_summary_dim} "
+        f"history_gate_init_bias={args.history_gate_init_bias} "
         f"history_augment={args.history_augment} "
         f"history_drop={args.history_stream_drop_prob}/{args.history_event_drop_prob}/"
         f"{args.history_tail_drop_prob} "
         f"history_consistency={args.history_consistency_weight}/"
         f"{args.history_consistency_zero_weight} "
+        f"history_sensitivity={args.history_sensitivity_weight}/"
+        f"{args.history_sensitivity_margin} "
         f"slot_state={not args.legacy_state_pool} "
         f"state_feat_dim={state_feat_dim or 'default'} opt_feat_dim={opt_feat_dim or 'default'} "
         f"{'feature_dims_from_init ' if inferred_from_init else ''}"
@@ -1166,6 +1223,8 @@ def main() -> None:
                 history_consistency_history=consistency_history,
                 history_consistency_weight=args.history_consistency_weight,
                 history_consistency_zero_weight=args.history_consistency_zero_weight,
+                history_sensitivity_weight=args.history_sensitivity_weight,
+                history_sensitivity_margin=args.history_sensitivity_margin,
                 set_loss_weight=args.set_loss_weight,
                 set_loss_min_count=args.set_loss_min_count,
                 set_loss_negative_weight=args.set_loss_negative_weight,
@@ -1203,6 +1262,8 @@ def main() -> None:
                 plan_weight=args.trajectory_target_loss_weight,
                 step_plan_weight=args.step_plan_loss_weight,
                 plan_teacher_forcing=0.0,
+                history_sensitivity_weight=args.history_sensitivity_weight,
+                history_sensitivity_margin=args.history_sensitivity_margin,
                 set_loss_weight=args.set_loss_weight,
                 set_loss_min_count=args.set_loss_min_count,
                 set_loss_negative_weight=args.set_loss_negative_weight,

@@ -519,7 +519,60 @@ class BCCorpus:
     def all_indices(self) -> list[tuple[int, int]]:
         return [x for g in self.groups for x in g]
 
-    def collate(self, indices: list[tuple[int, int]], device: torch.device) -> BCBatch:
+    @staticmethod
+    def _augment_masked_sequence(
+        mask: np.ndarray,
+        value_arrays: list[np.ndarray],
+        *,
+        stream_drop_prob: float,
+        event_drop_prob: float,
+        tail_drop_prob: float,
+    ) -> None:
+        """In-place history corruption used during training only.
+
+        BC history is extracted from expert prefixes, while live play uses the
+        model's own prefixes. Randomly hiding streams, individual events, and
+        the most recent suffix makes the model robust to that exposure gap.
+        """
+        if mask.size == 0:
+            return
+        bsz = mask.shape[0]
+        stream_drop_prob = max(0.0, min(1.0, float(stream_drop_prob)))
+        event_drop_prob = max(0.0, min(1.0, float(event_drop_prob)))
+        tail_drop_prob = max(0.0, min(1.0, float(tail_drop_prob)))
+        for bi in range(bsz):
+            valid = np.flatnonzero(mask[bi] > 0)
+            if valid.size == 0:
+                continue
+            drop = False
+            if stream_drop_prob > 0 and np.random.random() < stream_drop_prob:
+                drop = True
+                keep = np.empty(0, dtype=np.int64)
+            else:
+                keep = valid
+                if tail_drop_prob > 0 and np.random.random() < tail_drop_prob:
+                    keep_len = int(np.random.randint(0, valid.size + 1))
+                    keep = valid[-keep_len:] if keep_len > 0 else np.empty(0, dtype=np.int64)
+                if event_drop_prob > 0 and keep.size:
+                    event_keep = np.random.random(keep.size) >= event_drop_prob
+                    keep = keep[event_keep]
+            if drop or keep.size != valid.size:
+                drop_idx = np.setdiff1d(valid, keep, assume_unique=True)
+                if drop_idx.size:
+                    mask[bi, drop_idx] = 0.0
+                    for arr in value_arrays:
+                        arr[bi, drop_idx] = 0
+
+    def collate(
+        self,
+        indices: list[tuple[int, int]],
+        device: torch.device,
+        *,
+        history_augment: bool = False,
+        history_stream_drop_prob: float = 0.0,
+        history_event_drop_prob: float = 0.0,
+        history_tail_drop_prob: float = 0.0,
+    ) -> BCBatch:
         bsz = len(indices)
         n_options = [len(self.npz_data[di]["ot"][si]) for di, si in indices]
         max_options = max(n_options)
@@ -719,6 +772,46 @@ class BCCorpus:
                             board_history_feats[bi, -n0:, :n1] = arr[-n0:, :n1]
                 if "board_hist_mask" in data:
                     _copy_1d(data, "board_hist_mask", si, board_history_mask, bi, dtype=np.float32)
+
+        if history_augment:
+            self._augment_masked_sequence(
+                history_mask,
+                [
+                    history_type, history_card, history_card2, history_attack,
+                    history_context, history_select_type, history_count,
+                ],
+                stream_drop_prob=history_stream_drop_prob,
+                event_drop_prob=history_event_drop_prob,
+                tail_drop_prob=history_tail_drop_prob,
+            )
+            self._augment_masked_sequence(
+                opp_history_mask,
+                [
+                    opp_history_type, opp_history_card, opp_history_card2, opp_history_attack,
+                    opp_history_context, opp_history_select_type, opp_history_count,
+                ],
+                stream_drop_prob=history_stream_drop_prob,
+                event_drop_prob=history_event_drop_prob,
+                tail_drop_prob=history_tail_drop_prob,
+            )
+            self._augment_masked_sequence(
+                log_history_mask,
+                [
+                    log_history_type, log_history_player, log_history_card, log_history_card2,
+                    log_history_attack, log_history_serial, log_history_serial2,
+                    log_history_from_area, log_history_to_area, log_history_value,
+                ],
+                stream_drop_prob=history_stream_drop_prob,
+                event_drop_prob=history_event_drop_prob,
+                tail_drop_prob=history_tail_drop_prob,
+            )
+            self._augment_masked_sequence(
+                board_history_mask,
+                [board_history_cards, board_history_feats],
+                stream_drop_prob=history_stream_drop_prob,
+                event_drop_prob=history_event_drop_prob,
+                tail_drop_prob=history_tail_drop_prob,
+            )
 
         max_steps = max(len(a) for a in actions) + 1
         targets = np.full((bsz, max_steps), -1, dtype=np.int64)

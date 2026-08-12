@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-12 17:31 Asia/Shanghai.
+Last updated: 2026-08-12 20:10 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -20,6 +20,94 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## Active Remote Job: History-Safe Marnie Repair 2026-08-12
+
+User asked how to repair history models and requested a complete implementation
+and test pass rather than small Kaggle-submission-consuming tweaks.
+
+Implemented locally and synced to ks:
+
+- `ptcg_rl/model.py`: history GRUs now use `_SafeGRU`, which preserves normal
+  checkpoint parameter names but disables cuDNN `flatten_parameters`. This fixes
+  the `CUDNN_STATUS_NOT_INITIALIZED` failure seen when history models were moved
+  to CUDA on the shared A800 host.
+- `PolicyValueNet` and `CrossAttentionPolicyValueNet`: history is now merged
+  through a residual gate instead of a full replacement concat MLP:
+  `h + sigmoid(gate([h,hist])) * tanh(delta(hist))`. The gate is initialized to
+  about 1.8%, so history starts as a small correction to the strong stateless
+  state encoder and can grow only if useful.
+- `ptcg_rl/bc2/data.py`: training-only history corruption is available through
+  stream/event/tail dropping. This targets the teacher-forcing gap: offline
+  history prefixes come from replay/expert play, while live history prefixes
+  come from the model's own prior decisions.
+- `ptcg_rl/bc2/losses.py` and `tools/bc2_train.py`: added first-step KL
+  consistency between clean history, corrupted history, and zero history. This
+  discourages brittle history shortcuts that improve validation loss but damage
+  ladder play.
+- `tools/bc2_train.py`: any enabled history stream now disables cuDNN
+  automatically, in addition to supporting `PTCG_DISABLE_CUDNN=1`.
+- `ptcg_rl/numpy_policy.py`: NumPy inference understands the new residual-gated
+  history merge and remains backward-compatible with old checkpoints.
+
+Validation before long run:
+
+- Local `py_compile` and `git diff --check` passed.
+- Local synthetic forward/backward passed for pointer and cross-attn history
+  models.
+- Remote `py_compile` passed.
+- Remote CUDA `.to()` smoke passed:
+  `pointer _SafeGRU cuda:0`, `cross_attn _SafeGRU cuda:0`.
+- A previous history-safe runner failed before this fix with
+  `RuntimeError: cuDNN error: CUDNN_STATUS_NOT_INITIALIZED`; those failed logs
+  were backed up to `logs/history_safe_20260812/failed_cudnn_2000/`.
+
+Current remote runner:
+
+- Script: `/tmp/run_history_safe_20260812.sh`.
+- Main log: `logs/history_safe_20260812/runner.log`.
+- Nohup log: `logs/history_safe_20260812.nohup.log`.
+- Train logs:
+  - `logs/history_safe_20260812/train/marnie_b8f_pointer_init_h16.log`
+  - `logs/history_safe_20260812/train/marnie_b8f_cross_init_h16.log`
+  - `logs/history_safe_20260812/train/marnie_b8f_cross_scratch_h32.log`
+- Checkpoints:
+  `checkpoints/history_safe_20260812/bc2_marnie_b8f_historysafe_*.npz`.
+- Eval outputs, after all three trainings finish:
+  `logs/history_safe_20260812/eval/random_g500.csv`,
+  `logs/history_safe_20260812/eval/vs_coverage_g100.csv`,
+  `logs/history_safe_20260812/eval/vs_coverage_g100_arch_matrix.csv`,
+  weighted 0810 ladder CSVs, and `summary.txt`.
+
+Three models started in parallel at about `2026-08-12T20:05:18+08:00`:
+
+- GPU0 `marnie_b8f_pointer_init_h16`: old strong pointer checkpoint init,
+  `width=4`, `history_k=16`, `log_history_k=64`, `board_history_k=8`,
+  `epochs=6`, `batch=1024`, `lr=5e-5`, 32GB cap.
+- GPU1 `marnie_b8f_cross_init_h16`: old strong pointer checkpoint partial init,
+  cross-attn `width=4`, `state_layers=2`, same h16 history, `epochs=6`,
+  `batch=1536`, `lr=4e-5`, 56GB cap.
+- GPU2 `marnie_b8f_cross_scratch_h32`: scratch cross-attn `width=4`,
+  `history_k=32`, `log_history_k=128`, `board_history_k=12`, `epochs=8`,
+  `batch=1536`, `lr=3e-5`, 56GB cap.
+
+At the first post-fix check all three had loaded the full corpus and entered
+epoch 1. GPU memory/utilization were roughly GPU0 `18.8GB/92%`, GPU1
+`30.3GB/55%`, GPU2 `44.2GB/96%`.
+
+Use these monitor commands:
+
+```bash
+cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+tail -f logs/history_safe_20260812/runner.log
+for f in logs/history_safe_20260812/train/*.log; do echo "===$f==="; tail -30 "$f"; done
+nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits
+```
+
+Submission rule for this experiment: do not submit merely because validation
+loss improves. Only consider a history-safe checkpoint if random remains strong
+and `eval_baseline_delta.py`/archetype matrix beats the current old-method
+Marnie baseline on the filtered RR pool and the 0810 ladder-weighted scores.
 
 ## Active Remote Job: Marnie Old-Recipe Sig Specialists 2026-08-12
 

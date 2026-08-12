@@ -18,8 +18,10 @@ import numpy as np
 from .encoder import FastEncoder, MAX_HAND
 from .history_features import (
     BOARD_HISTORY_FEAT_DIM,
+    HISTORY_SUMMARY_DIM,
     action_event_from_encoded,
     board_snapshot_from_encoded,
+    history_summary_from_arrays,
     pack_action_history,
     pack_board_history,
     pack_log_history_from_obs,
@@ -90,6 +92,11 @@ class NumpyPolicy:
             if "board_history_feat_fc.weight" in self.w
             else BOARD_HISTORY_FEAT_DIM
         )
+        self._history_summary_dim = (
+            int(self.w["history_summary_fc1.weight"].shape[1])
+            if "history_summary_fc1.weight" in self.w
+            else 0
+        )
         self._history: list[dict[str, float | int]] = []
         self._board_history: list[dict[str, np.ndarray]] = []
         if self._arch == "cross_attn":
@@ -131,9 +138,14 @@ class NumpyPolicy:
             and self._opp_history_k <= 0
             and self._log_history_k <= 0
             and self._board_history_k <= 0
+            and self._history_summary_dim <= 0
         ):
             return None
         out: dict[str, np.ndarray] = {}
+        own = None
+        opp = None
+        logs = None
+        boards = None
         if self._history_k > 0:
             own = pack_action_history(self._history, self._history_k)
             out.update({k: np.asarray(v) for k, v in own.items()})
@@ -155,6 +167,26 @@ class NumpyPolicy:
             out["board_cards"] = np.asarray(boards["cards"])
             out["board_feats"] = np.asarray(boards["feats"])
             out["board_mask"] = np.asarray(boards["mask"])
+        if self._history_summary_dim > 0:
+            if own is None:
+                own = pack_action_history(self._history, max(self._history_k, 1))
+            if opp is None:
+                opp = pack_action_history([], max(self._opp_history_k, 1))
+            if logs is None:
+                logs = pack_log_history_from_obs(obs_dict or {}, max(self._log_history_k, 1))
+            if boards is None:
+                boards = pack_board_history(
+                    self._board_history,
+                    max(self._board_history_k, 1),
+                    self._board_history_feat_dim,
+                )
+            out["summary"] = np.asarray(history_summary_from_arrays(
+                own_hist=own,
+                opp_hist=opp,
+                log_hist=logs,
+                board_hist=boards,
+                dim=self._history_summary_dim or HISTORY_SUMMARY_DIM,
+            ))
         return out
 
     def _remember_decision(self, d, picks: list[int]) -> None:
@@ -347,7 +379,22 @@ class NumpyPolicy:
             parts.append(self._encode_log_history(history))
         if self._board_history_k > 0:
             parts.append(self._encode_board_history(history))
+        if self._history_summary_dim > 0:
+            parts.append(self._encode_history_summary(history))
         return np.concatenate(parts).astype(np.float32, copy=False) if parts else np.zeros(0, dtype=np.float32)
+
+    def _encode_history_summary(self, history: dict[str, np.ndarray] | None) -> np.ndarray:
+        if self._history_summary_dim <= 0:
+            return np.zeros(0, dtype=np.float32)
+        out_dim = self.w["history_summary_fc2.bias"].shape[0]
+        if not history or "summary" not in history:
+            return np.zeros(out_dim, dtype=np.float32)
+        x = self._fit_feat_dim(np.asarray(history["summary"], dtype=np.float32), self._history_summary_dim)
+        return _relu(_linear(
+            self.w["history_summary_fc2.weight"],
+            self.w["history_summary_fc2.bias"],
+            _relu(_linear(self.w["history_summary_fc1.weight"], self.w["history_summary_fc1.bias"], x)),
+        ))
 
     def _merge_history(self, h: np.ndarray, history: dict[str, np.ndarray] | None) -> np.ndarray:
         if "history_out_fc.weight" not in self.w:

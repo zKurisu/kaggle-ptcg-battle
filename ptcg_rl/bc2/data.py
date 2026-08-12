@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 from ptcg_rl.encoder import OPT_FEAT_DIM, STATE_FEAT_DIM
-from ptcg_rl.history_features import BOARD_HISTORY_FEAT_DIM
+from ptcg_rl.history_features import BOARD_HISTORY_FEAT_DIM, HISTORY_SUMMARY_DIM, history_summary_from_arrays
 from ptcg_rl.plan_labels import PLAN_DIM, PLAN_LABELS, label_decision_plan
 
 
@@ -192,6 +192,7 @@ class BCCorpus:
         log_history_k: int = 0,
         board_history_k: int = 0,
         board_history_feat_dim: int = BOARD_HISTORY_FEAT_DIM,
+        history_summary_dim: int = 0,
         split_by_game: bool = False,
         load_progress_every: int = 0,
     ):
@@ -248,12 +249,14 @@ class BCCorpus:
         self.log_history_k = max(0, int(log_history_k))
         self.board_history_k = max(0, int(board_history_k))
         self.board_history_feat_dim = max(0, int(board_history_feat_dim))
+        self.history_summary_dim = max(0, int(history_summary_dim))
         self.split_by_game = bool(
             split_by_game
             or self.history_k > 0
             or self.opp_history_k > 0
             or self.log_history_k > 0
             or self.board_history_k > 0
+            or self.history_summary_dim > 0
             or self.step_plan
         )
         self.npz_data: list[dict[str, np.ndarray]] = []
@@ -626,6 +629,7 @@ class BCCorpus:
             dtype=np.float32,
         )
         board_history_mask = np.zeros((bsz, self.board_history_k), dtype=np.float32)
+        history_summary = np.zeros((bsz, self.history_summary_dim), dtype=np.float32)
         actions: list[list[int]] = []
         contexts: list[int] = []
         true_first_types: list[int] = []
@@ -772,6 +776,54 @@ class BCCorpus:
                             board_history_feats[bi, -n0:, :n1] = arr[-n0:, :n1]
                 if "board_hist_mask" in data:
                     _copy_1d(data, "board_hist_mask", si, board_history_mask, bi, dtype=np.float32)
+            if self.history_summary_dim > 0:
+                if "history_summary" in data:
+                    arr = np.asarray(data["history_summary"][si], dtype=np.float32).reshape(-1)
+                    n = min(arr.shape[0], self.history_summary_dim)
+                    if n:
+                        history_summary[bi, :n] = arr[:n]
+                else:
+                    history_summary[bi] = history_summary_from_arrays(
+                        own_hist={
+                            "type": history_type[bi],
+                            "card": history_card[bi],
+                            "card2": history_card2[bi],
+                            "attack": history_attack[bi],
+                            "context": history_context[bi],
+                            "select_type": history_select_type[bi],
+                            "count": history_count[bi],
+                            "mask": history_mask[bi],
+                        },
+                        opp_hist={
+                            "type": opp_history_type[bi],
+                            "card": opp_history_card[bi],
+                            "card2": opp_history_card2[bi],
+                            "attack": opp_history_attack[bi],
+                            "context": opp_history_context[bi],
+                            "select_type": opp_history_select_type[bi],
+                            "count": opp_history_count[bi],
+                            "mask": opp_history_mask[bi],
+                        },
+                        log_hist={
+                            "type": log_history_type[bi],
+                            "player": log_history_player[bi],
+                            "card": log_history_card[bi],
+                            "card2": log_history_card2[bi],
+                            "attack": log_history_attack[bi],
+                            "serial": log_history_serial[bi],
+                            "serial2": log_history_serial2[bi],
+                            "from_area": log_history_from_area[bi],
+                            "to_area": log_history_to_area[bi],
+                            "value": log_history_value[bi],
+                            "mask": log_history_mask[bi],
+                        },
+                        board_hist={
+                            "cards": board_history_cards[bi],
+                            "feats": board_history_feats[bi],
+                            "mask": board_history_mask[bi],
+                        },
+                        dim=self.history_summary_dim,
+                    ).astype(np.float32)
 
         if history_augment:
             self._augment_masked_sequence(
@@ -812,6 +864,51 @@ class BCCorpus:
                 event_drop_prob=history_event_drop_prob,
                 tail_drop_prob=history_tail_drop_prob,
             )
+            if self.history_summary_dim > 0:
+                # Recompute summary after corruption so sensitivity/consistency
+                # losses see the same information as the forward pass.
+                for bi in range(bsz):
+                    history_summary[bi] = history_summary_from_arrays(
+                        own_hist={
+                            "type": history_type[bi],
+                            "card": history_card[bi],
+                            "card2": history_card2[bi],
+                            "attack": history_attack[bi],
+                            "context": history_context[bi],
+                            "select_type": history_select_type[bi],
+                            "count": history_count[bi],
+                            "mask": history_mask[bi],
+                        },
+                        opp_hist={
+                            "type": opp_history_type[bi],
+                            "card": opp_history_card[bi],
+                            "card2": opp_history_card2[bi],
+                            "attack": opp_history_attack[bi],
+                            "context": opp_history_context[bi],
+                            "select_type": opp_history_select_type[bi],
+                            "count": opp_history_count[bi],
+                            "mask": opp_history_mask[bi],
+                        },
+                        log_hist={
+                            "type": log_history_type[bi],
+                            "player": log_history_player[bi],
+                            "card": log_history_card[bi],
+                            "card2": log_history_card2[bi],
+                            "attack": log_history_attack[bi],
+                            "serial": log_history_serial[bi],
+                            "serial2": log_history_serial2[bi],
+                            "from_area": log_history_from_area[bi],
+                            "to_area": log_history_to_area[bi],
+                            "value": log_history_value[bi],
+                            "mask": log_history_mask[bi],
+                        },
+                        board_hist={
+                            "cards": board_history_cards[bi],
+                            "feats": board_history_feats[bi],
+                            "mask": board_history_mask[bi],
+                        },
+                        dim=self.history_summary_dim,
+                    ).astype(np.float32)
 
         max_steps = max(len(a) for a in actions) + 1
         targets = np.full((bsz, max_steps), -1, dtype=np.int64)
@@ -872,6 +969,7 @@ class BCCorpus:
                 "board_cards": torch.as_tensor(board_history_cards, device=device),
                 "board_feats": torch.as_tensor(board_history_feats, device=device),
                 "board_mask": torch.as_tensor(board_history_mask, device=device),
+                "summary": torch.as_tensor(history_summary, device=device),
             },
             actions=actions,
             n_options=n_options,

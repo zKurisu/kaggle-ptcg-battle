@@ -9,6 +9,7 @@ DEFAULT_ACTION_HISTORY_K = 32
 DEFAULT_LOG_HISTORY_K = 128
 DEFAULT_BOARD_HISTORY_K = 12
 BOARD_HISTORY_FEAT_DIM = 32
+HISTORY_SUMMARY_DIM = 48
 
 MAX_LOG_TYPE = 31
 MAX_LOG_AREA = 31
@@ -68,6 +69,175 @@ def empty_action_history(k: int) -> dict[str, np.ndarray]:
         "count": np.zeros(k, dtype=np.float16),
         "mask": np.zeros(k, dtype=np.float16),
     }
+
+
+def empty_history_summary(dim: int = HISTORY_SUMMARY_DIM) -> np.ndarray:
+    return np.zeros(max(0, int(dim)), dtype=np.float16)
+
+
+def history_summary_from_arrays(
+    *,
+    own_hist: dict[str, np.ndarray] | None = None,
+    opp_hist: dict[str, np.ndarray] | None = None,
+    log_hist: dict[str, np.ndarray] | None = None,
+    board_hist: dict[str, np.ndarray] | None = None,
+    dim: int = HISTORY_SUMMARY_DIM,
+) -> np.ndarray:
+    """Build explicit ledger-style scalars from packed history streams.
+
+    Raw action/log sequences are hard for a BC model to exploit because most
+    next-action labels are locally explainable from the current state. This
+    summary exposes coarse, stable facts that matter for multi-turn planning:
+    action tempo, resource usage, public movement/damage pressure, and board
+    change since the first retained snapshot.
+    """
+    out = np.zeros(HISTORY_SUMMARY_DIM, dtype=np.float32)
+
+    def _arr(src: dict[str, np.ndarray] | None, key: str, dtype=np.float32) -> np.ndarray:
+        if not src or key not in src:
+            return np.zeros(0, dtype=dtype)
+        return np.asarray(src[key], dtype=dtype).reshape(-1)
+
+    def _masked(src: dict[str, np.ndarray] | None, key: str) -> tuple[np.ndarray, np.ndarray]:
+        val = _arr(src, key)
+        mask = _arr(src, "mask") > 0
+        n = min(len(val), len(mask))
+        return val[-n:], mask[-n:]
+
+    def _count(src: dict[str, np.ndarray] | None, key: str, pred) -> float:
+        val, mask = _masked(src, key)
+        if len(val) == 0:
+            return 0.0
+        return float(np.logical_and(mask, pred(val)).sum())
+
+    def _last_norm(src: dict[str, np.ndarray] | None, key: str, denom: float) -> float:
+        val, mask = _masked(src, key)
+        if len(val) == 0 or not bool(mask.any()):
+            return 0.0
+        last = val[np.where(mask)[0][-1]]
+        return float(np.clip(last / max(denom, 1.0), 0.0, 1.0))
+
+    own_mask = _arr(own_hist, "mask") > 0
+    opp_mask = _arr(opp_hist, "mask") > 0
+    log_mask = _arr(log_hist, "mask") > 0
+    board_mask = _arr(board_hist, "mask") > 0 if board_hist else np.zeros(0, dtype=bool)
+
+    own_n = float(own_mask.sum())
+    opp_n = float(opp_mask.sum())
+    log_n = float(log_mask.sum())
+    board_n = float(board_mask.sum())
+
+    # Action type ids are stored as opt_type + 1. Values below are therefore
+    # one-indexed variants of TYPE_IDS in tools/bc2_train.py.
+    TYPE_ATTACH = 9
+    TYPE_EVOLVE = 10
+    TYPE_ABILITY = 11
+    TYPE_RETREAT = 13
+    TYPE_ATTACK = 14
+    TYPE_END = 15
+    TYPE_SKILL = 16
+    MAIN_CTX = 1
+    ATTACH_FROM_CTX = 22
+    ATTACH_TO_CTX = 23
+    EVOLVE_CTX = 38
+    ATTACK_CTX = 36
+
+    out[0] = np.clip(own_n / 32.0, 0.0, 1.0)
+    out[1] = np.clip(opp_n / 32.0, 0.0, 1.0)
+    out[2] = np.clip(log_n / 128.0, 0.0, 1.0)
+    out[3] = np.clip(board_n / 12.0, 0.0, 1.0)
+
+    for base, src in ((4, own_hist), (14, opp_hist)):
+        n = max(float((_arr(src, "mask") > 0).sum()), 1.0)
+        out[base + 0] = np.clip(_count(src, "type", lambda x: x == TYPE_ATTACK) / n, 0.0, 1.0)
+        out[base + 1] = np.clip(_count(src, "type", lambda x: x == TYPE_ATTACH) / n, 0.0, 1.0)
+        out[base + 2] = np.clip(_count(src, "type", lambda x: x == TYPE_EVOLVE) / n, 0.0, 1.0)
+        out[base + 3] = np.clip(_count(src, "type", lambda x: x == TYPE_ABILITY) / n, 0.0, 1.0)
+        out[base + 4] = np.clip(_count(src, "type", lambda x: x == TYPE_RETREAT) / n, 0.0, 1.0)
+        out[base + 5] = np.clip(_count(src, "type", lambda x: x == TYPE_END) / n, 0.0, 1.0)
+        out[base + 6] = np.clip(_count(src, "type", lambda x: x == TYPE_SKILL) / n, 0.0, 1.0)
+        out[base + 7] = np.clip(_count(src, "context", lambda x: x == MAIN_CTX) / n, 0.0, 1.0)
+        out[base + 8] = _last_norm(src, "type", 18.0)
+        out[base + 9] = _last_norm(src, "context", 65.0)
+
+    out[24] = np.clip(_count(log_hist, "player", lambda x: x == 1) / max(log_n, 1.0), 0.0, 1.0)
+    out[25] = np.clip(_count(log_hist, "player", lambda x: x == 2) / max(log_n, 1.0), 0.0, 1.0)
+    out[26] = np.clip(_count(log_hist, "from_area", lambda x: x > 0) / max(log_n, 1.0), 0.0, 1.0)
+    out[27] = np.clip(_count(log_hist, "to_area", lambda x: x > 0) / max(log_n, 1.0), 0.0, 1.0)
+    log_value = _arr(log_hist, "value")
+    if len(log_value) and len(log_mask):
+        n = min(len(log_value), len(log_mask))
+        vals = log_value[-n:][log_mask[-n:]]
+        if vals.size:
+            out[28] = float(np.clip(np.maximum(vals, 0.0).sum() / 12.0, 0.0, 1.0))
+            out[29] = float(np.clip(np.abs(np.minimum(vals, 0.0)).sum() / 12.0, 0.0, 1.0))
+
+    # Current retained board-history tempo. These are intentionally coarse:
+    # exact cards remain available in board_hist_cards/raw current state.
+    cards = np.asarray((board_hist or {}).get("cards", np.zeros((0, 12))), dtype=np.int64)
+    feats = np.asarray((board_hist or {}).get("feats", np.zeros((0, 0))), dtype=np.float32)
+    if cards.ndim == 2 and cards.shape[0] and board_mask.size:
+        n = min(cards.shape[0], board_mask.shape[0])
+        kept = cards[-n:][board_mask[-n:]]
+        if kept.size:
+            first = kept[0]
+            last = kept[-1]
+            out[30] = float(last[0] > 0)
+            out[31] = float(last[6] > 0)
+            out[32] = np.clip((last[1:6] > 0).sum() / 5.0, 0.0, 1.0)
+            out[33] = np.clip((last[7:12] > 0).sum() / 5.0, 0.0, 1.0)
+            out[34] = np.clip(np.logical_and(first[:6] == 0, last[:6] > 0).sum() / 6.0, 0.0, 1.0)
+            out[35] = np.clip(np.logical_and(first[6:] == 0, last[6:] > 0).sum() / 6.0, 0.0, 1.0)
+    if feats.ndim == 2 and feats.shape[0] and board_mask.size:
+        n = min(feats.shape[0], board_mask.shape[0])
+        kept = feats[-n:][board_mask[-n:]]
+        if kept.size:
+            first = kept[0]
+            last = kept[-1]
+            m = min(len(first), len(last), 8)
+            if m:
+                delta = last[:m] - first[:m]
+                out[36] = float(np.clip(np.maximum(delta, 0.0).sum() / max(m, 1), 0.0, 1.0))
+                out[37] = float(np.clip(np.abs(np.minimum(delta, 0.0)).sum() / max(m, 1), 0.0, 1.0))
+            out[38] = float(np.clip(np.mean(last[: min(len(last), 16)]), 0.0, 1.0)) if len(last) else 0.0
+
+    own_types = _arr(own_hist, "type")
+    own_m = _arr(own_hist, "mask") > 0
+    if len(own_types) and len(own_m):
+        valid = own_types[-min(len(own_types), len(own_m)):][own_m[-min(len(own_types), len(own_m)):]]
+        if valid.size:
+            recent = valid[-4:]
+            out[39] = float(np.any(recent == TYPE_ATTACK))
+            out[40] = float(np.any(recent == TYPE_ATTACH))
+            out[41] = float(np.any(recent == TYPE_EVOLVE))
+            out[42] = float(np.any(recent == TYPE_ABILITY))
+    opp_types = _arr(opp_hist, "type")
+    opp_m = _arr(opp_hist, "mask") > 0
+    if len(opp_types) and len(opp_m):
+        valid = opp_types[-min(len(opp_types), len(opp_m)):][opp_m[-min(len(opp_types), len(opp_m)):]]
+        if valid.size:
+            recent = valid[-4:]
+            out[43] = float(np.any(recent == TYPE_ATTACK))
+            out[44] = float(np.any(recent == TYPE_ATTACH))
+            out[45] = float(np.any(recent == TYPE_EVOLVE))
+            out[46] = float(np.any(recent == TYPE_ABILITY))
+
+    # Whether current decision recently followed key contexts.
+    own_ctx = _arr(own_hist, "context")
+    if len(own_ctx) and len(own_m):
+        valid = own_ctx[-min(len(own_ctx), len(own_m)):][own_m[-min(len(own_ctx), len(own_m)):]]
+        if valid.size:
+            recent = valid[-6:]
+            out[47] = float(np.any(np.isin(recent, [ATTACH_FROM_CTX, ATTACH_TO_CTX, EVOLVE_CTX, ATTACK_CTX])))
+
+    dim = max(0, int(dim))
+    if dim == HISTORY_SUMMARY_DIM:
+        return out.astype(np.float16)
+    fitted = np.zeros(dim, dtype=np.float32)
+    n = min(dim, HISTORY_SUMMARY_DIM)
+    if n:
+        fitted[:n] = out[:n]
+    return fitted.astype(np.float16)
 
 
 def pack_action_history(events: list[dict[str, Any]], k: int) -> dict[str, np.ndarray]:

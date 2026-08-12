@@ -137,6 +137,18 @@ def _first_step_logits(
     return model.option_logits(h, opts, picked_sum, mask)
 
 
+def _first_step_label_nll(logits: torch.Tensor, batch: BCBatch) -> tuple[torch.Tensor, torch.Tensor]:
+    target = batch.targets[:, 0]
+    valid = target >= 0
+    if not bool(valid.any()):
+        z = torch.zeros((), dtype=logits.dtype, device=logits.device)
+        return z, z
+    logp = F.log_softmax(logits, dim=-1)
+    nll = -logp.gather(1, target.clamp(min=0).unsqueeze(1)).squeeze(1)
+    weights = batch.sample_weight * valid.float()
+    return (nll * weights).sum() / weights.sum().clamp(min=1.0), weights.sum()
+
+
 def sequence_loss_parts(model, batch: BCBatch, *, first_action_weight: float = 1.0,
                         raw_policy_loss_weight: float = 0.0,
                         value_weight: float = 0.0,
@@ -147,6 +159,8 @@ def sequence_loss_parts(model, batch: BCBatch, *, first_action_weight: float = 1
                         history_consistency_history: dict[str, torch.Tensor] | None = None,
                         history_consistency_weight: float = 0.0,
                         history_consistency_zero_weight: float = 0.0,
+                        history_sensitivity_weight: float = 0.0,
+                        history_sensitivity_margin: float = 0.03,
                         set_loss_weight: float = 0.0,
                         set_loss_min_count: int = 2,
                         set_loss_negative_weight: float = 0.25) -> dict[str, torch.Tensor]:
@@ -273,6 +287,8 @@ def sequence_loss_parts(model, batch: BCBatch, *, first_action_weight: float = 1
                 step_plan_loss = (elem * plan_weight_rows).sum() / step_plan_count.clamp(min=1.0)
                 loss = loss + float(step_plan_weight) * step_plan_loss
     history_consistency = torch.tensor(0.0, device=device)
+    history_sensitivity = torch.tensor(0.0, device=device)
+    history_sensitivity_delta = torch.tensor(0.0, device=device)
     if (history_consistency_weight > 0 or history_consistency_zero_weight > 0) and batch.history:
         ref_hist = history_consistency_ref_history if history_consistency_ref_history is not None else batch.history
         with torch.no_grad():
@@ -290,6 +306,15 @@ def sequence_loss_parts(model, batch: BCBatch, *, first_action_weight: float = 1
             zero_consistency = F.kl_div(zero_logp, ref_prob, reduction="batchmean")
             history_consistency = history_consistency + zero_consistency
             loss = loss + float(history_consistency_zero_weight) * zero_consistency
+    if history_sensitivity_weight > 0 and batch.history:
+        full_logits = _first_step_logits(model, batch, batch.history)
+        zero_logits = _first_step_logits(model, batch, _zero_history_like(batch.history))
+        full_nll, sens_count = _first_step_label_nll(full_logits, batch)
+        zero_nll, _ = _first_step_label_nll(zero_logits, batch)
+        history_sensitivity_delta = zero_nll.detach() - full_nll.detach()
+        history_sensitivity = F.relu(full_nll - zero_nll + float(history_sensitivity_margin))
+        history_sensitivity = history_sensitivity * (sens_count > 0).to(dtype=history_sensitivity.dtype)
+        loss = loss + float(history_sensitivity_weight) * history_sensitivity
     return {
         "loss": loss,
         "policy": policy_loss,
@@ -302,6 +327,8 @@ def sequence_loss_parts(model, batch: BCBatch, *, first_action_weight: float = 1
         "trajectory": trajectory_loss,
         "step_plan": step_plan_loss,
         "history_consistency": history_consistency,
+        "history_sensitivity": history_sensitivity,
+        "history_sensitivity_delta": history_sensitivity_delta,
         "rows": torch.tensor(float(bsz), device=device),
         "policy_weight": weight_total.detach(),
         "policy_raw_count": raw_count.detach(),
@@ -322,6 +349,8 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
                  history_consistency_history: dict[str, torch.Tensor] | None = None,
                  history_consistency_weight: float = 0.0,
                  history_consistency_zero_weight: float = 0.0,
+                 history_sensitivity_weight: float = 0.0,
+                 history_sensitivity_margin: float = 0.03,
                  set_loss_weight: float = 0.0,
                  set_loss_min_count: int = 2,
                  set_loss_negative_weight: float = 0.25) -> torch.Tensor:
@@ -338,6 +367,8 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
         history_consistency_history=history_consistency_history,
         history_consistency_weight=history_consistency_weight,
         history_consistency_zero_weight=history_consistency_zero_weight,
+        history_sensitivity_weight=history_sensitivity_weight,
+        history_sensitivity_margin=history_sensitivity_margin,
         set_loss_weight=set_loss_weight,
         set_loss_min_count=set_loss_min_count,
         set_loss_negative_weight=set_loss_negative_weight,

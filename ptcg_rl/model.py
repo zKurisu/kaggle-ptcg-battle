@@ -11,7 +11,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .encoder import STATE_FEAT_DIM, OPT_FEAT_DIM, N_CARDS, N_ATTACKS, N_OPT_TYPES, BOARD_SLOTS, MAX_HAND
-from .history_features import BOARD_HISTORY_FEAT_DIM, MAX_LOG_AREA, MAX_LOG_PLAYER, MAX_LOG_TYPE, MAX_SERIAL
+from .history_features import (
+    BOARD_HISTORY_FEAT_DIM,
+    HISTORY_SUMMARY_DIM,
+    MAX_LOG_AREA,
+    MAX_LOG_PLAYER,
+    MAX_LOG_TYPE,
+    MAX_SERIAL,
+)
 
 NEG_INF = -1e9
 _EC, _EA, _EO, _OE, _HD, _S1, _SC = 64, 32, 16, 128, 256, 512, 128
@@ -41,7 +48,9 @@ class PolicyValueNet(nn.Module):
                  hierarchical_plan: bool = False, history_k: int = 0,
                  opp_history_k: int = 0, log_history_k: int = 0,
                  board_history_k: int = 0,
-                 board_history_feat_dim: int = BOARD_HISTORY_FEAT_DIM):
+                 board_history_feat_dim: int = BOARD_HISTORY_FEAT_DIM,
+                 history_summary_dim: int = 0,
+                 history_gate_init_bias: float = -4.0):
         """width=1.0→501K, 2.0→4M, 3.0→9M params."""
         super().__init__()
         ec = int(_EC * width); ea = int(_EA * width); eo_t = int(_EO * width)
@@ -59,11 +68,14 @@ class PolicyValueNet(nn.Module):
         self.log_history_k = max(0, int(log_history_k))
         self.board_history_k = max(0, int(board_history_k))
         self.board_history_feat_dim = max(0, int(board_history_feat_dim))
+        self.history_summary_dim = max(0, int(history_summary_dim))
+        self.history_gate_init_bias = float(history_gate_init_bias)
         self._ec=ec; self._ea=ea; self._eo_t=eo_t; self._oe=oe; self._hd=hd
         self._ctx=ctx; self._area=area; self._idx=idx
         self._plan_cd = sc if self.hierarchical_plan else 0
         hist_streams = int(self.history_k > 0) + int(self.opp_history_k > 0)
         hist_streams += int(self.log_history_k > 0) + int(self.board_history_k > 0)
+        hist_streams += int(self.history_summary_dim > 0)
         self._hist = sc * hist_streams
 
         self.card_emb = nn.Embedding(N_CARDS + 2, ec, padding_idx=0)
@@ -107,6 +119,9 @@ class PolicyValueNet(nn.Module):
             board_in = 4 * ec + sc + ctx + 1
             self.board_history_token_fc = nn.Linear(board_in, sc)
             self.board_history_gru = _SafeGRU(sc, sc, batch_first=True)
+        if self.history_summary_dim > 0:
+            self.history_summary_fc1 = nn.Linear(self.history_summary_dim, sc)
+            self.history_summary_fc2 = nn.Linear(sc, sc)
         if self._hist > 0:
             self.history_out_fc = nn.Linear(hd + self._hist, hd)
             self.history_delta_fc = nn.Linear(self._hist, hd)
@@ -132,7 +147,7 @@ class PolicyValueNet(nn.Module):
             nn.init.zeros_(self.history_delta_fc.weight)
             nn.init.zeros_(self.history_delta_fc.bias)
             nn.init.zeros_(self.history_gate_fc.weight)
-            nn.init.constant_(self.history_gate_fc.bias, -4.0)
+            nn.init.constant_(self.history_gate_fc.bias, self.history_gate_init_bias)
 
     def _init(self):
         for m in self.modules():
@@ -253,6 +268,16 @@ class PolicyValueNet(nn.Module):
             hidden = torch.where(valid, next_hidden, hidden)
         return hidden.squeeze(0)
 
+    def _encode_history_summary(self, history: dict[str, torch.Tensor] | None,
+                                bsz: int, device: torch.device) -> torch.Tensor:
+        if self.history_summary_dim <= 0:
+            return torch.zeros(bsz, 0, device=device)
+        if not history or "summary" not in history or history["summary"].numel() == 0:
+            return torch.zeros(bsz, self.history_summary_fc2.out_features, device=device)
+        x = history["summary"].to(device=device, dtype=torch.float32)
+        x = self._fit_feat_dim(x, self.history_summary_dim)
+        return F.relu(self.history_summary_fc2(F.relu(self.history_summary_fc1(x))))
+
     def _encode_history(self, history: dict[str, torch.Tensor] | None, bsz: int,
                         device: torch.device) -> torch.Tensor:
         if self._hist <= 0:
@@ -270,6 +295,8 @@ class PolicyValueNet(nn.Module):
             parts.append(self._encode_log_history(history, bsz, device))
         if self.board_history_k > 0:
             parts.append(self._encode_board_history(history, bsz, device))
+        if self.history_summary_dim > 0:
+            parts.append(self._encode_history_summary(history, bsz, device))
         return torch.cat(parts, dim=-1) if parts else torch.zeros(bsz, 0, device=device)
 
     def _merge_history(self, h: torch.Tensor, history: dict[str, torch.Tensor] | None) -> torch.Tensor:
@@ -690,6 +717,8 @@ class CrossAttentionPolicyValueNet(nn.Module):
         log_history_k: int = 0,
         board_history_k: int = 0,
         board_history_feat_dim: int = BOARD_HISTORY_FEAT_DIM,
+        history_summary_dim: int = 0,
+        history_gate_init_bias: float = -4.0,
         state_layers: int = 2,
     ):
         super().__init__()
@@ -708,12 +737,15 @@ class CrossAttentionPolicyValueNet(nn.Module):
         self.log_history_k = max(0, int(log_history_k))
         self.board_history_k = max(0, int(board_history_k))
         self.board_history_feat_dim = max(0, int(board_history_feat_dim))
+        self.history_summary_dim = max(0, int(history_summary_dim))
+        self.history_gate_init_bias = float(history_gate_init_bias)
         self.state_layers_n = int(state_layers)
         self._ec=ec; self._ea=ea; self._eo_t=eo_t; self._oe=oe; self._hd=hd
         self._ctx=ctx; self._area=area; self._idx=idx
         self._plan_cd = sc if self.hierarchical_plan else 0
         hist_streams = int(self.history_k > 0) + int(self.opp_history_k > 0)
         hist_streams += int(self.log_history_k > 0) + int(self.board_history_k > 0)
+        hist_streams += int(self.history_summary_dim > 0)
         self._hist = sc * hist_streams
         self.register_buffer("arch_code", torch.tensor([1], dtype=torch.int32), persistent=True)
 
@@ -765,6 +797,9 @@ class CrossAttentionPolicyValueNet(nn.Module):
             board_in = 4 * ec + sc + ctx + 1
             self.board_history_token_fc = nn.Linear(board_in, sc)
             self.board_history_gru = _SafeGRU(sc, sc, batch_first=True)
+        if self.history_summary_dim > 0:
+            self.history_summary_fc1 = nn.Linear(self.history_summary_dim, sc)
+            self.history_summary_fc2 = nn.Linear(sc, sc)
         if self._hist > 0:
             self.history_out_fc = nn.Linear(hd + self._hist, hd)
             self.history_delta_fc = nn.Linear(self._hist, hd)
@@ -798,7 +833,7 @@ class CrossAttentionPolicyValueNet(nn.Module):
             nn.init.zeros_(self.history_delta_fc.weight)
             nn.init.zeros_(self.history_delta_fc.bias)
             nn.init.zeros_(self.history_gate_fc.weight)
-            nn.init.constant_(self.history_gate_fc.bias, -4.0)
+            nn.init.constant_(self.history_gate_fc.bias, self.history_gate_init_bias)
 
     def _init(self):
         for m in self.modules():
@@ -962,6 +997,16 @@ class CrossAttentionPolicyValueNet(nn.Module):
             hidden = torch.where(valid, next_hidden, hidden)
         return hidden.squeeze(0)
 
+    def _encode_history_summary(self, history: dict[str, torch.Tensor] | None,
+                                bsz: int, device: torch.device) -> torch.Tensor:
+        if self.history_summary_dim <= 0:
+            return torch.zeros(bsz, 0, device=device)
+        if not history or "summary" not in history or history["summary"].numel() == 0:
+            return torch.zeros(bsz, self.history_summary_fc2.out_features, device=device)
+        x = history["summary"].to(device=device, dtype=torch.float32)
+        x = self._fit_feat_dim(x, self.history_summary_dim)
+        return F.relu(self.history_summary_fc2(F.relu(self.history_summary_fc1(x))))
+
     def _encode_history(self, history: dict[str, torch.Tensor] | None, bsz: int,
                         device: torch.device) -> torch.Tensor:
         if self._hist <= 0:
@@ -979,6 +1024,8 @@ class CrossAttentionPolicyValueNet(nn.Module):
             parts.append(self._encode_log_history(history, bsz, device))
         if self.board_history_k > 0:
             parts.append(self._encode_board_history(history, bsz, device))
+        if self.history_summary_dim > 0:
+            parts.append(self._encode_history_summary(history, bsz, device))
         return torch.cat(parts, dim=-1) if parts else torch.zeros(bsz, 0, device=device)
 
     def _merge_history(self, h: torch.Tensor, history: dict[str, torch.Tensor] | None) -> torch.Tensor:
@@ -1233,3 +1280,10 @@ def checkpoint_board_history_dims(z) -> tuple[int, int]:
         else BOARD_HISTORY_FEAT_DIM
     )
     return int(z["board_history_pos_emb.weight"].shape[0]), feat_dim
+
+
+def checkpoint_history_summary_dim(z) -> int:
+    """Infer explicit history summary feature width from a checkpoint."""
+    if "history_summary_fc1.weight" not in z:
+        return 0
+    return int(z["history_summary_fc1.weight"].shape[1])

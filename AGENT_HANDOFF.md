@@ -147,9 +147,30 @@ New data audit outputs:
 - `logs/alakazam_trajectory_target_audit_20260812/summary_planfix.log`
 - `logs/team_climb_coverage_20260812/*.csv`
 
+Important correction on score bands:
+
+- The `score` and `score_band` fields in the extracted BC corpus are not true
+  per-game ladder scores. `tools/bc_extract_v2.py` obtains scores by looking up
+  `TeamNames` in a leaderboard CSV snapshot during extraction, then assigns the
+  same score to all episodes from that team in the extracted window.
+- Raw Kaggle episode JSONs checked from
+  `/home/jie/Do/0_PTCG/workspace/episodes_raw/pokemon-tcg-ai-battle-episodes-2026-07-17.zip`
+  contain `TeamNames`, `EpisodeId`, rewards/statuses, and steps, but no
+  per-episode ladder score.
+- Therefore, a team/deck appearing only under corpus band `1200+` does not mean
+  the submitted agent only played high-ladder games. It may include the full
+  climb from 600 upward; the extract just labels all of that team's rows using
+  the leaderboard snapshot score.
+- For climb-stage analysis of other teams, use proxies:
+  chronological order within team/deck/date, opponent archetype/deck coverage,
+  opponent static score band, and Kaggle score-monitor traces when available
+  for our own accounts.
+
 Alakazam 7f9 score `1200+` only:
 
 - `831,044` decision rows, `9,320` games, all from `Majkel1337` in this corpus.
+  These rows are labeled `1200+` because Majkel's extracted leaderboard
+  snapshot score is `1273.8`, not because each game happened at 1200+.
 - Overall WR `5242/9320 = 0.562`.
 - Matchups:
   - Alakazam mirror `1398/2799 = 0.499`
@@ -167,11 +188,15 @@ Team-specific Alakazam data:
 - `Majkel1337` Alakazam:
   - total `12,227` games, `1,074,939` rows, WR `0.569`.
   - deck sigs: `7f9a538936e3` `9,320` games, `91f48d8ef728` `1,853`, `5a5ea26c99b9` `1,054`.
-  - score-band coverage for 7f9 is only `1200+`; it does not include a
-    600-1100 climb path in this corpus.
+  - corpus score-band coverage for 7f9 is only `1200+`, but that is a static
+    leaderboard label. Do not interpret it as absence of 600-1100 climb games.
+    Opponent static score bands for these rows include 600/700/800/900/1000/
+    1100 ranges, so the environment coverage is broader than the own band
+    suggests.
 - `LiamK` Alakazam:
   - `ca082d1c1eab`, `2,748` games, `229,827` rows, WR `0.490`.
-  - score-band coverage is only `1100-1199`.
+  - corpus score-band coverage is only `1100-1199`, again a static leaderboard
+    label, not true per-game climb phase.
   - Broader low/mid ladder coverage still needs other teams/sigs, not only
     Majkel/LiamK.
 - `James Cox & Henry Chao` are not Alakazam in the scanned data:
@@ -201,10 +226,10 @@ Training implication:
   1. strict `Majkel1337 + 7f9 + 1200+` specialist.
   2. strict `LiamK + ca08 + 1100-1199` specialist, evaluated as a separate
      Alakazam deck, not mixed into 7f9.
-  3. 7f9 routed mix: Majkel 1200+ as core plus broader 7f9 climb/high data
-     from other teams/sigs for lower-ladder opponent coverage. Do not rely on
-     Majkel alone for 600-1100 because the current corpus does not show that
-     climb path for 7f9.
+  3. 7f9 routed mix: Majkel 7f9 as a strong team-specific core plus broader
+     7f9/Alakazam data for opponent coverage. Because own score bands are
+     static, build climb proxies from chronological order and opponent
+     coverage rather than filtering by own score band alone.
 
 ## DVH Marnie Historical Submission Recheck 2026-08-11
 

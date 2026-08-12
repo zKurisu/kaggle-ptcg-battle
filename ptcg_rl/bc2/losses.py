@@ -117,14 +117,15 @@ def _set_aux_loss(
     return (row_loss * row_weight).sum() / row_weight.sum().clamp(min=1.0)
 
 
-def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
-                 value_weight: float = 0.0,
-                 plan_weight: float = 0.0,
-                 step_plan_weight: float = 0.0,
-                 plan_teacher_forcing: float = 0.0,
-                 set_loss_weight: float = 0.0,
-                 set_loss_min_count: int = 2,
-                 set_loss_negative_weight: float = 0.25) -> torch.Tensor:
+def sequence_loss_parts(model, batch: BCBatch, *, first_action_weight: float = 1.0,
+                        raw_policy_loss_weight: float = 0.0,
+                        value_weight: float = 0.0,
+                        plan_weight: float = 0.0,
+                        step_plan_weight: float = 0.0,
+                        plan_teacher_forcing: float = 0.0,
+                        set_loss_weight: float = 0.0,
+                        set_loss_min_count: int = 2,
+                        set_loss_negative_weight: float = 0.25) -> dict[str, torch.Tensor]:
     """Autoregressive sequence NLL with padded options masked out."""
     h = model.encode_state(batch.board, batch.hand, batch.feats, batch.history)
     opts = model.encode_options(batch.opt_type, batch.opt_card, batch.opt_card2, batch.opt_attack, batch.opt_feats)
@@ -137,6 +138,13 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
     picked_sum = torch.zeros(bsz, model._oe, device=device)
     total = torch.tensor(0.0, device=device)
     weight_total = torch.tensor(0.0, device=device)
+    raw_total = torch.tensor(0.0, device=device)
+    raw_count = torch.tensor(0.0, device=device)
+    first_total = torch.tensor(0.0, device=device)
+    first_weight_total = torch.tensor(0.0, device=device)
+    first_raw_total = torch.tensor(0.0, device=device)
+    first_count = torch.tensor(0.0, device=device)
+    first_correct = torch.tensor(0.0, device=device)
     plan_override = _combined_plan_override(
         model,
         h,
@@ -156,8 +164,18 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
             row_weight = batch.sample_weight * (float(first_action_weight) if step == 0 else 1.0)
             selected = logp.gather(1, target.clamp(min=0).unsqueeze(1)).squeeze(1)
             weights = row_weight * valid.float()
-            total = total - (selected * weights).sum()
+            nll = -selected
+            total = total + (nll * weights).sum()
             weight_total = weight_total + weights.sum()
+            raw_total = raw_total + (nll * valid.float()).sum()
+            raw_count = raw_count + valid.float().sum()
+            if step == 0:
+                first_total = first_total + (nll * weights).sum()
+                first_weight_total = first_weight_total + weights.sum()
+                first_raw_total = first_raw_total + (nll * valid.float()).sum()
+                first_count = first_count + valid.float().sum()
+                pred = logits.argmax(dim=-1)
+                first_correct = first_correct + ((pred == target) & valid).float().sum()
             with torch.no_grad():
                 picked = valid & (target < max_options)
                 if picked.any():
@@ -166,9 +184,16 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
                     picked_sum[rows] += opts[rows, cols]
                     avail[rows, cols] = False
     policy_loss = total / weight_total.clamp(min=1.0)
+    policy_raw_loss = raw_total / raw_count.clamp(min=1.0)
+    first_action_loss = first_total / first_weight_total.clamp(min=1.0)
+    first_action_raw_loss = first_raw_total / first_count.clamp(min=1.0)
+    first_action_acc = first_correct / first_count.clamp(min=1.0)
     loss = policy_loss
+    if raw_policy_loss_weight > 0:
+        loss = loss + float(raw_policy_loss_weight) * policy_raw_loss
+    set_loss = torch.tensor(0.0, device=device)
     if set_loss_weight > 0:
-        loss = loss + float(set_loss_weight) * _set_aux_loss(
+        set_loss = _set_aux_loss(
             model,
             h,
             opts,
@@ -177,6 +202,7 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
             negative_weight=float(set_loss_negative_weight),
             plan_override=plan_override,
         )
+        loss = loss + float(set_loss_weight) * set_loss
     if value_weight <= 0:
         value_loss = None
     else:
@@ -188,7 +214,12 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
             value_loss = value_loss / (batch.sample_weight * batch.outcome_mask).sum().clamp(min=1.0)
     if value_loss is not None:
         loss = loss + float(value_weight) * value_loss
+    value_loss_out = value_loss if value_loss is not None else torch.tensor(0.0, device=device)
     logits = _plan_logits(model, h) if (plan_weight > 0 or step_plan_weight > 0) else None
+    trajectory_loss = torch.tensor(0.0, device=device)
+    trajectory_count = torch.tensor(0.0, device=device)
+    step_plan_loss = torch.tensor(0.0, device=device)
+    step_plan_count = torch.tensor(0.0, device=device)
     if logits is not None:
         parts = _plan_parts(batch, logits)
         if plan_weight > 0:
@@ -201,8 +232,9 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
             if target is not None and bool((mask_part > 0).any()):
                 elem = F.binary_cross_entropy_with_logits(logits[:, sl], target, reduction="none")
                 plan_weight_rows = batch.sample_weight.unsqueeze(1) * mask_part
-                plan_loss = (elem * plan_weight_rows).sum() / plan_weight_rows.sum().clamp(min=1.0)
-                loss = loss + float(plan_weight) * plan_loss
+                trajectory_count = plan_weight_rows.sum()
+                trajectory_loss = (elem * plan_weight_rows).sum() / trajectory_count.clamp(min=1.0)
+                loss = loss + float(plan_weight) * trajectory_loss
         if step_plan_weight > 0:
             step = next((part for part in parts if part[0] == "step"), None)
             if step is not None:
@@ -213,6 +245,50 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
             if target is not None and bool((mask_part > 0).any()):
                 elem = F.binary_cross_entropy_with_logits(logits[:, sl], target, reduction="none")
                 plan_weight_rows = batch.sample_weight.unsqueeze(1) * mask_part
-                plan_loss = (elem * plan_weight_rows).sum() / plan_weight_rows.sum().clamp(min=1.0)
-                loss = loss + float(step_plan_weight) * plan_loss
-    return loss
+                step_plan_count = plan_weight_rows.sum()
+                step_plan_loss = (elem * plan_weight_rows).sum() / step_plan_count.clamp(min=1.0)
+                loss = loss + float(step_plan_weight) * step_plan_loss
+    return {
+        "loss": loss,
+        "policy": policy_loss,
+        "policy_raw": policy_raw_loss,
+        "first_action": first_action_loss,
+        "first_action_raw": first_action_raw_loss,
+        "first_action_acc": first_action_acc,
+        "set": set_loss,
+        "value": value_loss_out,
+        "trajectory": trajectory_loss,
+        "step_plan": step_plan_loss,
+        "rows": torch.tensor(float(bsz), device=device),
+        "policy_weight": weight_total.detach(),
+        "policy_raw_count": raw_count.detach(),
+        "first_weight": first_weight_total.detach(),
+        "first_count": first_count.detach(),
+        "trajectory_count": trajectory_count.detach(),
+        "step_plan_count": step_plan_count.detach(),
+    }
+
+
+def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
+                 raw_policy_loss_weight: float = 0.0,
+                 value_weight: float = 0.0,
+                 plan_weight: float = 0.0,
+                 step_plan_weight: float = 0.0,
+                 plan_teacher_forcing: float = 0.0,
+                 set_loss_weight: float = 0.0,
+                 set_loss_min_count: int = 2,
+                 set_loss_negative_weight: float = 0.25) -> torch.Tensor:
+    parts = sequence_loss_parts(
+        model,
+        batch,
+        first_action_weight=first_action_weight,
+        raw_policy_loss_weight=raw_policy_loss_weight,
+        value_weight=value_weight,
+        plan_weight=plan_weight,
+        step_plan_weight=step_plan_weight,
+        plan_teacher_forcing=plan_teacher_forcing,
+        set_loss_weight=set_loss_weight,
+        set_loss_min_count=set_loss_min_count,
+        set_loss_negative_weight=set_loss_negative_weight,
+    )
+    return parts["loss"]

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-12 12:39 Asia/Shanghai.
+Last updated: 2026-08-12 13:12 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -87,6 +87,79 @@ After these finish, evaluate before considering submissions:
 - Random 500 for each checkpoint.
 - Current filtered RR/coverage matrix, especially Alakazam vs TRM/Marnie/Festival and Ogerpon vs Crustle/current ladder pool.
 - Compare against old `high1100_alakazam_7f9`, `cur0810_alakazam_7f9`, and existing Ogerpon baselines.
+
+## Active Remote Job: Loss-Optimized BC Contrast 2026-08-12
+
+User asked whether val loss can be optimized and retrained for comparison.
+
+Local code changed and synced to ks:
+
+- `ptcg_rl/bc2/losses.py`
+  - Added `sequence_loss_parts`.
+  - The total training objective still includes weighted autoregressive
+    action NLL plus optional set/value/trajectory/step-plan losses.
+  - It now also reports separable metrics: `policy`, `policy_raw`,
+    `first_action_raw`, `first_action_acc`, `set`, `trajectory`,
+    `step_plan`, and `value`.
+  - Added `raw_policy_loss_weight`, which adds unweighted action-sequence NLL
+    to the training objective. This is intended to prevent sample weighting and
+    plan/set auxiliaries from hiding ordinary action imitation quality.
+- `tools/bc2_train.py`
+  - Added `--raw-policy-loss-weight`.
+  - Added `--best-metric` with options such as `loss`, `policy`,
+    `policy_raw`, `first_action_raw`, `trajectory`, and `step_plan`.
+  - Epoch logs now print total loss and action-first metrics.
+  - Validation aggregation now uses metric-specific weighted sums rather than
+    a simple mean of per-batch losses.
+- `ptcg_rl/bc2/data.py`
+  - When `split_by_game` is active, game groups are now merged globally by
+    `episode_id:player_index`. This prevents `aux_repeat` copies of the same
+    game from being split across train and validation.
+
+Remote runner:
+
+- Script: `/tmp/run_lossopt_bc_20260812.py` on ks.
+- Runner log: `logs/team_specific_0811_lossopt_20260812.runner.log`.
+- Per-job logs: `logs/team_specific_0811_lossopt_20260812/*.log`.
+- Checkpoints: `checkpoints/team_specific_0811_lossopt_20260812/*.npz`.
+- Runner PID at launch: `1008388`.
+- Started four parallel jobs, one per GPU:
+  - `lossopt_ogerpon_jch_2a507_w4_hist`
+  - `lossopt_ogerpon_jch_2bd9_w4_hist`
+  - `lossopt_alakazam_liamk_ca08_histplan_w4`
+  - `lossopt_alakazam_majkel_7f9_histplan_w4`
+
+Common lossopt settings:
+
+- `--raw-policy-loss-weight 0.35`
+- `--best-metric policy_raw`
+- `--batch-size 1024`
+- `--cuda-memory-gb 48`
+- `PTCG_DISABLE_CUDNN=1`
+- `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
+
+Status at 13:12 CST:
+
+- Ogerpon 2a507 and 2bd9 have entered epochs and are saving best checkpoints
+  by `policy_raw`.
+- Alakazam LiamK and Majkel are still indexing/loading the large corpus; they
+  have active CPU/RSS growth and no traceback yet.
+- The previous b1024 runner completed/failed before this run:
+  - Ogerpon 2a507 completed.
+  - Ogerpon 2bd9 completed in the earlier `team_specific_0811_train_20260812`
+    directory.
+  - Alakazam LiamK completed.
+  - Alakazam Majkel OOMed at the 32GB per-process cap, so this lossopt run
+    raises the cap to 48GB.
+
+Monitor command:
+
+```bash
+cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits
+ps -eo pid,ppid,stat,etime,pcpu,pmem,rss,cmd | grep -E "run_lossopt_bc_20260812.py|bc2_train.py" | grep -v grep || true
+for f in logs/team_specific_0811_lossopt_20260812/*.log; do echo ===$f; grep -E "^BC2:|^Corpus:|^Split:|epoch|done epoch|saved best|Best|Traceback|OutOfMemory|RuntimeError" "$f" | tail -20; done
+```
 
 ## Alakazam 7f9 Underperformance Audit 2026-08-12
 

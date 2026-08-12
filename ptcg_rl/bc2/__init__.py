@@ -2,12 +2,13 @@
 
 from .data import BCBatch, BCCorpus, discover_npz_paths
 from .decode import greedy_decode
-from .losses import sequence_nll
+from .losses import sequence_loss_parts, sequence_nll
 
 __all__ = [
     "BCBatch",
     "BCCorpus",
     "discover_npz_paths",
     "greedy_decode",
+    "sequence_loss_parts",
     "sequence_nll",
 ]

@@ -18,7 +18,7 @@ _HERE = Path(__file__).resolve().parent
 _REPO = _HERE.parent
 sys.path.insert(0, str(_REPO))
 
-from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, sequence_nll
+from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, sequence_loss_parts, sequence_nll
 from ptcg_rl.deck_plans import CARD_NAMES
 from ptcg_rl.history_features import BOARD_HISTORY_FEAT_DIM
 from ptcg_rl.model import (
@@ -444,25 +444,142 @@ def _configure_cuda_memory_limit(device: torch.device, *, gb: float = 0.0, fract
     return f"cuda_memory_limit={limit_gb:.2f}GB/{total_gb:.1f}GB fraction={fraction:.3f}"
 
 
+def _metric_value(metrics: dict[str, float], name: str) -> float:
+    value = metrics.get(name, float("nan"))
+    return float(value)
+
+
+def _format_metrics(prefix: str, metrics: dict[str, float]) -> str:
+    keys = [
+        "loss",
+        "policy",
+        "policy_raw",
+        "first_action_raw",
+        "first_action_acc",
+        "set",
+        "trajectory",
+        "step_plan",
+        "value",
+    ]
+    parts = [prefix]
+    for key in keys:
+        value = metrics.get(key)
+        if value is None or not np.isfinite(value):
+            continue
+        if key.endswith("_acc"):
+            parts.append(f"{key}={value:.3f}")
+        else:
+            parts.append(f"{key}={value:.4f}")
+    return " ".join(parts)
+
+
+def _empty_metric_sums() -> dict[str, float]:
+    return {
+        "loss_sum": 0.0,
+        "batch_weight": 0.0,
+        "policy_sum": 0.0,
+        "policy_weight": 0.0,
+        "policy_raw_sum": 0.0,
+        "policy_raw_count": 0.0,
+        "first_action_sum": 0.0,
+        "first_action_weight": 0.0,
+        "first_action_raw_sum": 0.0,
+        "first_count": 0.0,
+        "first_action_correct": 0.0,
+        "set_sum": 0.0,
+        "set_weight": 0.0,
+        "value_sum": 0.0,
+        "value_weight": 0.0,
+        "trajectory_sum": 0.0,
+        "trajectory_count": 0.0,
+        "step_plan_sum": 0.0,
+        "step_plan_count": 0.0,
+        "rows": 0.0,
+    }
+
+
+def _update_metric_sums(sums: dict[str, float], parts: dict[str, torch.Tensor]) -> None:
+    rows = float(parts["rows"].detach().cpu())
+    policy_weight = float(parts["policy_weight"].detach().cpu())
+    policy_raw_count = float(parts["policy_raw_count"].detach().cpu())
+    first_weight = float(parts["first_weight"].detach().cpu())
+    first_count = float(parts["first_count"].detach().cpu())
+    trajectory_count = float(parts["trajectory_count"].detach().cpu())
+    step_plan_count = float(parts["step_plan_count"].detach().cpu())
+    loss = float(parts["loss"].detach().cpu())
+    policy = float(parts["policy"].detach().cpu())
+    policy_raw = float(parts["policy_raw"].detach().cpu())
+    first_action = float(parts["first_action"].detach().cpu())
+    first_action_raw = float(parts["first_action_raw"].detach().cpu())
+    first_action_acc = float(parts["first_action_acc"].detach().cpu())
+    set_loss = float(parts["set"].detach().cpu())
+    value_loss = float(parts["value"].detach().cpu())
+    trajectory_loss = float(parts["trajectory"].detach().cpu())
+    step_plan_loss = float(parts["step_plan"].detach().cpu())
+
+    sums["loss_sum"] += loss * rows
+    sums["batch_weight"] += rows
+    sums["policy_sum"] += policy * policy_weight
+    sums["policy_weight"] += policy_weight
+    sums["policy_raw_sum"] += policy_raw * policy_raw_count
+    sums["policy_raw_count"] += policy_raw_count
+    sums["first_action_sum"] += first_action * first_weight
+    sums["first_action_weight"] += first_weight
+    sums["first_action_raw_sum"] += first_action_raw * first_count
+    sums["first_count"] += first_count
+    sums["first_action_correct"] += first_action_acc * first_count
+    sums["set_sum"] += set_loss * rows
+    sums["set_weight"] += rows
+    sums["value_sum"] += value_loss * rows
+    sums["value_weight"] += rows
+    sums["trajectory_sum"] += trajectory_loss * trajectory_count
+    sums["trajectory_count"] += trajectory_count
+    sums["step_plan_sum"] += step_plan_loss * step_plan_count
+    sums["step_plan_count"] += step_plan_count
+    sums["rows"] += rows
+
+
+def _finalize_metric_sums(sums: dict[str, float]) -> dict[str, float]:
+    def div(num: str, den: str) -> float:
+        d = sums.get(den, 0.0)
+        return sums.get(num, 0.0) / d if d > 0 else float("nan")
+
+    return {
+        "loss": div("loss_sum", "batch_weight"),
+        "policy": div("policy_sum", "policy_weight"),
+        "policy_raw": div("policy_raw_sum", "policy_raw_count"),
+        "first_action": div("first_action_sum", "first_action_weight"),
+        "first_action_raw": div("first_action_raw_sum", "first_count"),
+        "first_action_acc": div("first_action_correct", "first_count"),
+        "set": div("set_sum", "set_weight"),
+        "value": div("value_sum", "value_weight"),
+        "trajectory": div("trajectory_sum", "trajectory_count"),
+        "step_plan": div("step_plan_sum", "step_plan_count"),
+        "rows": sums.get("rows", 0.0),
+    }
+
+
 def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
-               first_action_weight=1.0, value_weight=0.0,
+               first_action_weight=1.0, raw_policy_loss_weight=0.0,
+               value_weight=0.0,
                plan_weight=0.0, step_plan_weight=0.0,
                plan_teacher_forcing=0.0,
                set_loss_weight=0.0, set_loss_min_count=2,
                set_loss_negative_weight=0.25):
     training = optimizer is not None
     model.train(training)
-    total = 0.0
+    sums = _empty_metric_sums()
     steps = 0
     for start in range(0, len(indices), batch_size):
         batch_idx = indices[start : start + batch_size]
         if len(batch_idx) < 2:
             continue
         batch = corpus.collate(batch_idx, device)
-        loss = sequence_nll(
+        parts = sequence_loss_parts(
             model,
             batch,
             first_action_weight=first_action_weight,
+            raw_policy_loss_weight=raw_policy_loss_weight,
             value_weight=value_weight,
             plan_weight=plan_weight,
             step_plan_weight=step_plan_weight,
@@ -471,14 +588,16 @@ def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
             set_loss_min_count=set_loss_min_count,
             set_loss_negative_weight=set_loss_negative_weight,
         )
+        loss = parts["loss"]
         if training:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
             optimizer.step()
-        total += float(loss.detach().cpu())
+        _update_metric_sums(sums, parts)
         steps += 1
-    return total / max(steps, 1), steps
+    metrics = _finalize_metric_sums(sums)
+    return metrics, steps
 
 
 def main() -> None:
@@ -583,6 +702,27 @@ def main() -> None:
     parser.add_argument("--opt-feat-dim", type=int, default=0,
                         help="override per-option feature width; 0 uses current encoder default")
     parser.add_argument("--first-action-weight", type=float, default=1.5)
+    parser.add_argument("--raw-policy-loss-weight", type=float, default=0.0,
+                        help=(
+                            "add unweighted action-sequence NLL to the training objective. "
+                            "Useful when sample reweighting/plan losses hide ordinary imitation quality."
+                        ))
+    parser.add_argument("--best-metric",
+                        choices=[
+                            "loss",
+                            "policy",
+                            "policy_raw",
+                            "first_action",
+                            "first_action_raw",
+                            "set",
+                            "trajectory",
+                            "step_plan",
+                        ],
+                        default="loss",
+                        help=(
+                            "validation metric used to save the best checkpoint. "
+                            "Use policy_raw for action-first checkpoint selection."
+                        ))
     parser.add_argument("--value-weight", type=float, default=0.0,
                         help="optional auxiliary outcome-value MSE weight; requires outcome metadata")
     parser.add_argument("--set-loss-weight", type=float, default=0.0,
@@ -884,6 +1024,8 @@ def main() -> None:
         f"opponent_archetype_weights={opponent_archetype_weights or '{}'} "
         f"winner_only={args.winner_only} "
         f"win/loss/draw_weight={args.win_weight}/{args.loss_weight}/{args.draw_weight} "
+        f"first_action_weight={args.first_action_weight} raw_policy_loss_weight={args.raw_policy_loss_weight} "
+        f"best_metric={args.best_metric} "
         f"context_weights={context_weights or '{}'} type_weights={type_weights or '{}'} "
         f"card_weights={card_weights or '{}'} "
         f"multi_select_weight={args.multi_select_weight} "
@@ -926,16 +1068,17 @@ def main() -> None:
         np.random.shuffle(train_idx)
         start = time.time()
         model.train()
-        total = 0.0
+        train_sums = _empty_metric_sums()
         steps = 0
         for batch_start in range(0, len(train_idx), args.batch_size):
             batch_idx = train_idx[batch_start : batch_start + args.batch_size]
             if len(batch_idx) < 2:
                 continue
-            loss = sequence_nll(
+            parts = sequence_loss_parts(
                 model,
                 corpus.collate(batch_idx, device),
                 first_action_weight=args.first_action_weight,
+                raw_policy_loss_weight=args.raw_policy_loss_weight,
                 value_weight=args.value_weight,
                 plan_weight=args.trajectory_target_loss_weight,
                 step_plan_weight=args.step_plan_loss_weight,
@@ -944,22 +1087,27 @@ def main() -> None:
                 set_loss_min_count=args.set_loss_min_count,
                 set_loss_negative_weight=args.set_loss_negative_weight,
             )
+            loss = parts["loss"]
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
             optimizer.step()
             scheduler.step()
-            total += float(loss.detach().cpu())
+            _update_metric_sums(train_sums, parts)
             steps += 1
             if steps == 1 or steps % 25 == 0 or steps == train_batches:
+                train_so_far = _finalize_metric_sums(train_sums)
                 print(
                     f"  epoch {epoch:02d} {steps:4d}/{train_batches} "
-                    f"loss={total/max(steps,1):.4f} lr={scheduler.get_last_lr()[0]:.2e}",
+                    f"loss={train_so_far['loss']:.4f} "
+                    f"policy_raw={train_so_far['policy_raw']:.4f} "
+                    f"first_acc={train_so_far['first_action_acc']:.3f} "
+                    f"lr={scheduler.get_last_lr()[0]:.2e}",
                     flush=True,
                 )
-        train_loss = total / max(steps, 1)
+        train_metrics = _finalize_metric_sums(train_sums)
         with torch.no_grad():
-            val_loss, val_steps = _run_epoch(
+            val_metrics, val_steps = _run_epoch(
                 model,
                 corpus,
                 val_idx,
@@ -967,6 +1115,7 @@ def main() -> None:
                 device,
                 optimizer=None,
                 first_action_weight=args.first_action_weight,
+                raw_policy_loss_weight=args.raw_policy_loss_weight,
                 value_weight=args.value_weight,
                 plan_weight=args.trajectory_target_loss_weight,
                 step_plan_weight=args.step_plan_loss_weight,
@@ -976,17 +1125,24 @@ def main() -> None:
                 set_loss_negative_weight=args.set_loss_negative_weight,
             )
         elapsed = time.time() - start
-        print(f"  done epoch {epoch}/{args.epochs} train={train_loss:.4f} val={val_loss:.4f} {elapsed:.0f}s", flush=True)
-        if val_loss < best_val:
+        val_loss = _metric_value(val_metrics, args.best_metric)
+        print(
+            f"  done epoch {epoch}/{args.epochs} "
+            f"{_format_metrics('train', train_metrics)} "
+            f"{_format_metrics('val', val_metrics)} "
+            f"best_metric={args.best_metric}:{val_loss:.4f} {elapsed:.0f}s",
+            flush=True,
+        )
+        if np.isfinite(val_loss) and val_loss < best_val:
             best_val = val_loss
             _save_npz(model, args.save)
-            print(f"  saved best {best_val:.4f} -> {args.save}", flush=True)
+            print(f"  saved best {args.best_metric}={best_val:.4f} -> {args.save}", flush=True)
         if args.checkpoint_every and epoch % args.checkpoint_every == 0:
             ckpt = args.save.replace(".npz", f"_ep{epoch:03d}.npz")
             _save_npz(model, ckpt)
             print(f"  checkpoint {ckpt}", flush=True)
 
-    print(f"Best val={best_val:.4f} -> {args.save}")
+    print(f"Best {args.best_metric}={best_val:.4f} -> {args.save}")
 
 
 if __name__ == "__main__":

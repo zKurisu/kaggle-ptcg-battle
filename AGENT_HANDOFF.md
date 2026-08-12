@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-12 15:55 Asia/Shanghai.
+Last updated: 2026-08-12 16:30 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -208,6 +208,55 @@ Interpretation:
   `submission_high1100_marnie_b8f_cont_b1024_seed25` only holding about 900,
   this is an incomplete experimental axis. Future Marnie work should be from
   scratch or DVH-style reproduction, not another small continuation.
+
+Follow-up Alakazam trace audit:
+
+- Remote outputs:
+  - `logs/alakazam_lossopt_trace_20260812/*.games.csv`
+  - `logs/alakazam_lossopt_trace_20260812/*.summary.csv`
+  - `logs/alakazam_lossopt_trace_20260812/failure_summary.csv`
+  - `logs/alakazam_lossopt_trace_20260812/plan_failure/plan_win_loss_gaps.csv`
+  - `logs/alakazam_lossopt_trace_20260812/plan_failure/defer_classification.csv`
+  - `logs/alakazam_lossopt_trace_20260812/majkel_7f9_targets_summary.txt`
+- Trace results for `lossopt_alakazam_7f9`:
+  - vs current Marnie: `89-71`, WR `0.556`.
+  - vs current TRM: `82-78`, WR `0.512`.
+  - vs current Cynthia: `96-64`, WR `0.600`.
+  - vs current Festival: `100-60`, WR `0.625`.
+  - High1100 baseline controls: Marnie `83-77`, WR `0.519`; TRM `66-94`,
+    WR `0.412`.
+- Interpretation:
+  - `lossopt_alakazam_7f9` is genuinely better than the submitted/high1100
+    Alakazam in local trace matchups, especially TRM, but it is still only
+    near-even to small-favored into high-weight current Marnie/TRM pressure.
+    This explains why it may still look worse than a strong Marnie submission.
+  - Do not treat raw `attack/evolve/attach miss` as directly trainable errors.
+    The defer audit shows most skips are `same_turn_later`, meaning the policy
+    often correctly performs setup/search/resource actions before attacking or
+    evolving in the same turn.
+  - Useful failure signals are matchup-specific:
+    - vs TRM: losses have much higher MAIN ability miss (`+0.137`), more
+      late attack/evolve/attach skip, more play/evolve/ability churn, and
+      more Xerosic/Abra-line/Rare Candy option exposure. This suggests TRM
+      losses are not simply "never saw the card"; the policy enters complex
+      long-turn states and fails ordering/resource conversion.
+    - vs Cynthia/Festival: losses show delayed first attack/first evolve and
+      more early-end; targeted pressure-window rules or training labels may
+      help.
+    - vs Marnie: loss/win differences are small. The matchup is close and
+      likely needs stronger deck/strategy or opponent-conditioned planning,
+      not simple no-miss filtering.
+  - Training data target CSV
+    `logs/team_specific_0811_parallel_20260812/majkel_7f9_0701_0810_targets.csv`
+    confirms that successful Alakazam games generally have earlier first
+    attack, earlier primary board, higher attack counts, and fewer early ends.
+    For Marnie specifically, wins have first attack turn about `3.81` vs
+    losses `42.04`, attack count `4.93` vs `3.00`, and primary board turn
+    `4.37` vs `40.27`.
+  - If building a new data-filtered or rule-guided Alakazam model, filter on
+    game-level success signals such as `strategy_success`, `attack_by_4/6`,
+    `primary_board_by_4/6`, and `no_early_end`, not per-decision
+    "no attack miss" or "no evolve miss".
 
 ## Alakazam 7f9 Underperformance Audit 2026-08-12
 

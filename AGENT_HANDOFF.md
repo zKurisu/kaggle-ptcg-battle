@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-12 16:30 Asia/Shanghai.
+Last updated: 2026-08-12 16:36 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -20,6 +20,92 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## Active Remote Job: Marnie Old-Recipe Sig Specialists 2026-08-12
+
+User asked to recover two sig-specific Marnie old-version trainings while GPUs
+are idle, using all August 900+ data. This is an explicit exception to the
+earlier "BC locked/no micro-finetune" preference: the goal is to recover the
+old live Kaggle behavior of `marnie_b8f_v12hist_bigbatch_b1536_20260809`, which
+reached about 1050 and held 950+.
+
+Remote workspace:
+`ks:/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804`.
+
+Old successful recipe recovered from
+`logs/marnie_nightly_20260809/marnie_b8f_v12_0730_0807_histcross_w4_nocudnn_bigrun_20260809.b1536.train.log`:
+
+- `arch=cross_attn`, `width=4`, `state_layers=2`, `history_k=32`,
+  `log_history_k=128`, `board_history_k=12`,
+  `board_history_feat_dim=32`.
+- Init:
+  `checkpoints/v12_history_pilots_20260807/bc2_marnie_b8f_v12hist_cross_init.npz`.
+- `batch_size=1536`, `lr=3e-5`, `epochs=8`, `split_by_game=True`,
+  `checkpoint_every=1`.
+- `win/loss/draw=1.5/0.4/0.8`, `first_action_weight=1.5`,
+  `option_weight=0.15`, `set_loss_weight=0`, non-winner-only.
+- `PTCG_DISABLE_CUDNN=1`,
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
+
+Data selection for the active run:
+
+- Main corpus:
+  `data/bc_corpus_banded_v12_0701_0810_merged_hist32_log128_board12_20260811`.
+- Aux corpus:
+  `data/bc_corpus_banded_v12_0811_only_hist32_log128_board12_20260812`.
+- Date filter: `2026-08-01..2026-08-11`.
+- Score bands: `1200+`, `1100-1199`, `1000-1099`, `900-999`.
+- This does not mix July decisions because the trainer date filter is active.
+
+Sig audit output:
+
+- Script: `/tmp/audit_marnie_aug900_sigs.py` on local and ks.
+- Log: `logs/marnie_aug900_sig_audit_20260812.txt` on ks.
+- 8月 900+ Marnie rows/games:
+  - `b8f251a476e7`: `2,401,840` rows, `25,556` games, all 11 days.
+  - `2c22fa761816`: `297,595` rows, `3,047` games, all 11 days.
+  - next sigs are much smaller, e.g. `b9c5f5744723` only `51,580` rows.
+- No useful DVH checkpoint/deck-sig was found in current ks paths; DVH remains
+  a local comparison baseline only and must not be submitted.
+
+Active run:
+
+- Runner script on ks: `/tmp/run_marnie_sig_oldrecipe_aug900_20260812.sh`.
+- First launch failed immediately because current `bc2_train.py` requires
+  `--device cuda:0` when setting `--cuda-memory-gb`; logs kept under
+  `logs/marnie_sig_oldrecipe_aug900_20260812`.
+- Corrected run id: `marnie_sig_oldrecipe_aug900_20260812_r2`.
+- Runner log:
+  `logs/marnie_sig_oldrecipe_aug900_20260812_r2/runner.log`.
+- Checkpoint dir:
+  `checkpoints/marnie_sig_oldrecipe_aug900_20260812_r2`.
+- Training logs:
+  - `logs/marnie_sig_oldrecipe_aug900_20260812_r2/marnie_b8f251a4_v12hist_aug900_b1536_seed25.train.log`
+  - `logs/marnie_sig_oldrecipe_aug900_20260812_r2/marnie_2c22fa76_v12hist_aug900_b1536_seed26.train.log`
+- Started at about `2026-08-12T16:32:44+08:00`.
+- At 16:35 CST both jobs were training:
+  - `b8f`: `2,391,647` kept rows, train/val `2,154,227/237,420`,
+    `1403` steps/epoch, GPU0, 56GB cap, seed 25.
+  - `2c22`: `295,893` kept rows, train/val `266,753/29,140`,
+    `174` steps/epoch, GPU1, 40GB cap, seed 26.
+
+Monitor commands:
+
+```bash
+cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+tail -f logs/marnie_sig_oldrecipe_aug900_20260812_r2/runner.log
+tail -f logs/marnie_sig_oldrecipe_aug900_20260812_r2/marnie_b8f251a4_v12hist_aug900_b1536_seed25.train.log
+tail -f logs/marnie_sig_oldrecipe_aug900_20260812_r2/marnie_2c22fa76_v12hist_aug900_b1536_seed26.train.log
+nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits
+```
+
+Expected duration:
+
+- `2c22` is much smaller and should finish first.
+- `b8f` is close to the old successful run size; expect roughly 3 hours from
+  launch, not counting any later evaluation.
+- After completion, run random first and then current filtered RR/coverage
+  against the latest pool before considering any submission.
 
 ## Active Remote Job: 0811 Team-Specific History BC 2026-08-12
 

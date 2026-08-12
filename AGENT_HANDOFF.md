@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-11 22:10 Asia/Shanghai.
+Last updated: 2026-08-12 10:05 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -20,6 +20,110 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## Alakazam 7f9 Underperformance Audit 2026-08-12
+
+User asked why Alakazam performs poorly locally despite abundant high-score
+samples, and how to diagnose/adjust it.
+
+Key remote audit outputs:
+
+- `logs/alakazam_7f9_matchup_data_audit_20260812_allscore.log`
+- `logs/alakazam_7f9_matchup_data_audit_20260812_score1100p.log`
+- `logs/alakazam_trace_outcome_gap_report_20260812.csv`
+
+Local RR evidence:
+
+- `cur0810_alakazam_7f9a5389`
+  (`logs/current_rr_pool_20260811/rr_coverage_g100_arch_matrix.csv`):
+  macro `0.614`, worst `Team Rocket Mewtwo 0.040`, Marnie `0.440`,
+  Festival `0.420`, Crustle `0.650`, Ogerpon `0.870`, Lucario `0.670`.
+- `high1100_alakazam_7f9a5389`
+  (`logs/current_rr_pool_20260811/high_vs_coverage/high_vs_coverage_arch_matrix.csv`):
+  macro `0.732`, worst `Team Rocket Mewtwo 0.380`, Marnie `0.530`,
+  Festival `0.560`, Crustle `0.680`, Ogerpon `0.900`, Lucario `0.740`.
+- Therefore the `7f9a538936e3` deck signature is not inherently unusable.
+  Training recipe/data-window quality changes TRM performance from near-zero
+  to roughly 38% in the current coverage pool.
+
+Corpus evidence for `7f9a538936e3` in
+`data/bc_corpus_banded_v12_0701_0810_merged_hist32_log128_board12_20260811`:
+
+- All scores: `3,466,735` decision rows for this sig.
+- All-score game WR by opponent:
+  - Marnie: `6055/14024 = 0.432`
+  - Crustle: `3100/4794 = 0.647`
+  - Team Rocket Mewtwo: `1056/3373 = 0.313`
+  - Dragapult: `805/1919 = 0.419`
+  - Festival: `433/897 = 0.483`
+  - Ogerpon: `881/1359 = 0.648`
+  - Mega Lucario: `206/438 = 0.470`
+- Score >=1100 only: `1,324,654` decision rows for this sig.
+  - TRM: `637/1569 = 0.406`
+  - Marnie: `2371/4761 = 0.498`
+  - Crustle: `1432/2038 = 0.703`
+  - Dragapult: `247/509 = 0.485`
+  - Festival: `175/284 = 0.616`
+  - Ogerpon: `167/229 = 0.729`
+  - Mega Lucario: `64/130 = 0.492`
+- Important split: score band `1100-1199` Alakazam 7f vs TRM is only
+  `106/571 = 0.186`, while `1200+` is `531/998 = 0.532`. This suggests the
+  good TRM plan may be concentrated in very top/team-specific games, while
+  normal high-score rows include many losing TRM patterns.
+
+Deck facts for the current 7f9 deck
+(`logs/ladder_pool_0805_0809_fast_all/decks/7f9a538936e3_alakazam_team_rot-wei.csv`):
+
+- It includes resource/tempo tools: `4 Enhanced Hammer`, `3 Xerosic's
+  Machinations`, `3 Boss's Orders`, `4 Dawn`, `2 Nighttime Mine`.
+- The TRM opponent deck used in current coverage includes Team Rocket's
+  Tarountula/Spidops, Team Rocket's Mewtwo ex, Articuno, Factory, Transceiver,
+  Ariana/Archer/Giovanni/Proton, and Team Rocket's Energy.
+- Because Alakazam already has disruption cards, very low TRM WR should not be
+  blamed only on missing deck tools. First inspect whether the policy uses
+  these tools in the correct matchup windows.
+
+Trace evidence from older v10 failure traces:
+
+- MAIN phase miss rates for Alakazam vs TRM were high:
+  attack available/chosen `5273/1551`, miss `0.706`; attach miss `0.854`;
+  evolve miss `0.680`; play miss `0.637`.
+- `trace_outcome_gap_report.py` highlights recurring loss-heavy contexts:
+  - vs TRM: choosing `ATTACK` when ability was available; attaching
+    `Telepath Psychic Energy` while play options existed; active/activate
+    decisions around Alakazam vs Team Rocket's Mewtwo ex; late missed ability
+    or missed play while facing Team Rocket's Spidops/Mimikyu.
+  - vs Marnie: many loss-heavy contexts around Froslass skill order and
+    repeated ability use where play/attach/attack/retreat options existed.
+  - vs Festival/Crustle: multiple active selection and MAIN-phase priority
+    errors, especially when active Alakazam/Kadabra faces high-pressure board
+    states.
+
+Interpretation:
+
+- Alakazam is a strong high-ladder archetype, but its local weakness is not
+  random/legal-action incompetence; random WR is high. It is matchup-specific
+  sequencing and resource management under many legal options.
+- Current global BC averages across many opponents and many team styles. That
+  can wash out the rare, correct TRM/Marnie/Festival plan.
+- Ordinary winner-only/success fine-tuning previously did not solve this
+  reliably; many "wins" are noisy/luck-based. Do not revive small finetunes as
+  the main fix.
+
+Recommended next diagnostic path:
+
+1. Build exact top-team cohorts for Alakazam 7f9, especially teams/players that
+   reach `1200+` and actually beat TRM/Marnie/Festival. Compare their action
+   n-grams and card timing against 1100-1199 losses.
+2. Run fresh `trace_matchup_decisions.py` for `cur0810`, `high1100`, and any
+   strategy-conditioned Alakazam against the same TRM/Marnie/Festival shadows,
+   then feed decisions into `trace_outcome_gap_report.py`.
+3. Convert repeated, verified errors into opponent-aware routing or hard rule
+   guards. Do not hand-code generic "always play/attach/attack" rules; require
+   a specific opponent archetype, turn/window, active matchup, and card/tool
+   condition.
+4. If training, prefer a new routed Alakazam policy with explicit opponent
+   archetype inference and top-team/1200+ TRM-plan data, not a small finetune.
 
 ## DVH Marnie Historical Submission Recheck 2026-08-11
 

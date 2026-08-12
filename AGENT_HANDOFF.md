@@ -8168,6 +8168,94 @@ band weighting:
     quality or better team-specific clean behavior, not this coarse aux-corpus
     mix.
 
+2026-08-12 high+climb degradation diagnosis:
+
+Question addressed: why did high+climb degrade, were weights/settings at
+fault, and does the older RR pool tell a different story?
+
+- Old high1100 pool re-evaluation:
+  - Script used: `/tmp/run_highclimb_oldpool_eval.py`.
+  - Output:
+    `logs/high_climbwin_20260812/highclimb_vs_high1100_oldpool_g100.csv`,
+    `logs/high_climbwin_20260812/highclimb_vs_high1100_oldpool_g100_summary.csv`,
+    `logs/high_climbwin_20260812/highclimb_vs_high1100_oldpool_g100_arch_matrix.csv`.
+  - Against the old high1100 pool, `highclimb_marnie_grimmsnarl_b8f251a4`
+    was only slightly worse than `high1100_marnie_grimmsnarl_b8f251a4`:
+    avg_delta -0.010, weighted_delta -0.012, candidate WR 0.700 vs baseline
+    0.710.
+  - Other high+climb models were still poor on the old pool:
+    `highclimb_alakazam_7f9a5389` weighted_delta -0.214,
+    `highclimb_dragapult_cc2e995b` -0.502, `highclimb_ogerpon_90abbfb0`
+    -0.413, `highclimb_ogerpon_2bd9da52` -0.510.
+  - This means the Marnie b8f degradation is not a total collapse, but the
+    high+climb recipe should not be generalized across all deck sigs.
+
+- Training/optimization confound:
+  - Old `high1100_marnie_b8f` was trained with `batch_size=512`, 6 epochs,
+    best val 0.7314.
+  - New high+climb Marnie b8f used `batch_size=1024`, 6 epochs, same LR scale,
+    best val 0.7491.
+  - Because epoch count stayed fixed while batch doubled, optimizer update
+    steps roughly halved. This is a real confound, not just score noise.
+
+- Continuation experiment for Marnie b8f:
+  - Runner scripts:
+    `/tmp/run_highclimb_marnie_continue.py`,
+    `/tmp/run_highclimb_marnie_continue_seed25.py`,
+    `/tmp/run_highclimb_marnie_continue_eval.py`.
+  - Checkpoints:
+    `checkpoints/high_climbwin_20260812/continue/bc2_highclimb_marnie_b8f_cont_b1024_lr4e5_ep4.npz`,
+    `.../bc2_highclimb_marnie_b8f_cont_b512_lr3e5_ep4.npz`,
+    `.../bc2_highclimb_marnie_b8f_cont_b1024_lr4e5_ep4_seed25.npz`,
+    `.../bc2_highclimb_marnie_b8f_cont_b512_lr3e5_ep4_seed25.npz`.
+  - Same-split seed25 continuation reduced val from the original high+climb
+    0.7491 to:
+    - batch1024/lr4e-5/4ep: best val 0.7346.
+    - batch512/lr3e-5/4ep: best val 0.7333.
+  - Therefore, insufficient update steps was a confirmed cause of part of
+    the degradation. Bigger batches must be paired with more epochs/update
+    steps or schedule changes.
+
+- Continuation RR results:
+  - Outputs:
+    `logs/high_climbwin_20260812/continue_marnie_b8f_eval/marnie_continue_vs_oldhigh1100_g100_summary.csv`,
+    `logs/high_climbwin_20260812/continue_marnie_b8f_eval/marnie_continue_vs_coverage_g100_summary.csv`,
+    plus corresponding `*_arch_matrix.csv`.
+  - Old high1100 pool:
+    - Original highclimb Marnie b8f: weighted_delta -0.0157.
+    - cont_b1024_lr4e5_ep4: +0.0274.
+    - cont_b512_lr3e5_ep4: +0.0493.
+    - cont_b1024_lr4e5_ep4_seed25: +0.0305, no negative matchup in this
+      8-opponent pool.
+    - cont_b512_lr3e5_ep4_seed25: -0.0077.
+  - Current coverage pool:
+    - Original highclimb Marnie b8f: weighted_delta -0.0582, avg WR 0.728.
+    - cont_b1024_lr4e5_ep4: weighted_delta -0.0122, avg WR 0.748.
+    - cont_b512_lr3e5_ep4: weighted_delta -0.0359, avg WR 0.749.
+    - cont_b1024_lr4e5_ep4_seed25: weighted_delta +0.0076, avg WR 0.775.
+    - cont_b512_lr3e5_ep4_seed25: weighted_delta -0.0093, avg WR 0.759.
+  - Coverage matrix highlights:
+    - `cont_b1024_lr4e5_ep4_seed25` macro 0.775 vs baseline 0.772, but worst
+      archetype is Festival Lead 0.490.
+    - It improves broad metrics, but still has matchup tradeoffs; it is not a
+      general proof that high+climb winner-only is correct.
+
+- Practical interpretation:
+  - The original high+climb degradation had at least two components:
+    1. Undertraining from larger batch with fixed epoch count.
+    2. Data/weight-induced matchup tradeoff from adding climb winner-only aux
+       at win/loss/draw weights 1.5/0.4/0.8.
+  - The aux corpus did not globally swamp the data; for Marnie b8f it was only
+    about 28.7k rows out of ~1.10M kept rows. Its impact is more likely from
+    biased conditional winner-only behavior and rare-action/matchup shifts.
+  - Do not conclude "more recent winner-only climb data fixes early ladder".
+    Do conclude that future large-batch BC training should be specified by
+    update steps, not only epochs.
+  - If a high+climb Marnie ablation is needed, the best local candidate from
+    this diagnostic is
+    `checkpoints/high_climbwin_20260812/continue/bc2_highclimb_marnie_b8f_cont_b1024_lr4e5_ep4_seed25.npz`,
+    but it is still an ablation, not a primary strategy replacement.
+
 ## Update Checklist
 
 Whenever changing active state, update:

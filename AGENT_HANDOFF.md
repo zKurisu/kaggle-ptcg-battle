@@ -8173,6 +8173,14 @@ band weighting:
 Question addressed: why did high+climb degrade, were weights/settings at
 fault, and does the older RR pool tell a different story?
 
+Important submission policy update:
+- DVH artifacts, including `/tmp/submission_marnie_dvh.tar.gz` and
+  `logs/dvh_vs_high_20260811/unpack/policy.npz`, are local comparison
+  baselines only.
+- Do not recommend DVH for future Kaggle submissions unless the user
+  explicitly reverses this. Use DVH only as a reference line for RR/replay
+  comparisons.
+
 - Old high1100 pool re-evaluation:
   - Script used: `/tmp/run_highclimb_oldpool_eval.py`.
   - Output:

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-12 10:45 Asia/Shanghai.
+Last updated: 2026-08-12 12:39 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -20,6 +20,73 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## Active Remote Job: 0811 Team-Specific History BC 2026-08-12
+
+User asked to parallel-start team-specific training and noted 2026-08-11 episode data was pulled.
+
+Remote workspace: `ks:/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804`.
+
+Data and setup completed:
+
+- 0811 raw zip exists at `/home/jie/Do/0_PTCG/workspace/episodes_raw/pokemon-tcg-ai-battle-episodes-2026-08-11.zip`.
+- Extracted 0811-only v12 history corpus:
+  `data/bc_corpus_banded_v12_0811_only_hist32_log128_board12_20260812`.
+  Extraction log: `logs/team_specific_0811_20260812/extract_0811_only.log`.
+  It processed `4622` episodes, `755255` decisions, bad/err `0`, output size about `129M`.
+- Base corpus for these jobs:
+  `data/bc_corpus_banded_v12_0701_0810_merged_hist32_log128_board12_20260811`.
+- Alakazam trajectory targets built and reused:
+  - `logs/team_specific_0811_parallel_20260812/majkel_7f9_0701_0810_targets.csv`: `9320` games, WR `0.562`.
+  - `logs/team_specific_0811_parallel_20260812/majkel_7f9_0811_targets.csv`: exists; no meaningful 0811 Majkel 7f rows were found.
+  - `logs/team_specific_0811_parallel_20260812/liamk_ca08_0701_0810_targets.csv`: `2748` games, WR `0.490`.
+  - `logs/team_specific_0811_parallel_20260812/liamk_ca08_0811_targets.csv`: exists; no meaningful 0811 LiamK ca08 rows were found.
+
+Important training-launch lessons:
+
+- For history models, set `PTCG_DISABLE_CUDNN=1`; otherwise `nn.GRU` can fail during CUDA initialization with `CUDNN_STATUS_NOT_INITIALIZED`.
+- `cross_attn + history_k=32 + log_history_k=128 + board_history_k=12 + width=4` with batch `1536` and `--cuda-memory-gb 24` OOMs on first epoch despite A800 total VRAM. It hits the per-process allocator cap, not physical GPU capacity.
+- Working restart uses `batch-size=1024`, `--cuda-memory-gb 32`, `PTCG_DISABLE_CUDNN=1`, and `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
+
+Active/finished training status as of 2026-08-12 12:39 CST:
+
+- Completed successfully:
+  - `checkpoints/team_specific_0811_train_20260812/bc2_ogerpon_jch_2bd9_w4_hist.npz`
+  - Log: `logs/team_specific_0811_train_20260812/ogerpon_jch_2bd9_w4_hist.log`
+  - It trained 12 epochs with best checkpoint saved around epoch 6 (`val=0.9068`); later epochs overfit upward.
+- Active b1024/32GB restart runner:
+  - Script: `/tmp/restart_failed_team_specific_0811_b1024.py` on ks.
+  - Runner log: `logs/team_specific_0811_train_b1024_20260812/runner.log`.
+  - Status CSV: `logs/team_specific_0811_train_b1024_20260812/train_status.csv`.
+  - Checkpoint dir: `checkpoints/team_specific_0811_train_b1024_20260812`.
+  - Jobs:
+    - GPU0: `alakazam_majkel_7f9_histplan_w4_0811_b1024`, PID around `966071`, log `logs/team_specific_0811_train_b1024_20260812/alakazam_majkel_7f9_histplan_w4_0811_b1024.log`. At last check it entered epoch 1 (`1/725`, then `25/725`).
+    - GPU1: `alakazam_liamk_ca08_histplan_w4_0811_b1024`, PID around `966188`, log `logs/team_specific_0811_train_b1024_20260812/alakazam_liamk_ca08_histplan_w4_0811_b1024.log`. At last check it entered epoch 1 (`50/202`).
+    - GPU2: `ogerpon_jch_2a507_w4_hist_b1024`, PID around `966304`, log `logs/team_specific_0811_train_b1024_20260812/ogerpon_jch_2a507_w4_hist_b1024.log`. At last check it reached epoch 5; epoch 4 had best val `0.7552`.
+  - GPU3 is currently free after 2bd9 finished. Do not start extra IO-heavy jobs until the two Alakazam jobs are safely past early epochs, unless the user asks to maximize throughput.
+
+Team-specific data counts relevant to these jobs:
+
+- Alakazam Majkel 7f9: `831044` kept rows, `9320` games in 0701-0810 target CSV; includes climb games because corpus `score_band` is static leaderboard snapshot, not per-game ladder score.
+- Alakazam LiamK ca08: `228715` kept rows for training, `2748` target games.
+- Ogerpon 2a507 JCH: about `97394` kept training rows for `James Cox & Henry Chao`; 0811 has no 2a507 rows.
+- Ogerpon 2bd9 JCH: `50727` kept rows with 0811 aux repeated; completed successfully.
+- Additional 2a507 rows exist for team `James Cox` (`52695` rows/`791` games) and `zoroark190` (`31573` rows/`466` games`) in the base corpus, but the active 2a507 job is strict `James Cox & Henry Chao` only. A future contrast can train deck-sig-only or JCH+James Cox if needed.
+
+Use this monitor command on ks:
+
+```bash
+cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits
+ps -eo pid,ppid,stat,etime,pcpu,pmem,rss,cmd | grep -E "restart_failed_team_specific_0811_b1024.py|bc2_train.py" | grep -v grep || true
+for f in logs/team_specific_0811_train_b1024_20260812/*.log; do echo ===$f; grep -E "^BC2:|^Corpus:|^Split:|epoch|done epoch|saved best|Traceback|OutOfMemory|RuntimeError" "$f" | tail -14; done
+```
+
+After these finish, evaluate before considering submissions:
+
+- Random 500 for each checkpoint.
+- Current filtered RR/coverage matrix, especially Alakazam vs TRM/Marnie/Festival and Ogerpon vs Crustle/current ladder pool.
+- Compare against old `high1100_alakazam_7f9`, `cur0810_alakazam_7f9`, and existing Ogerpon baselines.
 
 ## Alakazam 7f9 Underperformance Audit 2026-08-12
 

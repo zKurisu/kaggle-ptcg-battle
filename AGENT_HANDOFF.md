@@ -9247,12 +9247,25 @@ Active targeted training:
   - W1 regressions: 5899 Ogerpon -0.100, two Crustle opponents -0.060
     and -0.130, cc2e Dragapult -0.040. This is not yet a submit-worthy
     improvement because it hurts important hard matchups.
-- Last known W2 status at 2026-08-12 22:07:
-  - epoch 3/6 complete, val loss improved to 0.6687.
-  - epoch 4/6 running on GPU3.
-- Runner will automatically evaluate W1/W2 after training:
-  random g500, baseline-delta against old b8f over coverage pool, archetype
-  matrix, and 0810 ladder weighted.
+- W2 completed at 2026-08-12 22:30; runner done at 22:34.
+  - random audit: 500/500, 100.0%.
+  - coverage/current_rr matrix improved over old b8f:
+    macro 0.788 vs old 0.767; players-weighted all 0.7593 vs old 0.7440;
+    worst archetype Teal Mask Ogerpon 0.580 vs old worst Festival Lead 0.520.
+  - coverage gains: Crustle 0.870 vs old 0.830, Festival 0.680 vs old
+    0.520, Mega Lucario 0.790 vs old 0.760.
+  - coverage regressions: Alakazam 0.750 vs old 0.720 is still a gain but
+    much lower than W1's 0.810; Mega Lopunny 0.780 vs old 0.820.
+- Additional live-opponent replay manifest evaluation completed after runner:
+  `logs/marnie_b8f_livehard_oldmethod_20260812/eval/livehard_w2_vs_old_liveopponents_g100.csv`.
+  Summary: avg_delta -0.014, weighted_delta -0.014, livehard_w2 0.738
+  vs old_b8f 0.752, lost 9/14 opponents. Key issue: f144 Mega Lopunny
+  regressed 0.770 -> 0.650 and 5899 Ogerpon stayed extremely weak
+  0.110 -> 0.090.
+- Interpretation: W2 looks better on the generic coverage/current_rr pool but
+  worse on the actual recent live replay opponent pool. Treat W2 as not
+  submit-worthy unless later ladder environment differs sharply from this live
+  opponent set.
 
 Offline action diagnostics:
 

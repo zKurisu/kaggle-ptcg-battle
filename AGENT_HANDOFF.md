@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-12 13:12 Asia/Shanghai.
+Last updated: 2026-08-12 13:41 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -458,6 +458,101 @@ important caveat is that DVH uses a different Marnie deck signature
 `3121746f2b28`, so the gain may be deck-list quality as much as policy quality.
 Future Marnie recovery should include this sig/list as a first-class training
 target instead of only retraining `b8f251a476e7`.
+
+### DVH Forensics 2026-08-12
+
+User asked to recover what DVH actually was, likely from a very early version.
+Remote scan covered `/home/byer/PTCG` and `/home/jie/Do/0_PTCG`.
+
+Exact DVH submission facts:
+
+```text
+submission: /tmp/submission_marnie_dvh.tar.gz
+tar sha256: 11311ccd15f877c36db166d900cb647b6dcb9c44c7782dbc99a666f63022ed36
+tar size: 9,592,530 bytes
+tar mtime: 2026-08-11 21:48:17
+policy sha256: b7b1e386e5ee2d03be15e0f8bd14b7a35c9301bc37c1dad990069b3d1d939c97
+policy size: 7,580,139 bytes
+deck sha256: 92b92bac9f9163ecff933b3dc39294d2cc154c8684f3c8497877661419ebc59d
+deck sig: 3121746f2b28
+main.py sha256: 0935fc939163bfecf62b266ecba4c0b87145dbca10d48a21615a692f1cd9cedc
+```
+
+Policy architecture:
+
+```text
+legacy pointer MLP, not cross_attn
+no history/log-history/board-history arrays
+no hierarchical plan head
+main.py has USE_MCTS=False and greedy NumPy policy selection
+width=2.0
+slot_state=True
+state_feat_dim=64
+opt_feat_dim=48
+state_fc1.weight=(1024,704)
+opt_fc.weight=(256,528)
+score_fc1.weight=(256,1024)
+approx params: 2,043,778
+```
+
+Important negative result: the exact DVH `policy.npz` hash was not found in
+retained checkpoint trees. The only exact match found was the unpacked audit
+copy at:
+
+```text
+/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804/logs/dvh_vs_high_20260811/unpack/policy.npz
+```
+
+The old byer submission
+`/home/byer/PTCG/workspace/ptcg_rl_git/submissions/marnie_v7sig_winweighted.tar.gz`
+has the same `deck.csv` and same `main.py` as DVH, but a different policy:
+
+```text
+old policy sha256: fe2eda9da96fa77ee2c49a0526c1a43293ca8c87d17567a93a77715b5a89da44
+old policy shape: state_fc1=(1024,688), opt_fc=(256,512)
+old inferred dims: state_feat_dim=48, opt_feat_dim=32
+```
+
+Closest recoverable early training logs are from byer, but they are not exact
+DVH because their retained checkpoints are `48/32`, not DVH's `64/48`:
+
+```text
+logs/train_marnie_grimmsnarl_top1_v8_topdeck_w2.log
+  BC2: Marnie Grimmsnarl ['1200+', '1100-1199', '1000-1099']
+  width=2.0 slot_state=True deck_sigs=['b8f251a476e7']
+  winner_only=False win/loss/draw=1.5/0.4/0.8
+  files=30 raw=3,196,393 kept=2,416,614
+  split train=2,293,129 val=123,485 batch=4096
+  epochs=8, best val=0.7046
+  retained checkpoint sha256=e885f822b7df28e06956c0e79b8dd9ef32516b0d902a09c9db6c83924f975e24
+  retained checkpoint shape: state_fc1=(1024,688), opt_fc=(256,512)
+
+logs/bc2_marnie_grimmsnarl_v8_mixed_1000_w2.log
+  BC2: Marnie Grimmsnarl ['1200+', '1100-1199', '1000-1099']
+  width=2.0 slot_state=True deck_sigs=all
+  winner_only=False win/loss/draw=1.5/0.4/0.8
+  files=30 raw=3,196,393 kept=3,181,893
+  split train=2,948,828 val=233,065 batch=4096
+  epochs=8, best val=0.7492
+  retained checkpoint sha256=809ec2fb0d2c8aca7a08466696791130691251d5ecf41a50ebf4dd34220a2396
+  retained checkpoint shape: state_fc1=(1024,688), opt_fc=(256,512)
+```
+
+Current best interpretation:
+
+- DVH is not an RL/MCTS/history/attention model. It is a simple early BC
+  pointer policy in the old submission wrapper.
+- DVH used the old Marnie deck list `3121746f2b28`, but its policy is a later
+  `64/48` feature policy, so it was probably repacked into the old wrapper/deck
+  after the original v7/v8 submission.
+- The original training checkpoint was probably deleted, overwritten, or
+  generated in a temporary path. Treat the exact parameters as unrecovered.
+- To reproduce DVH behavior, run ablations with the old simple BC recipe:
+  width 2, batch 4096, lr 1e-4, score bands `1000+`, no winner-only,
+  win/loss/draw `1.5/0.4/0.8`, no set/history/plan/cross-attn, but force
+  `state_feat_dim=64` and `opt_feat_dim=48`. Package each resulting policy with
+  both deck `3121746f2b28` and deck `b8f251a476e7` to isolate deck-list vs
+  policy effects.
 
 ## Ladder Distribution 2026-08-10
 

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-12 20:10 Asia/Shanghai.
+Last updated: 2026-08-12 22:10 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -9233,9 +9233,23 @@ Active targeted training:
   - W1: one livehard aux.
   - W2: livehard aux duplicated as coarse x2 weight.
   - epochs 6, batch 512, lr 8e-5.
-- Last known W1 status at 2026-08-12 21:30:
+- W1 completed at 2026-08-12 21:45:
+  - best/final val loss 0.6510, val first_action_acc 0.798.
+  - early random audit:
+    `logs/marnie_b8f_livehard_oldmethod_20260812/eval_w1_early/random_w1_g500.log`
+    = 500/500, 100.0%.
+  - early live-opponent baseline-delta:
+    `logs/marnie_b8f_livehard_oldmethod_20260812/eval_w1_early/livehard_w1_vs_old_liveopponents_g100.csv`.
+    Summary: avg_delta +0.008, weighted_delta +0.008,
+    livehard_w1 0.737 vs old_b8f 0.729, lost 5/14 opponents.
+  - W1 gains: 7f9 Alakazam +0.090, ca082 Alakazam +0.140,
+    f144 Lopunny +0.050, 43d6 Lucario +0.040, e82 Festival +0.030.
+  - W1 regressions: 5899 Ogerpon -0.100, two Crustle opponents -0.060
+    and -0.130, cc2e Dragapult -0.040. This is not yet a submit-worthy
+    improvement because it hurts important hard matchups.
+- Last known W2 status at 2026-08-12 22:07:
   - epoch 3/6 complete, val loss improved to 0.6687.
-  - training still running on GPU3.
+  - epoch 4/6 running on GPU3.
 - Runner will automatically evaluate W1/W2 after training:
   random g500, baseline-delta against old b8f over coverage pool, archetype
   matrix, and 0810 ladder weighted.
@@ -9251,11 +9265,14 @@ Offline action diagnostics:
 - It evaluates old submitted b8f action accuracy on main 1100+/1200+ and
   high900 winner aux by opponent sig:
   b8f, f144, 7f9, cc2e, e82, 5899.
-- Last known status: started at 2026-08-12 21:29, running first sig.
+- Completed at 2026-08-12 21:58.
+- Outputs:
+  `accuracy_main_by_sig.csv` and `accuracy_auxwin_by_sig.csv` in
+  `logs/kaggle_replay_high900win_marnie_b8f_20260812/offline_accuracy_fixed/`.
 
 Immediate next steps:
 
-- When live-hard W1/W2 finish, compare:
+- When live-hard W2 finishes, compare:
   - `logs/marnie_b8f_livehard_oldmethod_20260812/eval/random_g500.csv`
   - `.../vs_coverage_g100.csv`
   - `.../vs_coverage_g100_arch_matrix.csv`

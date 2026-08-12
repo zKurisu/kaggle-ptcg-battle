@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-12 22:10 Asia/Shanghai.
+Last updated: 2026-08-13 06:58 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -62,7 +62,7 @@ Validation before long run:
   `RuntimeError: cuDNN error: CUDNN_STATUS_NOT_INITIALIZED`; those failed logs
   were backed up to `logs/history_safe_20260812/failed_cudnn_2000/`.
 
-Current remote runner:
+Remote runner completed:
 
 - Script: `/tmp/run_history_safe_20260812.sh`.
 - Main log: `logs/history_safe_20260812/runner.log`.
@@ -73,11 +73,41 @@ Current remote runner:
   - `logs/history_safe_20260812/train/marnie_b8f_cross_scratch_h32.log`
 - Checkpoints:
   `checkpoints/history_safe_20260812/bc2_marnie_b8f_historysafe_*.npz`.
-- Eval outputs, after all three trainings finish:
+- Eval outputs:
   `logs/history_safe_20260812/eval/random_g500.csv`,
   `logs/history_safe_20260812/eval/vs_coverage_g100.csv`,
   `logs/history_safe_20260812/eval/vs_coverage_g100_arch_matrix.csv`,
   weighted 0810 ladder CSVs, and `summary.txt`.
+- Completion times:
+  - pointer init h16: 2026-08-12 23:27.
+  - cross-attn init h16: 2026-08-13 00:15.
+  - cross-attn scratch h32: 2026-08-13 04:03.
+  - runner eval done: 2026-08-13 04:19.
+- Coverage/current_rr evaluation:
+  - random g500: pointer 499/500, cross init 498/500, cross scratch 500/500.
+  - old high900win b8f macro 0.780, players-weighted all 0.7551.
+  - pointer init h16 macro 0.785, all 0.7673.
+  - cross init h16 macro 0.788, all 0.7740, best coverage-pool score.
+  - cross scratch h32 macro 0.766, all 0.7269, broad regression.
+- Extra recent live-opponent replay manifest evaluation:
+  `logs/history_safe_20260812/eval/historysafe_vs_old_liveopponents_g100.csv`.
+  Results against old high900win b8f:
+  - pointer init h16: candidate 0.740 vs old 0.741,
+    avg_delta -0.001, lost 9/14.
+  - cross init h16: candidate 0.726 vs old 0.741,
+    avg_delta -0.014, lost 8/14.
+  - cross scratch h32: candidate 0.709 vs old 0.741,
+    avg_delta -0.031, lost 10/14.
+- Interpretation:
+  - History-safe fixed the CUDA/runtime brittleness but did not improve live-like
+    opponent performance.
+  - Coverage/current_rr overstates history benefits, especially for cross init.
+    On recent live opponents, history mostly trades wins across matchups and
+    damages important ones such as Alakazam, Dragapult, Cynthia/Lucario, or
+    mirror.
+  - Do not submit these history-safe Marnie models. Keep old high900win b8f as
+    the current Marnie baseline unless a different ladder environment makes the
+    coverage-pool metric more relevant than recent live opponents.
 
 Three models started in parallel at about `2026-08-12T20:05:18+08:00`:
 

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-12 16:36 Asia/Shanghai.
+Last updated: 2026-08-12 17:31 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -106,6 +106,120 @@ Expected duration:
   launch, not counting any later evaluation.
 - After completion, run random first and then current filtered RR/coverage
   against the latest pool before considering any submission.
+
+## Active Remote Job: High900 Winner Old-Method Specialists 2026-08-12
+
+User asked to train `high1100+` specialists with "previous-version method",
+adding 900+ winner-only data, and explicitly not using history or later
+history/cross-attention additions.
+
+This is separate from both:
+
+- `marnie_sig_oldrecipe_aug900_20260812_r2`, which is a history/cross-attn
+  Marnie recovery run.
+- `high_climbwin_20260812`, which used 600-1099 winner-only aux and batch
+  1024. That earlier recipe degraded and should not be conflated with this one.
+
+Definition of this run:
+
+- Main corpus:
+  `data/bc_corpus_banded_v12_0701_0811_merged_hist32_log128_board12_20260812`.
+  Built from 0701-0810 merged plus 0811-only via symlinks.
+- Main score bands: `1200+`, `1100-1199`, all outcomes.
+- Aux corpus:
+  `data/bc_corpus_high900_winners_20260812`.
+- Aux score bands: `900-999`, `1000-1099`, `won=1` only, date
+  `2026-08-01..2026-08-11`.
+- Architecture: legacy `pointer`, `width=4`, no `history_k`,
+  no `log_history_k`, no `board_history_k`, no `cross_attn`.
+- Training params: `batch_size=512`, `lr=8e-5`, `win/loss/draw=1.5/0.4/0.8`,
+  `first_action_weight=1.6`, `option_weight=0.2`, `set_loss=0.12/2/0.15`,
+  `multi_select_weight=1.6`, context weights `MAIN=1.10`,
+  `ATTACH_FROM=1.35`, `ATTACH_TO=1.25`, `SKILL_ORDER=1.40`, type weights
+  `EVOLVE=1.15`, `ATTACK=1.10`, `include_empty=True`,
+  `split_by_game=True`, checkpoint every epoch.
+- The batch size is intentionally 512 even though GPUs have room. Previous
+  diagnosis showed batch 1024 with fixed epochs reduced update steps and
+  degraded this old-method family.
+
+Scripts:
+
+- Aux builder: `/tmp/build_high900_winner_aux_20260812.py` on ks.
+- Main train runner: `/tmp/run_high900win_oldmethod_20260812.py` on ks.
+- Post-eval watcher: `/tmp/run_high900win_oldmethod_eval_20260812.sh` on ks.
+- Spare seed runner: `/tmp/run_high900win_spare_marnie_2c22_20260812.sh` on ks.
+
+Outputs:
+
+- Build log:
+  `logs/high900win_oldmethod_20260812/build_aux.log`.
+- Aux summaries:
+  `logs/high900win_oldmethod_20260812/aux_file_summary.csv`,
+  `logs/high900win_oldmethod_20260812/aux_sig_summary.csv`.
+- Main runner log:
+  `logs/high900win_oldmethod_20260812/runner.log`.
+- Main train manifest:
+  `logs/high900win_oldmethod_20260812/train_manifest.csv`.
+- Main checkpoints:
+  `checkpoints/high900win_oldmethod_20260812/w4/bc2_high900win_old_*_w4.npz`.
+- Spare seed checkpoint:
+  `checkpoints/high900win_oldmethod_20260812/w4_spare/bc2_high900win_old_marnie_grimmsnarl_2c22fa76_seed61_w4.npz`.
+- Post-eval log:
+  `logs/high900win_oldmethod_20260812/post_eval.log`.
+- Post-eval outputs after training:
+  `logs/high900win_oldmethod_20260812/random_g500.csv`,
+  `logs/high900win_oldmethod_20260812/vs_coverage_g100.csv`,
+  `logs/high900win_oldmethod_20260812/vs_coverage_g100_arch_matrix.csv`,
+  `logs/high900win_oldmethod_20260812/vs_coverage_g100_ladder0810_players_weighted.csv`,
+  `logs/high900win_oldmethod_20260812/vs_coverage_g100_ladder0810_rows_weighted.csv`,
+  `logs/high900win_oldmethod_20260812/top_summary.txt`.
+
+Aux builder result:
+
+- Total aux: `115` files, `1,691,106` rows.
+- By target sig:
+  - Marnie `b8f251a476e7`: `888,640` rows, 11 dates.
+  - Alakazam `7f9a538936e3`: `294,454` rows, 11 dates.
+  - Mega Lopunny `f1445356c3a7`: `204,557` rows, 10 dates.
+  - Dragapult `cc2e995b5ad0`: `141,222` rows, 11 dates.
+  - Marnie `2c22fa761816`: `132,854` rows, 11 dates.
+  - Mega Lucario `43d6d8b0fce9`: `21,422` rows, 6 dates.
+  - Ogerpon `2bd9da52c43a`: `6,694` rows, 1 date.
+  - Ogerpon `90abbfb0eee0`: `1,263` rows, 2 dates.
+- Interpret Ogerpon results carefully: their aux is too thin for a fair
+  old-method+900winner conclusion.
+
+Active status as of 2026-08-12 17:31 CST:
+
+- Main runner pid family includes `1274972`.
+- Post-eval watcher pid family includes `1279023`; it only evaluates after the
+  main runner exits successfully.
+- Main queue:
+  - Done: `high900win_old_dragapult_cc2e995b`, best val/loss `0.9358`.
+  - Done: `high900win_old_marnie_grimmsnarl_b8f251a4`, best val/loss `0.6643`.
+  - Running GPU2: `high900win_old_alakazam_7f9a5389`; at last check epoch
+    4/6 completed, best val/loss `0.7273`.
+  - Running GPU3: `high900win_old_marnie_grimmsnarl_2c22fa76`; corpus loaded
+    `335,040` kept rows, train/val `300,841/34,199`.
+- Spare GPU1 run:
+  - Running: `Marnie 2c22` seed61, separate output under `w4_spare`.
+
+Operational note:
+
+- The custom main runner assigns GPUs by `len(running)`, not by the actual
+  freed GPU id. With the current timing this is acceptable because GPU3 is
+  processing smaller jobs while Alakazam holds GPU2, but if a future run uses
+  this script, improve scheduling before relying on all GPUs.
+
+Monitor:
+
+```bash
+cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+tail -f logs/high900win_oldmethod_20260812/runner.log
+tail -f logs/high900win_oldmethod_20260812/post_eval.log
+cat logs/high900win_oldmethod_20260812/train_manifest.csv
+nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits
+```
 
 ## Active Remote Job: 0811 Team-Specific History BC 2026-08-12
 

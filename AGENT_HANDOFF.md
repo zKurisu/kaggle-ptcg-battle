@@ -9096,6 +9096,192 @@ Important submission policy update:
 
 ## Update Checklist
 
+## 2026-08-12 Marnie b8f Live Replay Drop Analysis
+
+Context:
+
+- Submitted model: `submission_high900win_old_marnie_b8f_20260812`,
+  Kaggle submission id `55455876`, score fluctuated around 920-970 after an
+  early climb.
+- Submitted checkpoint/deck:
+  `checkpoints/high900win_oldmethod_20260812/w4/bc2_high900win_old_marnie_grimmsnarl_b8f251a4_w4.npz`
+  with
+  `logs/ladder_pool_0805_0809_fast_all/decks/b8f251a476e7_marnie_grimmsnarl_raihan_ramadistra.csv`.
+
+Latest replay pull on ks:
+
+```bash
+python3 tools/analyze_kaggle_replays.py 55455876 \
+  --team-name "Jie Orkarin" \
+  --deck logs/ladder_pool_0805_0809_fast_all/decks/b8f251a476e7_marnie_grimmsnarl_raihan_ramadistra.csv \
+  --known-decks-dir logs/ladder_pool_0805_0809_fast_all/decks \
+  --known-decks-dir logs/ladder_pool_0809_fast_all/decks \
+  --known-decks-dir logs/ladder_pool_0805_all/decks \
+  --known-decks-dir logs/ladder_pool_0804_all/decks \
+  --cache-dir logs/kaggle_replay_high900win_marnie_b8f_20260812/cache_latest \
+  --out logs/kaggle_replay_high900win_marnie_b8f_20260812/episodes_latest_teamdetect.csv \
+  --summary-out logs/kaggle_replay_high900win_marnie_b8f_20260812/summary_latest_teamdetect_by_deck_sig.csv \
+  --group-by opponent_deck_sig \
+  --write-opponent-decks \
+  --opponent-decks-dir logs/kaggle_replay_high900win_marnie_b8f_20260812/opponent_decks_latest_teamdetect \
+  --progress-every 20 --timeout 180
+```
+
+Replay result:
+
+- 44 episodes fetched, one self-validation mirror with both teams
+  `Jie Orkarin` skipped.
+- 43 analyzable games: 26W / 17L, WR 0.605.
+- Main loss clusters:
+  - `b8f251a476e7` Marnie mirror: 6/10.
+  - `f1445356c3a7` Mega Lopunny: 1/4.
+  - `7f9a538936e3` Alakazam: 4/6.
+  - `cc2e995b5ad0` Dragapult: 1/2.
+  - Single losses: `65c1997e6846` Crustle Wall,
+    `ab7e4b818773` Teal Mask Ogerpon, `ca082d1c1eab` Alakazam,
+    `e82dcbe62260` Festival Lead, `ecb67fcd9c0b` Alakazam,
+    `140f7d8b2f09` Dragapult.
+- By archetype from latest replay:
+  - Marnie Grimmsnarl 7/11.
+  - Alakazam 6/10.
+  - Mega Lopunny 2/6.
+  - Dragapult 1/3.
+  - Crustle Wall 2/3.
+  - Festival Lead 1/2.
+  - Teal Mask Ogerpon 1/2.
+
+Training coverage audit:
+
+- Script used: `/tmp/audit_marnie_b8f_replay_coverage_fast_20260812.py`.
+- Latest output:
+  `logs/kaggle_replay_high900win_marnie_b8f_20260812/coverage_latest/replay_loss_training_coverage.csv`.
+- Key finding: the drop is not mostly because the opponent archetypes were
+  unseen.
+  - mirror `b8f251a476e7`: 6894 train games, train WR 0.7485.
+  - `f1445356c3a7` Mega Lopunny: 893 train games, train WR 0.7122.
+  - `7f9a538936e3` Alakazam: 2386 train games, train WR 0.8424.
+  - `cc2e995b5ad0` Dragapult: 402 train games, train WR 0.7637.
+  - exact `65c1997e6846` Crustle: 0 train games.
+  - exact `ab7e4b818773` Ogerpon: 1 train game, loss.
+- Interpretation: exact-sig gaps exist for a few single losses, but the major
+  live loss mass is against well-covered arch/sigs. The larger issue is likely
+  live opponent strength / strategy quality and imperfect local shadow, not
+  just deck signature missingness.
+
+Live opponent local validation:
+
+- Built manifest:
+  `/tmp/build_live_opponent_eval_manifest_20260812.py`
+  ->
+  `logs/kaggle_replay_high900win_marnie_b8f_20260812/live_opponent_eval_manifest.csv`.
+- 24 unique replay opponent decks, 14 matched to existing local policies.
+- Local baseline-delta:
+  `logs/kaggle_replay_high900win_marnie_b8f_20260812/live_opponent_eval/old_vs_cur0810_b8f_g100.csv`.
+- Old submitted b8f local WR against matched live opponents:
+  - mirror 0.720.
+  - f144 Lopunny 0.690.
+  - 7f9 Alakazam 0.710.
+  - cc2e Dragapult 0.870.
+  - e82 Festival 0.640.
+  - 5899 Ogerpon 0.130.
+- Current RR b8f was worse than old b8f against all 14 matched live opponents:
+  avg delta -0.188, candidate avg 0.545 vs old avg 0.733.
+- Interpretation:
+  - Existing local shadow/current_rr opponents still under-represent true live
+    opponent quality. For example local old b8f predicts high WR vs f144/7f9,
+    but live samples had severe f144 pressure.
+  - The `cur0810` b8f variant should not replace the old high900win method.
+
+Targeted supplemental data:
+
+- Built live-hard winner aux from b8f winning games against replay-loss
+  sigs/archetypes:
+  `/tmp/build_marnie_b8f_livehard_aux_20260812.py`.
+- Output corpus:
+  `data/bc_corpus_livehard_marnie_b8f_20260812/Marnie_Grimmsnarl/livehard_win/*.npz`.
+- Summary:
+  - candidate_games 19350, selected_games 5250, files 56, rows 515386.
+  - by arch rows:
+    - Marnie 109524.
+    - Mega Lopunny 93446.
+    - Alakazam 87420.
+    - Crustle 66583.
+    - Dragapult 61784.
+    - Ogerpon 53030.
+    - Festival 43599.
+  - key exact rows: b8f 98612, f144 70215, 7f9 60324,
+    cc2e 34201, e82 23220, 5899 5698.
+- Caveat: builder currently used `episodes_teamdetect.csv` from the earlier
+  42-game pull. The latest 43-game pull only added one more f144 loss; f144 is
+  already heavily represented in live-hard aux. Update the script constants to
+  `episodes_latest_teamdetect.csv` before future reuse.
+
+Active targeted training:
+
+- Runner: `/tmp/run_marnie_b8f_livehard_oldmethod_20260812.sh`.
+- Logs:
+  `logs/marnie_b8f_livehard_oldmethod_20260812/runner.log`,
+  `logs/marnie_b8f_livehard_oldmethod_20260812/train/marnie_b8f_high900_livehard_w1_seed91.log`,
+  `.../marnie_b8f_high900_livehard_w2_seed92.log`.
+- Checkpoints:
+  `checkpoints/marnie_b8f_livehard_oldmethod_20260812/bc2_marnie_b8f_high900_livehard_w1_seed91.npz`,
+  `.../bc2_marnie_b8f_high900_livehard_w2_seed92.npz`.
+- Recipe:
+  - old pointer width4, scratch training, no history.
+  - base: v12 all-date 1100+ and 1200+ b8f.
+  - aux: high900 winners plus livehard wins.
+  - W1: one livehard aux.
+  - W2: livehard aux duplicated as coarse x2 weight.
+  - epochs 6, batch 512, lr 8e-5.
+- Last known W1 status at 2026-08-12 21:30:
+  - epoch 3/6 complete, val loss improved to 0.6687.
+  - training still running on GPU3.
+- Runner will automatically evaluate W1/W2 after training:
+  random g500, baseline-delta against old b8f over coverage pool, archetype
+  matrix, and 0810 ladder weighted.
+
+Offline action diagnostics:
+
+- First attempt had a shell quoting bug because `--archetype "Marnie Grimmsnarl"`
+  was expanded from a plain string. It was killed.
+- Corrected runner:
+  `/tmp/run_marnie_b8f_offline_accuracy_20260812.sh`.
+- Output:
+  `logs/kaggle_replay_high900win_marnie_b8f_20260812/offline_accuracy_fixed/`.
+- It evaluates old submitted b8f action accuracy on main 1100+/1200+ and
+  high900 winner aux by opponent sig:
+  b8f, f144, 7f9, cc2e, e82, 5899.
+- Last known status: started at 2026-08-12 21:29, running first sig.
+
+Immediate next steps:
+
+- When live-hard W1/W2 finish, compare:
+  - `logs/marnie_b8f_livehard_oldmethod_20260812/eval/random_g500.csv`
+  - `.../vs_coverage_g100.csv`
+  - `.../vs_coverage_g100_arch_matrix.csv`
+  - `.../vs_coverage_g100_ladder0810_players_weighted.csv`
+  against old submitted b8f.
+- Also run W1/W2 against live opponent manifest:
+
+```bash
+python3 tools/eval_baseline_delta.py \
+  --baseline old_b8f=checkpoints/high900win_oldmethod_20260812/w4/bc2_high900win_old_marnie_grimmsnarl_b8f251a4_w4.npz:logs/ladder_pool_0805_0809_fast_all/decks/b8f251a476e7_marnie_grimmsnarl_raihan_ramadistra.csv \
+  --candidate livehard_w1=checkpoints/marnie_b8f_livehard_oldmethod_20260812/bc2_marnie_b8f_high900_livehard_w1_seed91.npz:logs/ladder_pool_0805_0809_fast_all/decks/b8f251a476e7_marnie_grimmsnarl_raihan_ramadistra.csv \
+  --candidate livehard_w2=checkpoints/marnie_b8f_livehard_oldmethod_20260812/bc2_marnie_b8f_high900_livehard_w2_seed92.npz:logs/ladder_pool_0805_0809_fast_all/decks/b8f251a476e7_marnie_grimmsnarl_raihan_ramadistra.csv \
+  --opponent-manifest logs/kaggle_replay_high900win_marnie_b8f_20260812/live_opponent_eval_manifest.csv \
+  --skip-bad-entries --games 100 --workers 24 --max-turns 700 --progress-every 25 \
+  --out-csv logs/kaggle_replay_high900win_marnie_b8f_20260812/live_opponent_eval/livehard_vs_old_b8f_g100.csv
+```
+
+Decision rule:
+
+- Do not submit live-hard only because it improves val loss.
+- Consider it only if it improves f144/Lopunny, 7f9/Alakazam, mirror, and
+  e82/Festival locally without worsening 5899/Ogerpon and broad coverage
+  matrix. Otherwise keep submitted old b8f as the current Marnie baseline.
+
+## Update Checklist
+
 Whenever changing active state, update:
 
 - Date/time at top of this file.

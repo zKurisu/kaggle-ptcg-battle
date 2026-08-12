@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-12 13:41 Asia/Shanghai.
+Last updated: 2026-08-12 15:55 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -88,7 +88,7 @@ After these finish, evaluate before considering submissions:
 - Current filtered RR/coverage matrix, especially Alakazam vs TRM/Marnie/Festival and Ogerpon vs Crustle/current ladder pool.
 - Compare against old `high1100_alakazam_7f9`, `cur0810_alakazam_7f9`, and existing Ogerpon baselines.
 
-## Active Remote Job: Loss-Optimized BC Contrast 2026-08-12
+## Completed: Loss-Optimized BC Contrast 2026-08-12
 
 User asked whether val loss can be optimized and retrained for comparison.
 
@@ -138,28 +138,76 @@ Common lossopt settings:
 - `PTCG_DISABLE_CUDNN=1`
 - `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
 
-Status at 13:12 CST:
+Completed training outputs:
 
-- Ogerpon 2a507 and 2bd9 have entered epochs and are saving best checkpoints
-  by `policy_raw`.
-- Alakazam LiamK and Majkel are still indexing/loading the large corpus; they
-  have active CPU/RSS growth and no traceback yet.
-- The previous b1024 runner completed/failed before this run:
-  - Ogerpon 2a507 completed.
-  - Ogerpon 2bd9 completed in the earlier `team_specific_0811_train_20260812`
-    directory.
-  - Alakazam LiamK completed.
-  - Alakazam Majkel OOMed at the 32GB per-process cap, so this lossopt run
-    raises the cap to 48GB.
+- `checkpoints/team_specific_0811_lossopt_20260812/bc2_lossopt_ogerpon_jch_2a507_w4_hist.npz`
+  - Best `policy_raw=0.6178` at epoch 6/8.
+- `checkpoints/team_specific_0811_lossopt_20260812/bc2_lossopt_ogerpon_jch_2bd9_w4_hist.npz`
+  - Best `policy_raw=0.8757` at epoch 6/12; later epochs overfit badly.
+- `checkpoints/team_specific_0811_lossopt_20260812/bc2_lossopt_alakazam_liamk_ca08_histplan_w4.npz`
+  - Best `policy_raw=0.7584` at epoch 7/8.
+- `checkpoints/team_specific_0811_lossopt_20260812/bc2_lossopt_alakazam_majkel_7f9_histplan_w4.npz`
+  - Best `policy_raw=0.5196` at epoch 6/8.
 
-Monitor command:
+Evaluation outputs:
 
-```bash
-cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
-nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits
-ps -eo pid,ppid,stat,etime,pcpu,pmem,rss,cmd | grep -E "run_lossopt_bc_20260812.py|bc2_train.py" | grep -v grep || true
-for f in logs/team_specific_0811_lossopt_20260812/*.log; do echo ===$f; grep -E "^BC2:|^Corpus:|^Split:|epoch|done epoch|saved best|Best|Traceback|OutOfMemory|RuntimeError" "$f" | tail -20; done
-```
+- Random logs: `logs/team_specific_0811_lossopt_20260812_eval/random_*.log`.
+- Coverage delta CSVs:
+  - `logs/team_specific_0811_lossopt_20260812_eval/lossopt_alakazam_7f9_vs_baseline_coverage_g80.csv`
+  - `logs/team_specific_0811_lossopt_20260812_eval/lossopt_alakazam_ca08_vs_baseline_coverage_g80.csv`
+  - `logs/team_specific_0811_lossopt_20260812_eval/lossopt_ogerpon_2a507_vs_baseline_coverage_g80.csv`
+  - `logs/team_specific_0811_lossopt_20260812_eval/lossopt_ogerpon_2bd9_vs_baseline_coverage_g80.csv`
+- Runner summary had a harmless post-eval parsing crash:
+  `AttributeError: 'NoneType' object has no attribute 'group'`. The actual
+  random logs and coverage CSVs were generated correctly.
+
+Random gate:
+
+- `lossopt_alakazam_7f9`: `100.0%` vs random, `500/500`.
+- `lossopt_alakazam_ca08`: `99.0%` vs random, `495/500`.
+- `lossopt_ogerpon_2a507`: `89.6%` vs random, `448/500`.
+- `lossopt_ogerpon_2bd9`: `86.6%` vs random, `433/500`.
+
+Coverage delta summary:
+
+- `lossopt_alakazam_7f9` vs `high1100_alakazam_7f9`:
+  - Candidate avg `0.762`, weighted `0.680`.
+  - Baseline avg `0.712`, weighted `0.618`.
+  - Delta avg `+0.051`, weighted `+0.062`, lost `2/13`.
+  - Worst absolute matchup remains current Marnie `0.487`, but this is still
+    better than baseline `0.463`.
+  - Team Rocket Mewtwo improved from `0.412` to `0.588`, though its current
+    environment weight is tiny in the 0810 weighted pool.
+- `lossopt_alakazam_ca08`:
+  - Candidate avg `0.676`, weighted `0.536`.
+  - Baseline was random, so the large positive delta is only a sanity check.
+  - Worst matchup is current Marnie `0.338`, so it is not a primary submission
+    candidate despite `99%` random.
+- `lossopt_ogerpon_2a507`:
+  - Candidate avg `0.327`, weighted `0.318`; too weak despite positive delta
+    over random.
+  - Worst Crustle `0.087`.
+- `lossopt_ogerpon_2bd9`:
+  - Candidate avg `0.303`, weighted `0.261`.
+  - Absolute strength is too low; random gate also failed.
+
+Interpretation:
+
+- Only `lossopt_alakazam_7f9` is a plausible local candidate from this batch.
+  It has real positive coverage delta over the submitted/high1100 7f9 baseline
+  and fixes the old TRM weakness locally.
+- The online result for `submission_high1100_alakazam_7f9a5389` staying around
+  800 means the current local coverage pool is still too optimistic for Kaggle
+  climb conditions. Do not assume `lossopt_alakazam_7f9` will restore old
+  scores without a live probe.
+- Both lossopt Ogerpon models should be rejected for submission unless later
+  Ogerpon deck/signature analysis changes the deck choice.
+- Marnie was not part of this lossopt batch. That was a scope choice because
+  the batch targeted Alakazam underperformance and Ogerpon sig issues after
+  Marnie had just been continued/submitted. Given the live score of
+  `submission_high1100_marnie_b8f_cont_b1024_seed25` only holding about 900,
+  this is an incomplete experimental axis. Future Marnie work should be from
+  scratch or DVH-style reproduction, not another small continuation.
 
 ## Alakazam 7f9 Underperformance Audit 2026-08-12
 

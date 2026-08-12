@@ -8094,6 +8094,80 @@ band weighting:
   - `scp` once failed due local system ssh config permissions; explicit
     `scp -F /home/jie/.ssh/config ... ks:...` worked.
 
+2026-08-12 high+climb winner retraining results:
+
+- Training completed successfully:
+  - `logs/high_climbwin_20260812/runner.log`
+  - 8/8 jobs done, 0 failed.
+  - Final checkpoints:
+    `checkpoints/high_climbwin_20260812/w4/bc2_highclimb_*_w4.npz`.
+- Post-eval and DVH comparison completed:
+  - `logs/high_climbwin_20260812/post_eval.log` ended with
+    `post-eval done 2026-08-12T08:15:52+08:00`.
+  - `logs/high_climbwin_20260812/dvh_compare.log` ended with
+    `dvh-compare done 2026-08-12T08:17:12+08:00`.
+  - Main outputs:
+    - `logs/high_climbwin_20260812/random_g500.csv`
+    - `logs/high_climbwin_20260812/highclimb_vs_coverage_g100.csv`
+    - `logs/high_climbwin_20260812/highclimb_vs_coverage_g100_arch_matrix.csv`
+    - `logs/high_climbwin_20260812/highclimb_vs_coverage_g100_ladder0810_players_weighted.csv`
+    - `logs/high_climbwin_20260812/highclimb_vs_coverage_g100_ladder0810_rows_weighted.csv`
+    - `logs/high_climbwin_20260812/dvh_vs_coverage_g100.csv`
+    - `logs/high_climbwin_20260812/highclimb_vs_dvh_g100_summary.csv`
+- Random g500:
+  - `highclimb_marnie_grimmsnarl_b8f251a4`: 1.000.
+  - `highclimb_alakazam_7f9a5389`: 0.990.
+  - `highclimb_mega_lopunny_f1445356`: 0.982.
+  - `highclimb_mega_lucario_43d6d8b0`: 0.972.
+  - `highclimb_marnie_grimmsnarl_2c22fa76`: 0.926.
+  - `highclimb_teal_mask_ogerpon_90abbfb0`: 0.788.
+  - `highclimb_teal_mask_ogerpon_2bd9da52`: 0.764.
+  - `highclimb_dragapult_cc2e995b`: 0.748.
+- Coverage pool, 0810 player-distribution climb-weighted:
+  - Existing baseline `high1100_marnie_grimmsnarl_b8f251a4`: 0.7547.
+  - Best new model `highclimb_marnie_grimmsnarl_b8f251a4`: 0.7181.
+  - `highclimb_alakazam_7f9a5389`: 0.6429.
+  - `highclimb_mega_lopunny_f1445356`: 0.5404.
+  - `highclimb_mega_lucario_43d6d8b0`: 0.4647.
+  - `highclimb_marnie_grimmsnarl_2c22fa76`: 0.4574.
+  - `highclimb_teal_mask_ogerpon_90abbfb0`: 0.3912.
+  - `highclimb_dragapult_cc2e995b`: 0.2923.
+  - `highclimb_teal_mask_ogerpon_2bd9da52`: 0.1892.
+- Relative to `high1100_marnie_grimmsnarl_b8f251a4` shared baseline:
+  - `highclimb_marnie_grimmsnarl_b8f251a4`: weighted_delta -0.050,
+    candidate avg 0.745 vs baseline avg 0.765; lost 8/13; worst Crustle
+    -0.160.
+  - `highclimb_alakazam_7f9a5389`: weighted_delta -0.194; worst TR Mewtwo
+    -0.470.
+  - All other highclimb candidates are much worse: weighted_delta from -0.279
+    to -0.586.
+- Relative to DVH (`logs/dvh_vs_high_20260811/unpack/policy.npz`):
+  - DVH macro over this coverage pool: 0.772.
+  - `highclimb_marnie_grimmsnarl_b8f251a4`: weighted_delta_vs_dvh -0.063,
+    avg_delta -0.027; lost 9/13; worst Crustle -0.100.
+  - `highclimb_alakazam_7f9a5389`: weighted_delta_vs_dvh -0.207; worst TR
+    Mewtwo -0.440.
+  - Other new models are not close to DVH.
+- Important matchup matrix points:
+  - Existing `high1100_marnie_b8f`: macro 0.765; worst Ogerpon 0.530.
+  - DVH Marnie b8f: macro 0.772; Ogerpon 0.540, Crustle 0.750, Alakazam
+    0.840, Marnie mirror 0.780.
+  - New `highclimb_marnie_b8f`: macro 0.745; improves Ogerpon slightly to
+    0.570 but drops Crustle to 0.650 and Marnie mirror to 0.680.
+  - New `highclimb_alakazam`: macro 0.694 but hard-loses TR Mewtwo at 0.400.
+- Interpretation:
+  - The high+recent-climb-winner recipe did not repair the early-ladder
+    failure. It slightly shifts Marnie b8f toward Ogerpon but damages other
+    important matchups, especially Crustle and mirror.
+  - Do not prioritize this cohort for Kaggle submission. If a submission is
+    needed from this cohort for ablation, only `highclimb_marnie_b8f` is
+    defensible, and it is still below both existing high1100 Marnie and DVH
+    on local coverage.
+  - The result argues against "just add recent 600-1100 winner-only climb data"
+    as the main fix. The missing ingredient is likely policy/trajectory/rule
+    quality or better team-specific clean behavior, not this coarse aux-corpus
+    mix.
+
 ## Update Checklist
 
 Whenever changing active state, update:

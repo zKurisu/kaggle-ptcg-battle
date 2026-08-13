@@ -10190,3 +10190,47 @@ Update 2026-08-13 12:55 CST:
   `cross_w4_no_state_token`, all against
   `cc2e995b5ad0_dragapult_kh0a.csv`, with the old all900 w4 Dragapult model
   as baseline.
+
+Update 2026-08-13 20:15 CST:
+
+- ks active workspace after server recovery is:
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804`.
+- v13 0801-0812 extraction completed:
+  `data/bc_corpus_banded_v13_0801_0812_state_token_20260813`
+  with 729 `.npz` files. Smoke sample:
+  `state=(80,)`, `option=(3,64)`, `state_token=(37,24)`,
+  `feature_version=v13_state_token_multistream_history`.
+- Dragapult v13 training completed successfully, 4/4 jobs:
+  `checkpoints/dragapult_v13_0801_0812_20260813/`
+  final models:
+  `bc2_dragapult_cc2e_v13_cross_w3_state_token.npz`,
+  `bc2_dragapult_cc2e_v13_cross_w4_state_token.npz`,
+  `bc2_dragapult_cc2e_v13_cross_w4_no_state_token.npz`,
+  `bc2_dragapult_cc2e_v13_recent0805_cross_w4_state_token.npz`.
+- 0812 score-labeled shadow training completed successfully, 81/81 jobs:
+  `checkpoints/shadow_0812_v13_cross_w3_20260813/`.
+  Enriched manifest:
+  `logs/restore_0812_dragapult_v13_20260813/shadow_manifest_0812_v13_cross_w3_enriched.csv`.
+  Names include source/climb score labels like `shadow_s1117_...`.
+- Final models and key logs/manifests/decks have been pulled back locally,
+  excluding epoch checkpoints:
+  `remote_artifacts/restore_0812_dragapult_v13_20260813/`.
+  Local verification found 4 Dragapult final `.npz` and 81 shadow final `.npz`.
+  Do not commit this directory; it is a local artifact backup.
+- ks random evaluation is running in background:
+  pid file `logs/eval_restore_0812_v13_20260813/rr_runner.pid` is for RR,
+  random process was started from `/tmp/run_random_restore_0812_v13_20260813.sh`.
+  Random outputs:
+  `logs/eval_restore_0812_v13_20260813/dragapult_v13_random_g500.csv`,
+  `logs/eval_restore_0812_v13_20260813/shadow_0812_v13_random_g500.csv`.
+  Dragapult random g500 completed:
+  `w3_state_token=0.978`, `w4_state_token=0.984`,
+  `w4_no_state_token=0.958`, `recent0805_w4_state_token=0.956`.
+- ks RR / baseline-delta evaluation is running in background:
+  `logs/eval_restore_0812_v13_20260813/rr_runner.pid`.
+  Outputs:
+  `logs/eval_restore_0812_v13_20260813/rr_dragapult_v13_candidates_g300.csv`
+  and
+  `logs/eval_restore_0812_v13_20260813/dragapult_v13_vs_shadow81_g80.csv`.
+  First phase is 4 Dragapult candidate RR, then it compares w4/no-state/recent
+  against w3 over all 81 enriched shadow opponents.

@@ -1,23 +1,31 @@
 # Agent Handoff
 
-Last updated: 2026-08-13 14:34 Asia/Shanghai.
+Last updated: 2026-08-13 17:20 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
 ## Workspaces
 
 - Local repo: `/home/jie/Do/0_PTCG/bak/ptcg_rl_git`
-- Local branch currently checked out in `/home/jie/Do/0_PTCG/bak/ptcg_rl_git`: `master`.
+- Local branch currently checked out in `/home/jie/Do/0_PTCG/bak/ptcg_rl_git`: `dragapult-pipeline-v13`.
   Older handoff entries and the remote workspace name still refer to
   `v7-baseline-20260804`; do not switch or rewrite branches unless the user
   explicitly asks.
-- Remote training repo: `ks:/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804`
+- Old remote training repo before the 2026-08-13 ks reset:
+  `ks:/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804`
+- Current remote recovery root after the 2026-08-13 ks reset: `ks:/data/jie`.
+  Restore code to `/data/jie/ptcg_rl_git_v7_baseline_20260804` unless the user
+  asks for a different directory.
 - Remote original workspace also exists in older notes: `ks:/home/jie/Do/0_PTCG/workspace/ptcg_rl_git`
 - Current remote training data for active BC experiments:
   - Completed stable baseline: `data/bc_corpus_banded_v11_0701_0804`
   - Completed v12 history corpus: `data/bc_corpus_banded_v12_0701_0805_hist32_log128_board12`
   - Current refreshed v12 corpus: `data/bc_corpus_banded_v12_0701_0807_hist32_log128_board12`
-- Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
+- Current remote raw episodes after the reset should be
+  `/data/jie/episodes_raw`. Older notes may mention
+  `/home/jie/Do/0_PTCG/workspace/episodes_raw` or
+  `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the
+  intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
 
@@ -48,6 +56,28 @@ Local raw episode cache after recovery:
 - It also currently has only partial July coverage locally: `2026-07-24` through
   `2026-07-27`. July still needs refill for `2026-07-01..2026-07-23` and
   `2026-07-28..2026-07-31` if reproducing all-date v11/v12/v13 experiments.
+- A local July refill script was started at
+  `/tmp/download_july_episodes_20260813.sh`, logging to
+  `/home/jie/Do/0_PTCG/raw_episode/download_july_20260813.log`. Recheck the
+  log and `ls -lh /home/jie/Do/0_PTCG/raw_episode/pokemon-tcg-ai-battle-episodes-2026-07-*.zip`
+  before assuming July is complete.
+- Uploading 20+ large zip files from local to ks was too slow. The preferred
+  short-term restore path is to run `kaggle datasets download` directly on ks
+  under `/data/jie/episodes_raw`, using only the jie Kaggle config.
+
+Remote restore state at `2026-08-13 17:20`:
+
+- Code archive from local branch `dragapult-pipeline-v13` was uploaded to
+  `ks:/data/jie/ptcg_rl_git_v13_code_20260813.tar` and extracted into
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804`.
+- Auxiliary small logs/decks archive was uploaded as
+  `ks:/data/jie/ptcg_v13_aux_logs_20260813.tar` and extracted into the same
+  repo. Large corpora/checkpoints were not restored.
+- Remote `py_compile` passed for:
+  `tools/bc_extract_v2.py`, `tools/bc2_train.py`, `ptcg_rl/model.py`,
+  `ptcg_rl/numpy_policy.py`, and `ptcg_rl/bc2/data.py`.
+- All GPU memory was free when checked after reset. Recheck `nvidia-smi` before
+  launching training and increase batch/CUDA caps if A800 memory is idle.
 
 Was July data used by the lost jobs?
 
@@ -72,6 +102,165 @@ Handoff recoverability:
 - The lost Dragapult v13 job was still in the extraction/watch stage at last
   known state; no reliable completed v13 training/eval artifacts should be
   assumed to exist.
+
+Do not restart the Marnie history-summary repair until July `2026-07-01..31`
+and August `2026-08-01..11` data have been restored, because that run depends
+on the all-date v12 history corpus. Record explicitly: as of this note, the
+post-reset Marnie history repair has not been retrained.
+
+## Submission Stability Analysis 2026-08-13
+
+Latest `jie` Kaggle submissions were queried with the jie API only. The newest
+two 2026-08-13 submissions are repeats of 2026-08-12 packages:
+
+- `submission_lossopt_alakazam_7f9_20260812`: 929.4 on 2026-08-12, repeated
+  as 806.8 on 2026-08-13.
+- `submission_high900win_old_marnie_b8f_20260812`: 953.4 on 2026-08-12,
+  repeated as 890.1 on 2026-08-13.
+
+This strongly supports the user's observation that public score is unstable and
+early climb matters. A package that can sit near 950 can still fail early when
+matched into another strong fresh submission climbing from 600. A single mean
+RR score is therefore not sufficient; validation must estimate low-tail climb
+risk.
+
+Stable-ish families from `jie` submissions:
+
+- Best repeated family remains Marnie `b8f251a4` old/w4/high900/v12hist:
+  visible scores include 986.2, 975.4, 964.6, 959.1, 953.4, 946.2, 931.9, but
+  repeats also show 916.7, 890.1, 838.6. This is the most recoverable baseline,
+  but not robust enough for 1200+ without reducing early-loss risk.
+- Crustle has mid-stable results around 903/904 for some signatures, but no
+  clear 1000+ evidence from jie submissions.
+- Alakazam has strong data volume and one 929.4 result, but repeat 806.8 and
+  high1100 833.1 indicate a poor low-tail profile or bad matchup coverage.
+- Ogerpon `v7sig` was strong on 2026-08-03/04 around 959/966, but recent
+  resubmits fell to 672/715; treat it as environment- or signature-stale.
+- History/sequence/trajectory submissions have not shown a stable improvement:
+  `historyk_marnie` 916.7, `v12_seqplan_festival` 813.9,
+  `v12_seqplan_lucario` 634.0, `ogerpon_v9_gameplan` 545.0. Keep these as
+  architectural ablations, not submission defaults.
+
+Training/validation implication:
+
+- Optimize for early-climb survival, not only final average. Add a validation
+  report that simulates the first 7-10 ladder games against a weighted
+  600-1100 live-climb opponent pool built from the last 3-5 episode days and
+  recent replay opponents. Report probabilities of `7-0`, `6-1`, `5-2`, and
+  any early loss in first 3 games.
+- Keep a filtered high-quality RR pool, but add a separate "fresh submit"
+  opponent pool. New strong submissions start at 600, so low score bands are
+  not purely weak opponents.
+- Candidate selection should use a low-tail metric: minimum/worst-quartile
+  archetype score, CVaR over opponent entries, and early-climb weighted score.
+  Do not rank solely by mean RR.
+- For training, avoid small finetunes as the default. If changing BC, prefer
+  full retrains with explicit controls and large structural changes. For
+  Dragapult v13, use aggressive controlled comparisons rather than tiny
+  parameter nudges.
+
+## Dragapult v13 Restore Plan After ks Reset
+
+Priority after `/data/jie/episodes_raw` has August data restored:
+
+1. Re-extract v13 corpus for August `2026-08-01..2026-08-12`:
+
+```bash
+cd /data/jie/ptcg_rl_git_v7_baseline_20260804
+python3 -u tools/bc_extract_v2.py /data/jie/episodes_raw \
+  --out data/bc_corpus_banded_v13_0801_0812_state_token_20260813 \
+  --workers 12 \
+  --action-history-k 32 \
+  --log-history-k 128 \
+  --board-history-k 12 \
+  --board-history-feat-dim 32 \
+  --progress-every 200
+```
+
+`bc_extract_v2.py` extracts all available zip files under the episodes
+directory; score/date filtering happens in `tools/bc2_train.py`.
+
+2. Recreate the Dragapult specialist sweep manifest and run three first-line
+models plus controls:
+
+- `cross_w3_state_token`: cross-attn, width 3, state-token dim 24.
+- `cross_w4_state_token`: cross-attn, width 4, state-token dim 24.
+- `cross_w4_no_state_token`: same as above but `--state-token-feat-dim 0`,
+  the required control to prove state-token extraction matters.
+- Optional larger/control branches if GPUs remain idle: raw-policy best metric,
+  recent-only 0805-0812, Kh0a team-specific, and top-sig mix.
+
+Shared Dragapult settings for the first restore run:
+
+- Corpus:
+  `data/bc_corpus_banded_v13_0801_0812_state_token_20260813`.
+- Archetype/signature:
+  `--archetype "Dragapult" --deck-sig cc2e995b5ad0`.
+- Score/date:
+  `--score-bands 1200+ 1100-1199 1000-1099 900-999 --date-from 2026-08-01 --date-to 2026-08-12`.
+- Weights:
+  `--win-weight 1.5 --loss-weight 0.4 --draw-weight 0.8 --include-empty --split-by-game`.
+- Set/multi-select emphasis:
+  `--set-loss-weight 0.8 --set-loss-min-count 2 --set-loss-negative-weight 0.15 --multi-select-sequence-weight 0.25`.
+- Hardware:
+  A800s can likely handle `--batch-size 1536` to `2048` and
+  `--cuda-memory-gb 32` to `48`; check `nvidia-smi` first.
+
+Minimum eval after each restored v13 checkpoint:
+
+- random g500 on `logs/ladder_pool_0805_all/decks/cc2e995b5ad0_dragapult_flg.csv`;
+- filtered high-quality RR matrix, not an unfiltered weak pool;
+- fresh-climb weighted pool from recent 600-1100 opponents;
+- first-10-game climb-risk metric.
+
+If v13 is still close to old Dragapult results, treat it as a bottom-pipeline
+problem, not a data shortage: inspect encoding of bench damage counters, target
+choice, attack selection, evolution lines, and whether multi-select labels are
+represented as an order-free set where appropriate.
+
+## Marnie History Repair Restore Config
+
+This job was lost in the ks reset and has not been retrained after reset.
+Restore only after the all-date v12 history corpus can be rebuilt.
+
+Required data:
+
+- Main corpus:
+  `data/bc_corpus_banded_v12_0701_0811_merged_hist32_log128_board12_20260812`.
+- Aux corpus:
+  `data/bc_corpus_high900_winners_20260812`.
+- Deck:
+  `logs/ladder_pool_0805_0809_fast_all/decks/b8f251a476e7_marnie_grimmsnarl_raihan_ramadistra.csv`.
+- Init checkpoint:
+  `checkpoints/high900win_oldmethod_20260812/w4/bc2_high900win_old_marnie_grimmsnarl_b8f251a4_w4.npz`.
+  If this checkpoint is unavailable after reset, first retrain or restore the
+  old high900win b8f baseline before running history repair.
+
+Key intended branches:
+
+- `hist_summary_pointer_h0_fixed`: summary-only pointer control.
+- `hist_summary_pointer_raw_h8`: pointer + raw h8 + summary.
+- `hist_summary_cross_raw_h8`: cross-attn + raw h8 + summary.
+- `hist_summary_cross_plan_h8`: cross-attn + raw h8 + summary + step plan and
+  hierarchical plan.
+
+Most important settings:
+
+```bash
+--history-summary \
+--history-gate-init-bias -2.0 \
+--history-sensitivity-weight 0.15 \
+--history-sensitivity-margin 0.05 \
+--history-augment \
+--history-stream-drop-prob 0.10 \
+--history-event-drop-prob 0.05 \
+--history-tail-drop-prob 0.20
+```
+
+Do not submit a history checkpoint merely because validation loss improves.
+It must beat the old high900win b8f baseline on random, filtered RR, live
+opponents, history gate inspection, and early-climb risk. Previous history
+submissions did not prove stable live improvement.
 
 Kaggle mirror/download note:
 

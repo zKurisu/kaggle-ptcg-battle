@@ -12,7 +12,13 @@ import numpy as np
 import torch
 
 from ptcg_rl.encoder import OPT_FEAT_DIM, STATE_FEAT_DIM
-from ptcg_rl.history_features import BOARD_HISTORY_FEAT_DIM, HISTORY_SUMMARY_DIM, history_summary_from_arrays
+from ptcg_rl.history_features import (
+    ACTION_FIELDS,
+    BOARD_HISTORY_FEAT_DIM,
+    HISTORY_SUMMARY_DIM,
+    LOG_FIELDS,
+    history_summary_from_arrays,
+)
 from ptcg_rl.plan_labels import PLAN_DIM, PLAN_LABELS, label_decision_plan
 
 
@@ -662,6 +668,40 @@ class BCCorpus:
             _copy_1d(data, f"{prefix}_mask", si, mask_dst, bi, dtype=np.float32)
             return True
 
+        def _row_1d(data: dict[str, np.ndarray], key: str, si: int,
+                    *, dtype=np.float32) -> np.ndarray:
+            if key not in data:
+                return np.zeros(0, dtype=dtype)
+            return np.asarray(data[key][si], dtype=dtype).reshape(-1)
+
+        def _row_action_history(data: dict[str, np.ndarray], prefix: str, si: int) -> dict[str, np.ndarray]:
+            out: dict[str, np.ndarray] = {}
+            for field in ACTION_FIELDS:
+                dtype = np.float32 if field in {"count", "mask"} else np.int64
+                out[field] = _row_1d(data, f"{prefix}_{field}", si, dtype=dtype)
+            return out
+
+        def _row_log_history(data: dict[str, np.ndarray], si: int) -> dict[str, np.ndarray]:
+            out: dict[str, np.ndarray] = {}
+            for field in LOG_FIELDS:
+                dtype = np.float32 if field in {"value", "mask"} else np.int64
+                out[field] = _row_1d(data, f"log_hist_{field}", si, dtype=dtype)
+            return out
+
+        def _row_board_history(data: dict[str, np.ndarray], si: int) -> dict[str, np.ndarray]:
+            cards = (
+                np.asarray(data["board_hist_cards"][si], dtype=np.int64)
+                if "board_hist_cards" in data
+                else np.zeros((0, 12), dtype=np.int64)
+            )
+            feats = (
+                np.asarray(data["board_hist_feats"][si], dtype=np.float32)
+                if "board_hist_feats" in data
+                else np.zeros((0, self.board_history_feat_dim), dtype=np.float32)
+            )
+            mask = _row_1d(data, "board_hist_mask", si, dtype=np.float32)
+            return {"cards": cards, "feats": feats, "mask": mask}
+
         for bi, (di, si) in enumerate(indices):
             data = self.npz_data[di]
             n = n_options[bi]
@@ -783,8 +823,10 @@ class BCCorpus:
                     if n:
                         history_summary[bi, :n] = arr[:n]
                 else:
-                    history_summary[bi] = history_summary_from_arrays(
-                        own_hist={
+                    own_hist = (
+                        _row_action_history(data, "own_hist", si)
+                        if "own_hist_mask" in data
+                        else {
                             "type": history_type[bi],
                             "card": history_card[bi],
                             "card2": history_card2[bi],
@@ -793,8 +835,12 @@ class BCCorpus:
                             "select_type": history_select_type[bi],
                             "count": history_count[bi],
                             "mask": history_mask[bi],
-                        },
-                        opp_hist={
+                        }
+                    )
+                    opp_hist = (
+                        _row_action_history(data, "opp_hist", si)
+                        if "opp_hist_mask" in data
+                        else {
                             "type": opp_history_type[bi],
                             "card": opp_history_card[bi],
                             "card2": opp_history_card2[bi],
@@ -803,8 +849,12 @@ class BCCorpus:
                             "select_type": opp_history_select_type[bi],
                             "count": opp_history_count[bi],
                             "mask": opp_history_mask[bi],
-                        },
-                        log_hist={
+                        }
+                    )
+                    log_hist = (
+                        _row_log_history(data, si)
+                        if "log_hist_mask" in data
+                        else {
                             "type": log_history_type[bi],
                             "player": log_history_player[bi],
                             "card": log_history_card[bi],
@@ -816,12 +866,22 @@ class BCCorpus:
                             "to_area": log_history_to_area[bi],
                             "value": log_history_value[bi],
                             "mask": log_history_mask[bi],
-                        },
-                        board_hist={
+                        }
+                    )
+                    board_hist = (
+                        _row_board_history(data, si)
+                        if "board_hist_mask" in data
+                        else {
                             "cards": board_history_cards[bi],
                             "feats": board_history_feats[bi],
                             "mask": board_history_mask[bi],
-                        },
+                        }
+                    )
+                    history_summary[bi] = history_summary_from_arrays(
+                        own_hist=own_hist,
+                        opp_hist=opp_hist,
+                        log_hist=log_hist,
+                        board_hist=board_hist,
                         dim=self.history_summary_dim,
                     ).astype(np.float32)
 

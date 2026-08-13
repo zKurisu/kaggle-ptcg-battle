@@ -168,38 +168,36 @@ class NumpyPolicy:
             out["board_feats"] = np.asarray(boards["feats"])
             out["board_mask"] = np.asarray(boards["mask"])
         if self._history_summary_dim > 0:
-            if own is None:
-                own = pack_action_history(self._history, max(self._history_k, 1))
-            if opp is None:
-                opp = pack_action_history([], max(self._opp_history_k, 1))
-            if logs is None:
-                logs = pack_log_history_from_obs(obs_dict or {}, max(self._log_history_k, 1))
-            if boards is None:
-                boards = pack_board_history(
-                    self._board_history,
-                    max(self._board_history_k, 1),
-                    self._board_history_feat_dim,
-                )
+            summary_own = pack_action_history(self._history, max(self._history_k, 32))
+            summary_opp = pack_action_history([], max(self._opp_history_k, 32))
+            summary_logs = pack_log_history_from_obs(obs_dict or {}, max(self._log_history_k, 128))
+            summary_boards = pack_board_history(
+                self._board_history,
+                max(self._board_history_k, 12),
+                self._board_history_feat_dim,
+            )
             out["summary"] = np.asarray(history_summary_from_arrays(
-                own_hist=own,
-                opp_hist=opp,
-                log_hist=logs,
-                board_hist=boards,
+                own_hist=summary_own,
+                opp_hist=summary_opp,
+                log_hist=summary_logs,
+                board_hist=summary_boards,
                 dim=self._history_summary_dim or HISTORY_SUMMARY_DIM,
             ))
         return out
 
     def _remember_decision(self, d, picks: list[int]) -> None:
-        if self._history_k > 0:
+        if self._history_k > 0 or self._history_summary_dim > 0:
             event = action_event_from_encoded(d, picks)
             if event is not None:
                 self._history.append(event)
-                if len(self._history) > self._history_k:
-                    del self._history[:-self._history_k]
-        if self._board_history_k > 0:
+                keep = max(self._history_k, 32 if self._history_summary_dim > 0 else 0)
+                if keep > 0 and len(self._history) > keep:
+                    del self._history[:-keep]
+        if self._board_history_k > 0 or self._history_summary_dim > 0:
             self._board_history.append(board_snapshot_from_encoded(d, self._board_history_feat_dim))
-            if len(self._board_history) > self._board_history_k:
-                del self._board_history[:-self._board_history_k]
+            keep = max(self._board_history_k, 12 if self._history_summary_dim > 0 else 0)
+            if keep > 0 and len(self._board_history) > keep:
+                del self._board_history[:-keep]
 
     @classmethod
     def load(cls, path: str) -> "NumpyPolicy":

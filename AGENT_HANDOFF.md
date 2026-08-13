@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-13 07:25 Asia/Shanghai.
+Last updated: 2026-08-13 08:20 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -20,6 +20,104 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## Active Remote Job: History Summary Marnie Parallel 2026-08-13
+
+User asked to run the next training stage in parallel. A five-way Marnie b8f
+history-summary experiment is now running on `ks`:
+
+- Main runner script: `/tmp/run_history_summary_20260813.sh`.
+- Main runner log: `logs/history_summary_20260813/runner.log`.
+- Main checkpoint dir: `checkpoints/history_summary_20260813`.
+- Base corpus:
+  `data/bc_corpus_banded_v12_0701_0811_merged_hist32_log128_board12_20260812`.
+- Auxiliary corpus: `data/bc_corpus_high900_winners_20260812`.
+- Baseline/init checkpoint:
+  `checkpoints/high900win_oldmethod_20260812/w4/bc2_high900win_old_marnie_grimmsnarl_b8f251a4_w4.npz`.
+- Deck:
+  `logs/ladder_pool_0805_0809_fast_all/decks/b8f251a476e7_marnie_grimmsnarl_raihan_ramadistra.csv`.
+
+Training jobs launched:
+
+- GPU0 `hist_summary_pointer_h0`
+  - Checkpoint:
+    `checkpoints/history_summary_20260813/bc2_marnie_b8f_histsummary_pointer_h0_w4.npz`.
+  - Log:
+    `logs/history_summary_20260813/train/marnie_b8f_histsummary_pointer_h0_w4.log`.
+  - Note: this is now known to be an invalid/weak control on old v12 corpus,
+    because v12 npz files do not store `history_summary` and the original
+    loader fallback used only enabled raw-history streams; with all raw streams
+    disabled, summary was all zero. Keep it as a no-effective-history control.
+- GPU0 `hist_summary_pointer_h0_fixed`
+  - Supplemental runner script:
+    `/tmp/run_history_summary_h0_fixed_20260813.sh`.
+  - Checkpoint:
+    `checkpoints/history_summary_20260813/bc2_marnie_b8f_histsummary_pointer_h0_fixed_w4.npz`.
+  - Log:
+    `logs/history_summary_20260813/train/marnie_b8f_histsummary_pointer_h0_fixed_w4.log`.
+  - This is the corrected summary-only experiment.
+- GPU1 `hist_summary_pointer_raw_h8`
+  - Checkpoint:
+    `checkpoints/history_summary_20260813/bc2_marnie_b8f_histsummary_pointer_raw_h8_w4.npz`.
+  - Log:
+    `logs/history_summary_20260813/train/marnie_b8f_histsummary_pointer_raw_h8_w4.log`.
+- GPU2 `hist_summary_cross_raw_h8`
+  - Checkpoint:
+    `checkpoints/history_summary_20260813/bc2_marnie_b8f_histsummary_cross_raw_h8_w4.npz`.
+  - Log:
+    `logs/history_summary_20260813/train/marnie_b8f_histsummary_cross_raw_h8_w4.log`.
+- GPU3 `hist_summary_cross_plan_h8`
+  - Checkpoint:
+    `checkpoints/history_summary_20260813/bc2_marnie_b8f_histsummary_cross_plan_h8_w4.npz`.
+  - Log:
+    `logs/history_summary_20260813/train/marnie_b8f_histsummary_cross_plan_h8_w4.log`.
+
+Evaluation watcher:
+
+- Script: `/tmp/eval_history_summary_all_20260813.sh`.
+- Nohup log: `logs/history_summary_eval_all_20260813.nohup.log`.
+- Watch log: `logs/history_summary_20260813/eval_all/watch.log`.
+- It waits until all `history_summary_20260813` `bc2_train.py` processes end,
+  then evaluates all five candidates plus old b8f baseline on:
+  - random g500:
+    `logs/history_summary_20260813/eval_all/random_g500.csv`;
+  - coverage RR baseline-delta:
+    `logs/history_summary_20260813/eval_all/vs_coverage_g100.csv`;
+  - archetype matrix:
+    `logs/history_summary_20260813/eval_all/vs_coverage_g100_arch_matrix.csv`;
+  - live-opponent replay manifest:
+    `logs/history_summary_20260813/eval_all/vs_liveopponents_g100.csv`;
+  - gate/summary weight inspection:
+    `logs/history_summary_20260813/eval_all/gate_summary.txt`.
+
+Code correction made after initial launch:
+
+- `ptcg_rl/bc2/data.py`: if an old v12 npz lacks `history_summary`, the loader
+  now computes summary directly from the raw `own_hist_*`, `opp_hist_*`,
+  `log_hist_*`, and `board_hist_*` arrays even when raw GRU stream lengths are
+  set to zero. This makes summary an independent feature stream.
+- `ptcg_rl/numpy_policy.py`: submission-time policy now records own action and
+  board history whenever a model has a summary stream, even if it has no raw
+  history GRU weights. Summary always uses up to 32 own actions, 128 public log
+  events, and 12 board snapshots, matching the intended offline summary scale.
+- Remote smoke after syncing the fix:
+  `history_k=0`, `log_history_k=0`, `board_history_k=0`,
+  `history_summary_dim=48` on an old v12 Marnie b8f file produced
+  `summary_shape=(32,48)`, `summary_abs_mean=0.2293`,
+  `summary_nonzero_rows=32`.
+
+At `2026-08-13 08:12 Asia/Shanghai`, all five training jobs and the eval
+watcher were alive. GPU memory was roughly GPU0 30GB, GPU1 16GB, GPU2 31GB,
+GPU3 48GB.
+
+Monitor:
+
+```bash
+cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+tail -f logs/history_summary_20260813/eval_all/watch.log
+for f in logs/history_summary_20260813/train/*.log; do echo "===$f==="; tail -30 "$f"; done
+nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits
+```
 
 ## Active Remote Job: History-Safe Marnie Repair 2026-08-12
 

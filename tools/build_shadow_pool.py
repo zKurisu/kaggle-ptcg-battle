@@ -52,6 +52,9 @@ FIELDS = [
     "team_name",
     "deck_sig",
     "deck_path",
+    "source_score",
+    "score_label",
+    "score_tier",
     "bands",
     "dates",
     "files",
@@ -77,6 +80,30 @@ FIELDS = [
 def safe_name(text: str, limit: int = 40) -> str:
     text = re.sub(r"[^0-9A-Za-z]+", "_", text.strip().lower()).strip("_")
     return (text[:limit].strip("_") or "unknown")
+
+
+def score_label(score: float) -> str:
+    if score <= 0:
+        return "sunk"
+    return f"s{int(round(score)):04d}"
+
+
+def score_tier(score: float) -> str:
+    if score >= 1200:
+        return "1200+"
+    if score >= 1100:
+        return "1100-1199"
+    if score >= 1000:
+        return "1000-1099"
+    if score >= 900:
+        return "900-999"
+    if score >= 800:
+        return "800-899"
+    if score >= 700:
+        return "700-799"
+    if score >= 600:
+        return "600-699"
+    return "<600"
 
 
 def date_from_path(path: str | Path) -> str:
@@ -359,8 +386,10 @@ def write_manifest(rows: list[dict], args: argparse.Namespace) -> None:
         writer = csv.DictWriter(f, fieldnames=FIELDS)
         writer.writeheader()
         for rank, row in enumerate(rows, 1):
+            source_score = float(row["max_score"])
+            score_part = f"{score_label(source_score)}_" if args.label_score_in_name else ""
             shadow = (
-                f"shadow_{safe_name(row['archetype'], 22)}_"
+                f"shadow_{score_part}{safe_name(row['archetype'], 22)}_"
                 f"{str(row['deck_sig'])[:8]}_{safe_name(row['team_name'], 24)}"
             )
             if shadow in seen_shadow_names:
@@ -379,6 +408,9 @@ def write_manifest(rows: list[dict], args: argparse.Namespace) -> None:
                 "team_name": row["team_name"],
                 "deck_sig": row["deck_sig"],
                 "deck_path": deck_path,
+                "source_score": f"{source_score:.1f}",
+                "score_label": score_label(source_score),
+                "score_tier": score_tier(source_score),
                 "bands": row["bands"],
                 "dates": row["dates"],
                 "files": row["files"],
@@ -501,6 +533,9 @@ def main() -> None:
     p.add_argument("--checkpoint-every", type=int, default=1)
     p.add_argument("--split-by-game", action="store_true",
                    help="emit --split-by-game in train commands")
+    p.add_argument("--label-score-in-name", dest="label_score_in_name", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="include max source score in shadow_name for climb-aware RR outputs")
     p.add_argument("--progress-every-files", type=int, default=10)
     p.add_argument("--print-top", type=int, default=20)
     p.add_argument("--out", default="logs/shadow_pool_manifest.csv")

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-13 18:35 Asia/Shanghai.
+Last updated: 2026-08-13 18:48 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -121,6 +121,11 @@ Active remote restore job started `2026-08-13 18:19`:
   max-per-deck-sig 3 and emits v13 train args including state-token dim 24,
   raw-policy loss, sequence loss, `--best-metric policy_raw`, and
   `--split-by-game`.
+- `tools/build_shadow_pool.py` was updated before the manifest build to preserve
+  climb context in shadow outputs. New manifests include `source_score`,
+  `score_label`, and `score_tier`, and `shadow_name` defaults to a score prefix
+  such as `shadow_s1218_dragapult_cc2e995b_flg`. This matters because RR CSVs
+  otherwise keep only row/column names and lose the source team's score band.
 - Training runner logs after extraction/manifest build:
   `logs/restore_0812_dragapult_v13_20260813/dragapult_train_runner.log` and
   `logs/restore_0812_dragapult_v13_20260813/shadow_train_runner.log`.

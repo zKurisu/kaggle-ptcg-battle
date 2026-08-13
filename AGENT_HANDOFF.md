@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-13 11:35 Asia/Shanghai.
+Last updated: 2026-08-13 14:34 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -20,6 +20,66 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## Recovery Note: ks Ephemeral Disk Loss 2026-08-13
+
+The `ks` server unexpectedly powered off on 2026-08-13. Its workspace/data disk
+is ephemeral, so remote corpora, checkpoints, logs, and `/tmp` scripts from the
+active 2026-08-13 jobs should be treated as lost unless they were already
+synced back to the local repo/machine.
+
+Critical implications:
+
+- Future long training jobs must periodically sync important outputs back to
+  local persistent storage, especially `checkpoints/**`, eval CSVs, and runner
+  logs.
+- Raw Kaggle episode zip files should be treated as a local persistent cache.
+  Prefer downloading once to local `/home/jie/Do/0_PTCG/raw_episode`, then
+  using `scp`/`rsync` to restore `ks:/home/jie/Do/0_PTCG/workspace/episodes_raw`
+  after a server rebuild. Avoid depending on remote Kaggle downloads as the
+  only copy.
+- Use only the `jie` Kaggle account for downloads/API calls. Do not use the
+  `by` Kaggle API.
+
+Local raw episode cache after recovery:
+
+- `/home/jie/Do/0_PTCG/raw_episode` now has all August 2026 zip files from
+  `2026-08-01` through `2026-08-12`.
+- It also currently has only partial July coverage locally: `2026-07-24` through
+  `2026-07-27`. July still needs refill for `2026-07-01..2026-07-23` and
+  `2026-07-28..2026-07-31` if reproducing all-date v11/v12/v13 experiments.
+
+Was July data used by the lost jobs?
+
+- Marnie history-summary repair: yes. The active 2026-08-13 Marnie experiment
+  used `data/bc_corpus_banded_v12_0701_0811_merged_hist32_log128_board12_20260812`
+  plus `data/bc_corpus_high900_winners_20260812`, so reproducing it requires
+  July 1 through August 11 episode coverage.
+- Dragapult v13 state-token pipeline: the launched v13 extraction was
+  `0801-0812` only, so that specific lost v13 extraction did not require July.
+  Earlier Dragapult corpus audits and specialist sweeps did use the v12 merged
+  `0701-0811` corpus, so reproducing those older comparisons does require July.
+
+Handoff recoverability:
+
+- The handoff has enough information to recreate the important experiment
+  recipes, code changes, corpus names, and intended output paths.
+- The exact trained model weights from the lost remote jobs cannot be recovered
+  from handoff alone unless they were synced locally before shutdown. The last
+  observed Marnie history-summary state before loss was: four of five branches
+  completed, `cross_plan_h8_w4` was in epoch 6/6. No final eval files had begun
+  because the eval watcher was still waiting for all training processes.
+- The lost Dragapult v13 job was still in the extraction/watch stage at last
+  known state; no reliable completed v13 training/eval artifacts should be
+  assumed to exist.
+
+Kaggle mirror/download note:
+
+- No trusted official Kaggle mirror is known for these dataset zips. Kaggle CLI
+  officially supports `kaggle datasets download`; third-party mirror/proxy
+  tricks are not reliable enough for the competition data chain.
+- Practical workaround is local caching plus restore-to-ks sync, not relying on
+  a public mirror. Kaggle download speed can drop after repeated large files.
 
 ## Active Remote Job: Dragapult Specialist Sweep 2026-08-13
 

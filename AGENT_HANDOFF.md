@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-13 18:48 Asia/Shanghai.
+Last updated: 2026-08-13 19:05 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -130,10 +130,32 @@ Active remote restore job started `2026-08-13 18:19`:
   `logs/restore_0812_dragapult_v13_20260813/dragapult_train_runner.log` and
   `logs/restore_0812_dragapult_v13_20260813/shadow_train_runner.log`.
   Dragapult uses GPUs `0,1`; shadow uses GPUs `2,3` with two jobs per GPU.
-- At the time of this update, the rerun had passed the missing-`cg` failure and
-  was actively extracting 12 August zips with 12 workers. The old failed
-  `ModuleNotFoundError: cg` remains earlier in the appended runner log; check
-  the latest timestamped block, not only the first traceback.
+- v13 extraction completed successfully: `729` npz files. Smoke sample showed
+  `state=(80,)`, `option=(3,64)`, `state_token=(37,24)`, and feature version
+  `v13_state_token_multistream_history`.
+- 0812 ladder pool was rebuilt at `logs/ladder_pool_0812_all_v13_20260813`.
+  It selected `220` decks and wrote deck CSVs under its `decks/` directory.
+  Top entries included Marnie `b8f251a476e7` score `1230.3`, Dragapult
+  `cc2e995b5ad0` score `1218.2`, Mega Lucario `43d6d8b0fce9` score `1230.3`,
+  Alakazam `7f9a538936e3` score `1204.1`, and Crustle `47756cdfd20f` score
+  `1218.2`.
+- Shadow manifest generation completed with `81` rows. Training runners were
+  launched at `2026-08-13T18:58:17+08:00`:
+  Dragapult runner PID `356850`, shadow runner PID `356852`.
+- `tools/enrich_shadow_manifest.py` was added to join a shadow manifest against
+  a ladder `pool_manifest.csv`. It preserves both trajectory/team source score
+  and deck-signature pool score. The enriched 0812 shadow manifest is:
+  `logs/restore_0812_dragapult_v13_20260813/shadow_manifest_0812_v13_cross_w3_enriched.csv`.
+  It matched `80/81` rows to the 0812 ladder pool. Use this enriched file for
+  climb-aware analysis, especially when a concrete team trajectory has a lower
+  score than the best current deck-sig result.
+- At the time of this update, Dragapult v13 training had started two jobs:
+  `cross_w3_state_token` and `cross_w4_state_token`, both on `cc2e995b5ad0`
+  with `438634` kept decisions from August 1-12. Shadow training had started
+  the first four entries. Logs already showed epoch progress, so the runners
+  were not stuck at data loading.
+- The old failed `ModuleNotFoundError: cg` remains earlier in the appended
+  runner log; check the latest timestamped block, not only the first traceback.
 
 Was July data used by the lost jobs?
 

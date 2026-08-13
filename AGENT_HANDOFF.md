@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-13 08:20 Asia/Shanghai.
+Last updated: 2026-08-13 11:35 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -20,6 +20,139 @@ This file is the first place a new agent should read before touching the project
 - Current remote raw episodes: `/home/jie/Do/0_PTCG/workspace/episodes_raw`. Older notes may mention `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git/episodes_raw`; verify the intended path before launching extraction.
 
 For long ad-hoc checks over SSH, first build a script under local `/tmp`, upload it to `ks:/tmp`, then execute it. Avoid large heredocs inside `ssh` commands; quoting already caused noisy failures.
+
+## Active Remote Job: Dragapult Specialist Sweep 2026-08-13
+
+User asked to investigate why Dragapult has been one of the weakest trained
+archetypes and to start a parallel specialist sweep without repeating known bad
+settings.
+
+Important Kaggle/API constraint:
+
+- Use only the jie Kaggle account for any future `kaggle` CLI/API call.
+- Do not call the by Kaggle API. Static by logs may exist, but current audits
+  should avoid them unless the user explicitly asks.
+
+Trajectory/history/plan evidence audit:
+
+- Script uploaded/run on ks:
+  `/tmp/summarize_jie_trajectory_effect_20260813.py`.
+- Outputs:
+  `logs/dragapult_specialists_20260813/history_effect_jie_only/summary.md`,
+  `kaggle_score_grouped_traj_history_plan_rl_jie.csv`,
+  `kaggle_score_grouped_related_baselines_jie.csv`,
+  and `local_traj_history_eval_summary.csv`.
+- Read only jie sources:
+  `logs/kaggle_submission_scores.csv` and refreshed current submissions from
+  jie via `KAGGLE_CONFIG_DIR=/root/.kaggle`.
+- Conservative result:
+  - Marnie `v12hist_bigbatch` had good but not clearly superior Kaggle scores
+    (visible 975/959, one 839), while non-history w4/high900 Marnie also had
+    986/965/945-class results.
+  - `historyk_marnie` around 917, `historyk_lucario` around 644,
+    `v12_seqplan_festival` around 814, `v12_seqplan_lucario` around 634,
+    `ogerpon_v9_gameplan` weak, and early `rl: dragapult with mcts50` around
+    178.
+  - Local weakup/success/trajectory/RL CSVs do not show stable broad positive
+    deltas; Dragapult success/trajectory variants remained poor.
+- Interpretation:
+  trajectory mining is diagnostic and should be kept as an ablation, not the
+  main trusted improvement path until it beats strong non-history baselines in
+  random and coverage RR.
+
+Dragapult corpus audit:
+
+- Corpus:
+  `data/bc_corpus_banded_v12_0701_0811_merged_hist32_log128_board12_20260812`.
+- Script:
+  `/tmp/audit_dragapult_corpus_20260813.py`.
+- Output dir:
+  `logs/dragapult_specialists_20260813/corpus_audit`.
+- Key result: `cc2e995b5ad0` has enough data, so failure is not simple sample
+  shortage:
+  435,029 decisions, 3,856 games, 20 dates, top team Kh0a, game WR about 0.57.
+- Strong cc2e teams have enough samples for style-purity tests:
+  Kh0a 67,116 decisions / 582 games, 213tubo 64,116 / 555,
+  flg 62,446 / 558.
+
+Trajectory mining for Dragapult cc2e:
+
+- Command already run:
+  `tools/mine_strategy_trajectories.py` over Dragapult cc2e 900+ all dates.
+- Output dir:
+  `logs/dragapult_specialists_20260813/trajectory/cc2e_all_900plus`.
+- Useful correlations, not proof:
+  winning games have more Dragapult ex board/active turns, more Drakloak bench
+  turns, fewer early END decisions, and high positive gaps for
+  `primary_board_by_6`, `board_by_4_drakloak`, and Munkidori/Drakloak ability
+  action patterns.
+
+Parallel training currently running on ks:
+
+- Manifest generator:
+  `/tmp/create_dragapult_specialist_manifest_20260813.py`.
+- Train manifest:
+  `logs/dragapult_specialists_20260813/train_manifest.csv`.
+- Eval manifest:
+  `logs/dragapult_specialists_20260813/eval_manifest.csv`.
+- Training runner:
+  `python3 -u tools/train_shadow_manifest.py
+  logs/dragapult_specialists_20260813/train_manifest.csv --gpus 0,1,2,3
+  --jobs-per-gpu 1 --cuda-memory-gb 24 --log-dir
+  logs/dragapult_specialists_20260813/train --poll-seconds 60 --skip-existing`.
+- Runner log:
+  `logs/dragapult_specialists_20260813/train_runner.log`.
+- Per-job logs:
+  `logs/dragapult_specialists_20260813/train/*.log`.
+- Checkpoints:
+  `checkpoints/dragapult_specialists_20260813/*.npz`.
+
+Training jobs:
+
+- `dragapult_cc2e_all900_old_w4_ep16`: main scratch old-recipe baseline,
+  full 900+ all dates.
+- `dragapult_cc2e_all900_rawmetric_w4_ep16`: same data, extra raw policy loss
+  and `--best-metric policy_raw`.
+- `dragapult_cc2e_recent0805_0811_w4_ep14`: recent-meta-only window.
+- `dragapult_cc2e_high900aux_old_w4_ep14`: extends prior best high900
+  oldmethod recipe from 8 to 14 epochs.
+- `dragapult_cc2e_trajplan_w4_ep12`: trajectory/step-plan ablation only.
+- `dragapult_cc2e_histsummary_w4_ep12`: history-summary ablation only.
+- `dragapult_cc2e_all900_old_w6_ep12`: larger pointer model.
+- `dragapult_cc2e_kh0a_all900_w4_ep14`: team-specific Kh0a style-purity test.
+- `dragapult_7ac_all900_w4_ep14`: second current/high Dragapult signature.
+- `dragapult_topsig_mix_all900_w4_ep12_on_cc2e`: risky multi-sig mix, also
+  evaluated on a 7ac deck through an eval alias.
+
+At launch, first four jobs indexed successfully:
+
+- `cc2e_all900` variants: 402,063 kept decisions.
+- `recent0805_0811`: 252,212 kept decisions.
+- `high900aux`: 240,659 kept decisions.
+
+Evaluation script uploaded but not yet run:
+
+- `/tmp/run_dragapult_eval_20260813.sh`.
+- It runs random g500, coverage baseline-delta versus previous local Dragapult
+  baseline
+  `checkpoints/high900win_oldmethod_20260812/w4/bc2_high900win_old_dragapult_cc2e995b_w4.npz`,
+  archetype matrix, and 0812 ladder-distribution weighted score.
+
+Monitor:
+
+```bash
+cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+tail -f logs/dragapult_specialists_20260813/train_runner.log
+for f in logs/dragapult_specialists_20260813/train/*.log; do echo "===$f==="; tail -30 "$f"; done
+nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader
+```
+
+After all Dragapult jobs finish:
+
+```bash
+cd /home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804
+bash /tmp/run_dragapult_eval_20260813.sh
+```
 
 ## Active Remote Job: History Summary Marnie Parallel 2026-08-13
 

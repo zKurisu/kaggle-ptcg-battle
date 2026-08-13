@@ -31,6 +31,7 @@ MAX_HP = 400            # practical max HP
 CARD_DIM = 64           # card embedding
 STATE_FEAT_DIM = 80     # scalar state features
 OPT_FEAT_DIM = 64       # per-option scalar features
+STATE_TOKEN_FEAT_DIM = 24  # per board/hand token scalar features for cross-attention
 
 ALAKAZAM_IDS = {109, 245, 741, 742, 743}
 CRUSTLE_IDS = {344, 345, 756}
@@ -51,6 +52,7 @@ class EncodedDecision:
     board_cards: np.ndarray      # [12] int64 — card IDs per board slot, 0=empty
     hand_cards: np.ndarray       # [MAX_HAND] int64 — card IDs in hand, 0-padded
     state_feats: np.ndarray      # [STATE_FEAT_DIM] float32
+    state_token_feats: np.ndarray  # [12 + MAX_HAND, STATE_TOKEN_FEAT_DIM] float32
     # Options
     opt_type: np.ndarray         # [N] int64 — OptionType per option
     opt_card: np.ndarray         # [N] int64 — primary card ID
@@ -159,6 +161,22 @@ class FastEncoder:
         opp_inplay = self._in_play(opp)
         my_active = me.get("active", [None])[0] if me.get("active") else None
         opp_active = opp.get("active", [None])[0] if opp.get("active") else None
+        state_token_feats = np.zeros((BOARD_SLOTS + MAX_HAND, STATE_TOKEN_FEAT_DIM), dtype=np.float32)
+        board_pokemon: list[tuple[dict | None, int, int]] = []
+        board_pokemon.append((my_active, you, 4))
+        for p in list(me.get("bench", []) or [])[:BENCH_MAX]:
+            board_pokemon.append((p, you, 5))
+        while len(board_pokemon) < 6:
+            board_pokemon.append((None, you, 5))
+        board_pokemon.append((opp_active, 1 - you, 4))
+        for p in list(opp.get("bench", []) or [])[:BENCH_MAX]:
+            board_pokemon.append((p, 1 - you, 5))
+        while len(board_pokemon) < BOARD_SLOTS:
+            board_pokemon.append((None, 1 - you, 5))
+        for ti, (p, owner, area) in enumerate(board_pokemon[:BOARD_SLOTS]):
+            self._fill_state_token_features(state_token_feats[ti], p, owner, you, area=area)
+        for hi, c in enumerate(my_hand[:MAX_HAND]):
+            self._fill_hand_token_features(state_token_feats[BOARD_SLOTS + hi], c)
 
         # ── State features ────────────────────────────────────────────────
         s = np.zeros(STATE_FEAT_DIM, dtype=np.float32)
@@ -341,6 +359,7 @@ class FastEncoder:
 
         return EncodedDecision(
             board_cards=board, hand_cards=hand, state_feats=s,
+            state_token_feats=state_token_feats,
             opt_type=opt_type, opt_card=opt_card, opt_card2=opt_card2,
             opt_attack=opt_attack, opt_feats=opt_feats,
             min_count=sel.get("minCount", 0), max_count=sel.get("maxCount", 0),
@@ -511,6 +530,66 @@ class FastEncoder:
         feats[61] = 1.0 if target_id in ENGINE_IDS else 0.0
         feats[62] = 1.0 if self._damage_ratio(target) > 0 else 0.0
         feats[63] = 1.0 if 0 < self._hp_ratio(target) <= 0.25 else 0.0
+
+    def _fill_state_token_features(
+        self,
+        feats: np.ndarray,
+        p: dict | None,
+        player_idx: int,
+        you: int,
+        *,
+        area: int,
+    ) -> None:
+        if not p:
+            return
+        cid = int(p.get("id") or 0)
+        hp_ratio = self._hp_ratio(p)
+        damage_ratio = self._damage_ratio(p)
+        energy_count = self._energy_count(p)
+        feats[0] = 1.0
+        feats[1] = 1.0 if player_idx == you else 0.0
+        feats[2] = 1.0 if player_idx != you else 0.0
+        feats[3] = 1.0 if area == 4 else 0.0
+        feats[4] = 1.0 if area == 5 else 0.0
+        feats[5] = hp_ratio
+        feats[6] = damage_ratio
+        feats[7] = energy_count / 10.0
+        feats[8] = self._stage(p) / 2.0
+        feats[9] = self._is_ex(p)
+        feats[10] = self._is_mega(p)
+        feats[11] = self._retreat_cost(p) / 5.0
+        feats[12] = len(p.get("tools") or []) / 4.0
+        feats[13] = 1.0 if damage_ratio > 0.0 else 0.0
+        feats[14] = 1.0 if 0.0 < hp_ratio <= 0.25 else 0.0
+        feats[15] = self._attack_energy_ready(p)
+        feats[16] = float(self.card_has_skill[cid]) if 0 <= cid < len(self.card_has_skill) else 0.0
+        feats[17] = 1.0 if cid in PRIMARY_ATTACKER_IDS else 0.0
+        feats[18] = 1.0 if cid in SETUP_IDS else 0.0
+        feats[19] = 1.0 if cid in EVOLUTION_IDS else 0.0
+        feats[20] = 1.0 if cid in ENGINE_IDS else 0.0
+        feats[21] = float(self.card_max_attack_damage[cid]) / MAX_HP if 0 <= cid < len(self.card_max_attack_damage) else 0.0
+        feats[22] = float(self.card_min_attack_cost[cid]) / 5.0 if 0 <= cid < len(self.card_min_attack_cost) else 0.0
+        feats[23] = 1.0 if cid in {119, 120, 121} else 0.0
+
+    def _fill_hand_token_features(self, feats: np.ndarray, c: dict | None) -> None:
+        if not c:
+            return
+        cid = int(c.get("id") or 0)
+        feats[0] = 1.0
+        feats[1] = 1.0
+        feats[5] = float(self.card_hp[cid]) / MAX_HP if 0 <= cid < len(self.card_hp) else 0.0
+        feats[8] = float(self.card_stage[cid]) / 2.0 if 0 <= cid < len(self.card_stage) else 0.0
+        feats[9] = float(self.card_ex[cid]) if 0 <= cid < len(self.card_ex) else 0.0
+        feats[10] = float(self.card_mega[cid]) if 0 <= cid < len(self.card_mega) else 0.0
+        feats[11] = float(self.card_retreat[cid]) / 5.0 if 0 <= cid < len(self.card_retreat) else 0.0
+        feats[16] = float(self.card_has_skill[cid]) if 0 <= cid < len(self.card_has_skill) else 0.0
+        feats[17] = 1.0 if cid in PRIMARY_ATTACKER_IDS else 0.0
+        feats[18] = 1.0 if cid in SETUP_IDS else 0.0
+        feats[19] = 1.0 if cid in EVOLUTION_IDS else 0.0
+        feats[20] = 1.0 if cid in ENGINE_IDS else 0.0
+        feats[21] = float(self.card_max_attack_damage[cid]) / MAX_HP if 0 <= cid < len(self.card_max_attack_damage) else 0.0
+        feats[22] = float(self.card_min_attack_cost[cid]) / 5.0 if 0 <= cid < len(self.card_min_attack_cost) else 0.0
+        feats[23] = 1.0 if cid in {119, 120, 121} else 0.0
 
     @staticmethod
     def _get_pokemon(cur: dict, player_idx: int, area: int, index: int) -> dict | None:

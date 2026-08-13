@@ -102,10 +102,16 @@ class NumpyPolicy:
         if self._arch == "cross_attn":
             self._slot_state = True
             self._state_feat_dim = self.w["feat_token_fc.weight"].shape[1]
+            self._state_token_feat_dim = (
+                int(self.w["state_token_feat_fc.weight"].shape[1])
+                if "state_token_feat_fc.weight" in self.w
+                else 0
+            )
             self._state_layer_count = 0
             while f"state_layers.{self._state_layer_count}.q.weight" in self.w:
                 self._state_layer_count += 1
         else:
+            self._state_token_feat_dim = 0
             state_in = self.w["state_fc1.weight"].shape[1]
             slot_feat_dim = state_in - 5 * self._ec
             legacy_feat_dim = state_in - 3 * self._ec
@@ -417,9 +423,10 @@ class NumpyPolicy:
         ))
 
     def encode_state(self, board: np.ndarray, hand: np.ndarray,
-                     feats: np.ndarray, history: dict[str, np.ndarray] | None = None) -> np.ndarray:
+                     feats: np.ndarray, history: dict[str, np.ndarray] | None = None,
+                     state_token_feats: np.ndarray | None = None) -> np.ndarray:
         if self._arch == "cross_attn":
-            h, tokens, mask = self._encode_state_cross(board, hand, feats, history)
+            h, tokens, mask = self._encode_state_cross(board, hand, feats, history, state_token_feats)
             self._cached_state_tokens = tokens
             self._cached_state_mask = mask
             return h
@@ -453,6 +460,7 @@ class NumpyPolicy:
         hand: np.ndarray,
         feats: np.ndarray,
         history: dict[str, np.ndarray] | None = None,
+        state_token_feats: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         feats = self._fit_feat_dim(feats, self._state_feat_dim)
         ids = np.concatenate([board.astype(np.int64), hand.astype(np.int64)])
@@ -462,11 +470,24 @@ class NumpyPolicy:
         hand_index = np.arange(hand.shape[0], dtype=np.int64).clip(0, 64)
         area = np.concatenate([board_area, hand_area])
         index = np.concatenate([board_index, hand_index])
-        token_in = np.concatenate([
+        card_parts = [
             self.w["card_emb.weight"][ids],
             self.w["state_area_emb.weight"][area],
             self.w["state_index_emb.weight"][index],
-        ], axis=-1)
+        ]
+        if self._state_token_feat_dim > 0 and "state_token_feat_fc.weight" in self.w:
+            stf = np.zeros((ids.shape[0], self._state_token_feat_dim), dtype=np.float32)
+            if state_token_feats is not None:
+                stf = self._fit_feat_dim(
+                    np.asarray(state_token_feats, dtype=np.float32),
+                    self._state_token_feat_dim,
+                )
+            card_parts.append(_relu(_linear(
+                self.w["state_token_feat_fc.weight"],
+                self.w["state_token_feat_fc.bias"],
+                stf,
+            )))
+        token_in = np.concatenate(card_parts, axis=-1)
         card_tokens = _relu(_linear(
             self.w["state_token_fc.weight"],
             self.w["state_token_fc.bias"],
@@ -562,7 +583,13 @@ class NumpyPolicy:
         """V(s) from a raw observation dict. Higher = better for current player."""
         try:
             d = self.encoder.encode(obs_dict)
-            h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats, self._history_arrays(obs_dict))
+            h = self.encode_state(
+                d.board_cards,
+                d.hand_cards,
+                d.state_feats,
+                self._history_arrays(obs_dict),
+                state_token_feats=getattr(d, "state_token_feats", None),
+            )
             return self.value(h)
         except Exception:
             return 0.0
@@ -586,7 +613,13 @@ class NumpyPolicy:
 
         d = self.encoder.encode(obs_dict)
         n = len(d.opt_type)
-        h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats, self._history_arrays(obs_dict))
+        h = self.encode_state(
+            d.board_cards,
+            d.hand_cards,
+            d.state_feats,
+            self._history_arrays(obs_dict),
+            state_token_feats=getattr(d, "state_token_feats", None),
+        )
         opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
 
         parts = [
@@ -706,6 +739,7 @@ class NumpyPolicy:
             d.hand_cards,
             d.state_feats,
             self._history_arrays(obs_dict),
+            getattr(d, "state_token_feats", None),
         )
         opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
         opts = self._cross_options(self._option_base(d, opt_feats), tokens, token_mask)
@@ -754,7 +788,13 @@ class NumpyPolicy:
 
         d = self.encoder.encode(obs_dict)
         n = len(d.opt_type)
-        h = self.encode_state(d.board_cards, d.hand_cards, d.state_feats, self._history_arrays(obs_dict))
+        h = self.encode_state(
+            d.board_cards,
+            d.hand_cards,
+            d.state_feats,
+            self._history_arrays(obs_dict),
+            state_token_feats=getattr(d, "state_token_feats", None),
+        )
         opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
 
         parts = [
@@ -815,6 +855,7 @@ class NumpyPolicy:
             d.hand_cards,
             d.state_feats,
             self._history_arrays(obs_dict),
+            getattr(d, "state_token_feats", None),
         )
         opt_feats = self._fit_feat_dim(d.opt_feats, self._opt_feat_dim)
         opts = self._cross_options(self._option_base(d, opt_feats), tokens, token_mask)

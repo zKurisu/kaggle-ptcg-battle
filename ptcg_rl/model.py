@@ -310,7 +310,8 @@ class PolicyValueNet(nn.Module):
         return F.relu(self.history_out_fc(torch.cat([h, hist], dim=-1)))
 
     def encode_state(self, board: torch.Tensor, hand: torch.Tensor,
-                     feats: torch.Tensor, history: dict[str, torch.Tensor] | None = None) -> torch.Tensor:
+                     feats: torch.Tensor, history: dict[str, torch.Tensor] | None = None,
+                     state_token_feats: torch.Tensor | None = None) -> torch.Tensor:
         feats = self._fit_feat_dim(feats, self.state_feat_dim)
         if self.slot_state:
             my_active = self.card_emb(board[..., 0])
@@ -403,13 +404,18 @@ class PolicyValueNet(nn.Module):
     def act(self, board: np.ndarray, hand: np.ndarray, feats: np.ndarray,
             opt_type: np.ndarray, opt_card: np.ndarray, opt_card2: np.ndarray,
             opt_attack: np.ndarray, opt_feats: np.ndarray,
-            min_count: int, max_count: int, greedy: bool = False) -> tuple:
+            min_count: int, max_count: int, greedy: bool = False,
+            state_token_feats: np.ndarray | None = None) -> tuple:
         """Single decision → (picks, logprob, value). All inputs are 1-D numpy."""
         dev = next(self.parameters()).device
         b = torch.from_numpy(board).unsqueeze(0).to(dev)
         hd = torch.from_numpy(hand).unsqueeze(0).to(dev)
         ft = torch.from_numpy(feats).unsqueeze(0).to(dev)
-        h = self.encode_state(b, hd, ft)
+        stf = (
+            torch.from_numpy(state_token_feats).unsqueeze(0).to(dev)
+            if state_token_feats is not None else None
+        )
+        h = self.encode_state(b, hd, ft, state_token_feats=stf)
         v = float(self.value(h)[0])
 
         n = len(opt_type)
@@ -454,7 +460,16 @@ class PolicyValueNet(nn.Module):
         hand = torch.from_numpy(np.stack([d.hand_cards for d in decisions])).to(dev)
         feats = torch.from_numpy(np.stack([d.state_feats for d in decisions])).to(dev)
         history = self._stack_decision_history(decisions, dev)
-        h = self.encode_state(board, hand, feats, history)
+        state_token_feats = None
+        if getattr(self, "state_token_feat_dim", 0) > 0:
+            rows = []
+            for d in decisions:
+                arr = getattr(d, "state_token_feats", None)
+                if arr is None:
+                    arr = np.zeros((BOARD_SLOTS + MAX_HAND, self.state_token_feat_dim), dtype=np.float32)
+                rows.append(np.asarray(arr, dtype=np.float32))
+            state_token_feats = torch.from_numpy(np.stack(rows)).to(dev)
+        h = self.encode_state(board, hand, feats, history, state_token_feats=state_token_feats)
         values = self.value(h)
 
         # Batch options (pad to n_max)
@@ -607,7 +622,11 @@ class PolicyValueNet(nn.Module):
                 b = torch.from_numpy(d.board_cards).unsqueeze(0).to(dev)
                 hd = torch.from_numpy(d.hand_cards).unsqueeze(0).to(dev)
                 ft = torch.from_numpy(d.state_feats).unsqueeze(0).to(dev)
-                return float(self.value(self.encode_state(b, hd, ft))[0])
+                stf = (
+                    torch.from_numpy(d.state_token_feats).unsqueeze(0).to(dev)
+                    if hasattr(d, "state_token_feats") else None
+                )
+                return float(self.value(self.encode_state(b, hd, ft, state_token_feats=stf))[0])
             except Exception:
                 return 0.0
 
@@ -720,6 +739,7 @@ class CrossAttentionPolicyValueNet(nn.Module):
         history_summary_dim: int = 0,
         history_gate_init_bias: float = -4.0,
         state_layers: int = 2,
+        state_token_feat_dim: int = 0,
     ):
         super().__init__()
         ec = int(_EC * width); ea = int(_EA * width); eo_t = int(_EO * width)
@@ -740,6 +760,7 @@ class CrossAttentionPolicyValueNet(nn.Module):
         self.history_summary_dim = max(0, int(history_summary_dim))
         self.history_gate_init_bias = float(history_gate_init_bias)
         self.state_layers_n = int(state_layers)
+        self.state_token_feat_dim = max(0, int(state_token_feat_dim))
         self._ec=ec; self._ea=ea; self._eo_t=eo_t; self._oe=oe; self._hd=hd
         self._ctx=ctx; self._area=area; self._idx=idx
         self._plan_cd = sc if self.hierarchical_plan else 0
@@ -763,7 +784,11 @@ class CrossAttentionPolicyValueNet(nn.Module):
         self.stop_vec = nn.Parameter(torch.zeros(oe))
         self.state_area_emb = nn.Embedding(8, area)
         self.state_index_emb = nn.Embedding(65, idx)
-        self.state_token_fc = nn.Linear(ec + area + idx, oe)
+        self.state_token_feat_fc = (
+            nn.Linear(self.state_token_feat_dim, oe)
+            if self.state_token_feat_dim > 0 else None
+        )
+        self.state_token_fc = nn.Linear(ec + area + idx + (oe if self.state_token_feat_dim > 0 else 0), oe)
         self.feat_token_fc = nn.Linear(self.state_feat_dim, oe)
         ff_dim = max(oe * 2, 64)
         self.state_layers = nn.ModuleList([
@@ -871,15 +896,32 @@ class CrossAttentionPolicyValueNet(nn.Module):
         board: torch.Tensor,
         hand: torch.Tensor,
         feats: torch.Tensor,
+        state_token_feats: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         feats = self._fit_feat_dim(feats, self.state_feat_dim)
         ids = torch.cat([board, hand], dim=1)
         area, index = self._state_area_index(board, hand)
-        card_tokens = F.relu(self.state_token_fc(torch.cat([
+        parts = [
             self.card_emb(ids),
             self.state_area_emb(area),
             self.state_index_emb(index),
-        ], dim=-1)))
+        ]
+        if self.state_token_feat_fc is not None:
+            if state_token_feats is None:
+                stf = torch.zeros(
+                    ids.shape[0],
+                    ids.shape[1],
+                    self.state_token_feat_dim,
+                    dtype=feats.dtype,
+                    device=ids.device,
+                )
+            else:
+                stf = self._fit_feat_dim(
+                    state_token_feats.to(device=ids.device, dtype=feats.dtype),
+                    self.state_token_feat_dim,
+                )
+            parts.append(F.relu(self.state_token_feat_fc(stf)))
+        card_tokens = F.relu(self.state_token_fc(torch.cat(parts, dim=-1)))
         feat_token = F.relu(self.feat_token_fc(feats)).unsqueeze(1)
         tokens = torch.cat([feat_token, card_tokens], dim=1)
         mask = torch.cat([
@@ -1039,8 +1081,9 @@ class CrossAttentionPolicyValueNet(nn.Module):
         return F.relu(self.history_out_fc(torch.cat([h, hist], dim=-1)))
 
     def encode_state(self, board: torch.Tensor, hand: torch.Tensor,
-                     feats: torch.Tensor, history: dict[str, torch.Tensor] | None = None) -> torch.Tensor:
-        tokens, mask = self._build_state_tokens(board, hand, feats)
+                     feats: torch.Tensor, history: dict[str, torch.Tensor] | None = None,
+                     state_token_feats: torch.Tensor | None = None) -> torch.Tensor:
+        tokens, mask = self._build_state_tokens(board, hand, feats, state_token_feats)
         pool_logits = self.state_pool_fc(tokens).squeeze(-1).masked_fill(~mask, NEG_INF)
         pool = torch.softmax(pool_logits, dim=-1).unsqueeze(-1)
         pooled = (tokens * pool).sum(dim=1)
@@ -1126,7 +1169,16 @@ class CrossAttentionPolicyValueNet(nn.Module):
         hand = torch.from_numpy(np.stack([d.hand_cards for d in decisions])).to(dev)
         feats = torch.from_numpy(np.stack([d.state_feats for d in decisions])).to(dev)
         history = PolicyValueNet._stack_decision_history(decisions, dev)
-        h = self.encode_state(board, hand, feats, history)
+        state_token_feats = None
+        if self.state_token_feat_dim > 0:
+            rows = []
+            for d in decisions:
+                arr = getattr(d, "state_token_feats", None)
+                if arr is None:
+                    arr = np.zeros((BOARD_SLOTS + MAX_HAND, self.state_token_feat_dim), dtype=np.float32)
+                rows.append(np.asarray(arr, dtype=np.float32))
+            state_token_feats = torch.from_numpy(np.stack(rows)).to(dev)
+        h = self.encode_state(board, hand, feats, history, state_token_feats=state_token_feats)
         values = self.value(h)
 
         n_max = max(len(d.opt_type) for d in decisions)
@@ -1230,6 +1282,12 @@ def checkpoint_feature_dims(z) -> tuple[int, int, bool, bool]:
         + opt_extra
     )
     return int(state_feat_dim), int(opt_feat_dim), bool(option_context), bool(slot_state)
+
+
+def checkpoint_state_token_feat_dim(z) -> int:
+    if "state_token_feat_fc.weight" not in z.files:
+        return 0
+    return int(z["state_token_feat_fc.weight"].shape[1])
 
 
 def checkpoint_width(z) -> float:

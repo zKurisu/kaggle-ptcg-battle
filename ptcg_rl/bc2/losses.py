@@ -126,7 +126,13 @@ def _first_step_logits(
     batch: BCBatch,
     history: dict[str, torch.Tensor] | None,
 ) -> torch.Tensor:
-    h = model.encode_state(batch.board, batch.hand, batch.feats, history)
+    h = model.encode_state(
+        batch.board,
+        batch.hand,
+        batch.feats,
+        history,
+        state_token_feats=getattr(batch, "state_token_feats", None),
+    )
     opts = model.encode_options(batch.opt_type, batch.opt_card, batch.opt_card2, batch.opt_attack, batch.opt_feats)
     bsz = batch.board.shape[0]
     max_options = batch.max_options
@@ -163,9 +169,16 @@ def sequence_loss_parts(model, batch: BCBatch, *, first_action_weight: float = 1
                         history_sensitivity_margin: float = 0.03,
                         set_loss_weight: float = 0.0,
                         set_loss_min_count: int = 2,
-                        set_loss_negative_weight: float = 0.25) -> dict[str, torch.Tensor]:
+                        set_loss_negative_weight: float = 0.25,
+                        multi_select_sequence_weight: float = 1.0) -> dict[str, torch.Tensor]:
     """Autoregressive sequence NLL with padded options masked out."""
-    h = model.encode_state(batch.board, batch.hand, batch.feats, batch.history)
+    h = model.encode_state(
+        batch.board,
+        batch.hand,
+        batch.feats,
+        batch.history,
+        state_token_feats=getattr(batch, "state_token_feats", None),
+    )
     opts = model.encode_options(batch.opt_type, batch.opt_card, batch.opt_card2, batch.opt_attack, batch.opt_feats)
     bsz = batch.board.shape[0]
     max_options = batch.max_options
@@ -200,6 +213,17 @@ def sequence_loss_parts(model, batch: BCBatch, *, first_action_weight: float = 1
         valid = target >= 0
         if valid.any():
             row_weight = batch.sample_weight * (float(first_action_weight) if step == 0 else 1.0)
+            if float(multi_select_sequence_weight) != 1.0:
+                multi = torch.tensor(
+                    [len(a) > 1 for a in batch.actions],
+                    dtype=row_weight.dtype,
+                    device=device,
+                )
+                row_weight = row_weight * torch.where(
+                    multi > 0,
+                    torch.full_like(row_weight, float(multi_select_sequence_weight)),
+                    torch.ones_like(row_weight),
+                )
             selected = logp.gather(1, target.clamp(min=0).unsqueeze(1)).squeeze(1)
             weights = row_weight * valid.float()
             nll = -selected
@@ -353,7 +377,8 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
                  history_sensitivity_margin: float = 0.03,
                  set_loss_weight: float = 0.0,
                  set_loss_min_count: int = 2,
-                 set_loss_negative_weight: float = 0.25) -> torch.Tensor:
+                 set_loss_negative_weight: float = 0.25,
+                 multi_select_sequence_weight: float = 1.0) -> torch.Tensor:
     parts = sequence_loss_parts(
         model,
         batch,
@@ -372,5 +397,6 @@ def sequence_nll(model, batch: BCBatch, *, first_action_weight: float = 1.0,
         set_loss_weight=set_loss_weight,
         set_loss_min_count=set_loss_min_count,
         set_loss_negative_weight=set_loss_negative_weight,
+        multi_select_sequence_weight=multi_select_sequence_weight,
     )
     return parts["loss"]

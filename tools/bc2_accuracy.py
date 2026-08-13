@@ -30,6 +30,7 @@ from ptcg_rl.model import (
     checkpoint_log_history_k,
     checkpoint_opp_history_k,
     checkpoint_plan_dim,
+    checkpoint_state_token_feat_dim,
     checkpoint_width,
 )
 
@@ -82,7 +83,13 @@ def _bucket(n: int) -> str:
 
 @torch.no_grad()
 def first_action_topk(model, batch, ks: tuple[int, ...]) -> list[list[int]]:
-    h = model.encode_state(batch.board, batch.hand, batch.feats, batch.history)
+    h = model.encode_state(
+        batch.board,
+        batch.hand,
+        batch.feats,
+        batch.history,
+        state_token_feats=getattr(batch, "state_token_feats", None),
+    )
     opts = model.encode_options(batch.opt_type, batch.opt_card, batch.opt_card2, batch.opt_attack, batch.opt_feats)
     max_options = batch.max_options
     device = batch.board.device
@@ -215,6 +222,7 @@ def main() -> None:
         opp_history_k = checkpoint_opp_history_k(z)
         log_history_k = checkpoint_log_history_k(z)
         board_history_k, board_history_feat_dim = checkpoint_board_history_dims(z)
+        state_token_feat_dim = checkpoint_state_token_feat_dim(z)
         model = build_policy_model(
             arch,
             width=width,
@@ -229,6 +237,7 @@ def main() -> None:
             log_history_k=log_history_k,
             board_history_k=board_history_k,
             board_history_feat_dim=board_history_feat_dim,
+            state_token_feat_dim=state_token_feat_dim,
         ).to(device)
         state = {k: torch.as_tensor(z[k], device=device) for k in z.files}
     current = model.state_dict()
@@ -253,6 +262,7 @@ def main() -> None:
         log_history_k=log_history_k,
         board_history_k=board_history_k,
         board_history_feat_dim=board_history_feat_dim,
+        state_token_feat_dim=state_token_feat_dim,
         load_progress_every=args.load_progress_every,
     )
     indices = corpus.all_indices()

@@ -19,7 +19,7 @@ _REPO = _HERE.parent; _WS = _REPO.parent
 sys.path.insert(0, str(_REPO)); sys.path.insert(0, str(_WS))
 
 from ptcg_rl.deck_registry import deck_signature
-from ptcg_rl.encoder import OPT_FEAT_DIM, STATE_FEAT_DIM
+from ptcg_rl.encoder import OPT_FEAT_DIM, STATE_FEAT_DIM, STATE_TOKEN_FEAT_DIM
 from ptcg_rl.history_features import (
     BOARD_HISTORY_FEAT_DIM,
     DEFAULT_ACTION_HISTORY_K,
@@ -36,7 +36,7 @@ from ptcg_rl.history_features import (
     pack_log_history_from_obs,
 )
 
-FEATURE_VERSION = "v12_multistream_history"
+FEATURE_VERSION = "v13_state_token_multistream_history"
 
 ARCHETYPES = {
     "Marnie Grimmsnarl": [648], "Alakazam": [743, 245, 741, 742],
@@ -157,6 +157,7 @@ def _append_decision(all_data, encoder, obs: dict, action: list,
         'board': ed.board_cards.astype(np.int16),
         'hand': ed.hand_cards.astype(np.int16),
         'feats': ed.state_feats.astype(np.float16),
+        'state_token_feats': ed.state_token_feats.astype(np.float16),
         'ot': ed.opt_type.astype(np.int16),
         'oc': ed.opt_card.astype(np.int16),
         'oc2': ed.opt_card2.astype(np.int16),
@@ -363,6 +364,7 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
             board=np.array([d['board'] for d in decs], dtype=object),
             hand=np.array([d['hand'] for d in decs], dtype=object),
             feats=np.array([d['feats'] for d in decs], dtype=object),
+            state_token_feats=stack('state_token_feats', np.float16),
             ot=np.array([d['ot'] for d in decs], dtype=object),
             oc=np.array([d['oc'] for d in decs], dtype=object),
             oc2=np.array([d['oc2'] for d in decs], dtype=object),
@@ -422,6 +424,7 @@ def process_zip(zip_path, out_dir, name_to_score: dict, progress_every: int = 50
             feature_version=np.array(FEATURE_VERSION, dtype=object),
             state_feat_dim=np.array(STATE_FEAT_DIM, dtype=np.int16),
             opt_feat_dim=np.array(OPT_FEAT_DIM, dtype=np.int16),
+            state_token_feat_dim=np.array(STATE_TOKEN_FEAT_DIM, dtype=np.int16),
             history_summary_dim=np.array(HISTORY_SUMMARY_DIM, dtype=np.int16),
             action_history_k=np.array(action_history_k, dtype=np.int16),
             log_history_k=np.array(log_history_k, dtype=np.int16),

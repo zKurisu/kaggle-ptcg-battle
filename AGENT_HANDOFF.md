@@ -9675,3 +9675,104 @@ Whenever changing active state, update:
 - New corpus/checkpoint feature dimensions.
 - New conclusions from round-robin, Kaggle replay, or failure traces.
 - Any commands that the next agent should continue or avoid.
+
+## Dragapult Pipeline v13 Work 2026-08-13
+
+User request: completed Dragapult specialists should be evaluated first, then
+move to bottom-level BC pipeline/encoder changes because prior Dragapult runs
+remain weak.
+
+Completed non-traj/non-history Dragapult eval on ks:
+
+- Random output:
+  `logs/dragapult_specialists_20260813/completed_nontraj_random_g500.csv`
+- RR/baseline-delta output:
+  `logs/dragapult_specialists_20260813/completed_nontraj_vs_coverage_g100.csv`
+- Matrix:
+  `logs/dragapult_specialists_20260813/completed_nontraj_vs_coverage_g100_arch_matrix_with_random.csv`
+- 0812 ladder weighted:
+  `logs/dragapult_specialists_20260813/completed_nontraj_vs_coverage_g100_ladder0812_appearances_weighted.csv`
+
+Results:
+
+- `dragapult_cc2e_all900_old_w4_ep16`: random 0.944, coverage macro 0.546,
+  avg delta +0.079 vs old high900 Dragapult, 0812 climb weighted 0.4969.
+  Worst: Crustle 0.150; Mega Lucario 0.300.
+- `dragapult_cc2e_all900_rawmetric_w4_ep16`: random 0.924, macro 0.528,
+  avg delta +0.062. Better Crustle 0.220 but worse Ogerpon 0.360.
+- `dragapult_cc2e_recent0805_0811_w4_ep14`: random 0.834, macro 0.496.
+- `dragapult_cc2e_high900aux_old_w4_ep14`: random 0.894, macro 0.483.
+- `dragapult_cc2e_kh0a_all900_w4_ep14`: random 0.732, macro 0.321,
+  lost 13/13 vs old baseline.
+- `dragapult_7ac_all900_w4_ep14`: random 0.734, macro 0.234.
+
+Conclusion:
+
+- Current Dragapult remains non-submit-worthy. Wide all900 data is best, but
+  still far below target. Narrow recent/high900/team-specific selection does
+  not fix it and often collapses.
+- This is likely a bottom-level BC pipeline/representation problem rather than
+  a simple date/weight/signature problem.
+
+New local branch:
+
+- `dragapult-pipeline-v13`
+
+Implemented local v13 bottom-level changes:
+
+- `ptcg_rl/encoder.py`
+  - Added `STATE_TOKEN_FEAT_DIM = 24`.
+  - `EncodedDecision` now carries `state_token_feats`.
+  - `FastEncoder` emits per board/hand token scalar features:
+    owner, active/bench, hp, damage, energy, stage, ex/mega, retreat, tools,
+    attack-ready, skill, primary/setup/evolution/engine flags, attack damage
+    metadata, and Dragapult-line flag.
+- `tools/bc_extract_v2.py`
+  - Feature version now `v13_state_token_multistream_history`.
+  - Saves `state_token_feats` and `state_token_feat_dim`.
+- `ptcg_rl/bc2/data.py`
+  - `BCCorpus` accepts `state_token_feat_dim`.
+  - Collates `state_token_feats`, zero-filling for older corpora.
+- `ptcg_rl/model.py`
+  - `CrossAttentionPolicyValueNet` can use `state_token_feat_dim`.
+  - New `state_token_feat_fc` projects per-token scalar features into state
+    tokens. Pointer models remain compatible.
+  - Added `checkpoint_state_token_feat_dim`.
+- `ptcg_rl/numpy_policy.py`
+  - NumPy cross-attn inference loads and uses `state_token_feat_fc`.
+  - Live `FastEncoder` state-token features are passed into `_encode_state_cross`.
+- `ptcg_rl/bc2/losses.py`, `tools/bc2_train.py`
+  - Added `--multi-select-sequence-weight` to reduce ordered sequence NLL for
+    multi-select labels while using stronger order-free set loss.
+  - `sequence_loss_parts` now passes `state_token_feats` into model state
+    encoding.
+- `ptcg_rl/bc2/decode.py`, `tools/bc2_accuracy.py`
+  - Updated diagnostics to pass `state_token_feats`.
+
+Local verification:
+
+- `python3 -m py_compile` passed for modified files.
+- Torch forward smoke passed:
+  cross-attn width1 with state token feat dim 24 produced
+  `h=[3,256]`, `opts=[3,5,128]`, `logits=[3,6]`.
+- Local NumPy load smoke cannot run because local environment lacks `cg`; run
+  ks smoke after syncing.
+
+Immediate next steps:
+
+1. Sync branch/code to ks.
+2. On ks run smoke tests:
+   - import/py_compile.
+   - build/load `NumpyPolicy` with v13 cross-attn dummy checkpoint.
+   - run tiny `bc_extract_v2.py --max-episodes` and inspect `state_token_feats`
+     shape.
+3. Re-extract a Dragapult-focused v13 corpus, preferably enough dates for
+   0801-0812 or full available dates depending time.
+4. Train AB:
+   - v13 cross-attn state-token features, no history/traj.
+   - old pointer/cross-attn baseline on same v13 corpus with
+     `--state-token-feat-dim 0` if needed.
+   - Use set-heavy multi-select config, e.g.
+     `--set-loss-weight 0.8 --set-loss-min-count 2 --set-loss-negative-weight 0.15
+      --multi-select-sequence-weight 0.25`.
+5. Evaluate with the exact same Dragapult random and coverage RR used above.

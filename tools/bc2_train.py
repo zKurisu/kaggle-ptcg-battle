@@ -29,6 +29,7 @@ from ptcg_rl.model import (
     checkpoint_history_summary_dim,
     checkpoint_log_history_k,
     checkpoint_opp_history_k,
+    checkpoint_state_token_feat_dim,
 )
 from ptcg_rl.plan_labels import PLAN_LABELS
 
@@ -435,6 +436,11 @@ def _checkpoint_history_summary_dim(path: str) -> int:
         return checkpoint_history_summary_dim(z)
 
 
+def _checkpoint_state_token_feat_dim(path: str) -> int:
+    with np.load(path) as z:
+        return checkpoint_state_token_feat_dim(z)
+
+
 def _configure_cuda_memory_limit(device: torch.device, *, gb: float = 0.0, fraction: float = 0.0) -> str:
     if device.type != "cuda":
         return ""
@@ -598,7 +604,8 @@ def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
                history_sensitivity_weight=0.0,
                history_sensitivity_margin=0.03,
                set_loss_weight=0.0, set_loss_min_count=2,
-               set_loss_negative_weight=0.25):
+               set_loss_negative_weight=0.25,
+               multi_select_sequence_weight=1.0):
     training = optimizer is not None
     model.train(training)
     sums = _empty_metric_sums()
@@ -646,6 +653,7 @@ def _run_epoch(model, corpus, indices, batch_size, device, optimizer=None,
             set_loss_weight=set_loss_weight,
             set_loss_min_count=set_loss_min_count,
             set_loss_negative_weight=set_loss_negative_weight,
+            multi_select_sequence_weight=multi_select_sequence_weight,
         )
         loss = parts["loss"]
         if training:
@@ -791,6 +799,8 @@ def main() -> None:
                         help="override state feature width; 0 uses current encoder default")
     parser.add_argument("--opt-feat-dim", type=int, default=0,
                         help="override per-option feature width; 0 uses current encoder default")
+    parser.add_argument("--state-token-feat-dim", type=int, default=0,
+                        help="per board/hand token scalar feature width for --arch cross_attn; 0 disables")
     parser.add_argument("--first-action-weight", type=float, default=1.5)
     parser.add_argument("--raw-policy-loss-weight", type=float, default=0.0,
                         help=(
@@ -831,6 +841,8 @@ def main() -> None:
                         help="repeatable true first option card multiplier, e.g. 647=2.5")
     parser.add_argument("--multi-select-weight", type=float, default=1.0,
                         help="sample multiplier when the labeled action selects more than one option")
+    parser.add_argument("--multi-select-sequence-weight", type=float, default=1.0,
+                        help="down/up-weight ordered sequence NLL for multi-select rows; pair with set loss")
     parser.add_argument("--trajectory-csv", action="append", default=[],
                         help="repeatable trajectory-level CSV from tools/mine_strategy_trajectories.py, usually games.csv")
     parser.add_argument("--trajectory-weight", action="append", default=[],
@@ -967,6 +979,9 @@ def main() -> None:
             board_history_feat_dim = init_board_feat
         if history_summary_dim <= 0:
             history_summary_dim = init_summary_dim
+    state_token_feat_dim = max(0, int(args.state_token_feat_dim))
+    if args.init and state_token_feat_dim <= 0:
+        state_token_feat_dim = _checkpoint_state_token_feat_dim(args.init)
     if history_k > 0 or opp_history_k > 0 or log_history_k > 0 or board_history_k > 0 or history_summary_dim > 0:
         torch.backends.cudnn.enabled = False
     inferred_from_init = False
@@ -986,6 +1001,7 @@ def main() -> None:
         option_weight=args.option_weight,
         **({"state_feat_dim": state_feat_dim} if state_feat_dim is not None else {}),
         **({"opt_feat_dim": opt_feat_dim} if opt_feat_dim is not None else {}),
+        state_token_feat_dim=state_token_feat_dim,
         deck_sigs=args.deck_sig,
         team_names=args.team_name,
         opponent_deck_sigs=args.opponent_deck_sig,
@@ -1062,6 +1078,8 @@ def main() -> None:
         model_kwargs["board_history_feat_dim"] = board_history_feat_dim
     if history_summary_dim > 0:
         model_kwargs["history_summary_dim"] = history_summary_dim
+    if state_token_feat_dim > 0:
+        model_kwargs["state_token_feat_dim"] = state_token_feat_dim
     if history_k > 0 or opp_history_k > 0 or log_history_k > 0 or board_history_k > 0 or history_summary_dim > 0:
         model_kwargs["history_gate_init_bias"] = args.history_gate_init_bias
     model = build_policy_model(
@@ -1128,6 +1146,7 @@ def main() -> None:
         f"{args.history_sensitivity_margin} "
         f"slot_state={not args.legacy_state_pool} "
         f"state_feat_dim={state_feat_dim or 'default'} opt_feat_dim={opt_feat_dim or 'default'} "
+        f"state_token_feat_dim={state_token_feat_dim} "
         f"{'feature_dims_from_init ' if inferred_from_init else ''}"
         f"deck_sigs={args.deck_sig or 'all'} team_names={args.team_name or 'all'} "
         f"opponent_deck_sigs={args.opponent_deck_sig or 'all'} "
@@ -1142,6 +1161,7 @@ def main() -> None:
         f"context_weights={context_weights or '{}'} type_weights={type_weights or '{}'} "
         f"card_weights={card_weights or '{}'} "
         f"multi_select_weight={args.multi_select_weight} "
+        f"multi_select_sequence_weight={args.multi_select_sequence_weight} "
         f"trajectory_csv={args.trajectory_csv or 'none'} "
         f"trajectory_weight={args.trajectory_weight or 'none'} "
         f"trajectory_keep={args.trajectory_keep or 'none'} "
@@ -1228,6 +1248,7 @@ def main() -> None:
                 set_loss_weight=args.set_loss_weight,
                 set_loss_min_count=args.set_loss_min_count,
                 set_loss_negative_weight=args.set_loss_negative_weight,
+                multi_select_sequence_weight=args.multi_select_sequence_weight,
             )
             loss = parts["loss"]
             optimizer.zero_grad(set_to_none=True)
@@ -1267,6 +1288,7 @@ def main() -> None:
                 set_loss_weight=args.set_loss_weight,
                 set_loss_min_count=args.set_loss_min_count,
                 set_loss_negative_weight=args.set_loss_negative_weight,
+                multi_select_sequence_weight=args.multi_select_sequence_weight,
             )
         elapsed = time.time() - start
         val_loss = _metric_value(val_metrics, args.best_metric)

@@ -11,7 +11,7 @@ from typing import Iterable
 import numpy as np
 import torch
 
-from ptcg_rl.encoder import OPT_FEAT_DIM, STATE_FEAT_DIM
+from ptcg_rl.encoder import OPT_FEAT_DIM, STATE_FEAT_DIM, STATE_TOKEN_FEAT_DIM
 from ptcg_rl.history_features import (
     ACTION_FIELDS,
     BOARD_HISTORY_FEAT_DIM,
@@ -30,6 +30,7 @@ class BCBatch:
     board: torch.Tensor
     hand: torch.Tensor
     feats: torch.Tensor
+    state_token_feats: torch.Tensor
     opt_type: torch.Tensor
     opt_card: torch.Tensor
     opt_card2: torch.Tensor
@@ -169,6 +170,7 @@ class BCCorpus:
         option_weight: float = 0.0,
         state_feat_dim: int = STATE_FEAT_DIM,
         opt_feat_dim: int = OPT_FEAT_DIM,
+        state_token_feat_dim: int = 0,
         deck_sigs: Iterable[str] | None = None,
         team_names: Iterable[str] | None = None,
         opponent_deck_sigs: Iterable[str] | None = None,
@@ -208,6 +210,7 @@ class BCCorpus:
         self.option_weight = float(option_weight)
         self.state_feat_dim = int(state_feat_dim)
         self.opt_feat_dim = int(opt_feat_dim)
+        self.state_token_feat_dim = max(0, int(state_token_feat_dim))
         self.deck_sigs = {str(x) for x in (deck_sigs or []) if str(x)}
         self.team_names = {str(x).lower() for x in (team_names or []) if str(x)}
         self.opponent_deck_sigs = {str(x) for x in (opponent_deck_sigs or []) if str(x)}
@@ -588,6 +591,7 @@ class BCCorpus:
         board = np.empty((bsz, 12), dtype=np.int64)
         hand = np.zeros((bsz, 25), dtype=np.int64)
         feats = np.zeros((bsz, self.state_feat_dim), dtype=np.float32)
+        state_token_feats = np.zeros((bsz, 12 + 25, self.state_token_feat_dim), dtype=np.float32)
         opt_type = np.zeros((bsz, max_options), dtype=np.int64)
         opt_card = np.zeros((bsz, max_options), dtype=np.int64)
         opt_card2 = np.zeros((bsz, max_options), dtype=np.int64)
@@ -710,6 +714,13 @@ class BCCorpus:
             hand[bi, : min(len(h), 25)] = h[:25]
             ft = np.asarray(data["feats"][si], dtype=np.float32)
             feats[bi, : min(len(ft), self.state_feat_dim)] = ft[: self.state_feat_dim]
+            if self.state_token_feat_dim > 0 and "state_token_feats" in data:
+                stf = np.asarray(data["state_token_feats"][si], dtype=np.float32)
+                if stf.ndim == 2:
+                    n0 = min(stf.shape[0], state_token_feats.shape[1])
+                    n1 = min(stf.shape[1], self.state_token_feat_dim)
+                    if n0 and n1:
+                        state_token_feats[bi, :n0, :n1] = stf[:n0, :n1]
             opt_type[bi, :n] = np.asarray(data["ot"][si], dtype=np.int64)
             opt_card[bi, :n] = np.asarray(data["oc"][si], dtype=np.int64)
             opt_card2[bi, :n] = np.asarray(data["oc2"][si], dtype=np.int64)
@@ -982,6 +993,7 @@ class BCCorpus:
             board=torch.as_tensor(board, device=device),
             hand=torch.as_tensor(hand, device=device),
             feats=torch.as_tensor(feats, device=device),
+            state_token_feats=torch.as_tensor(state_token_feats, device=device),
             opt_type=torch.as_tensor(opt_type, device=device),
             opt_card=torch.as_tensor(opt_card, device=device),
             opt_card2=torch.as_tensor(opt_card2, device=device),

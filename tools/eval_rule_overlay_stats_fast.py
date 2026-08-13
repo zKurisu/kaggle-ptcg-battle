@@ -64,9 +64,14 @@ def _policy_action(entry: DiagEntry, obs: dict) -> tuple[list[int], str]:
     if entry.policy is None:
         return legal_random(sel), ""
     try:
-        raw = entry.policy.select(obs, greedy=True)
+        raw = entry.policy.select(obs, greedy=True, update_history=False)
     except Exception:
-        return legal_random(sel), "policy_error"
+        action = legal_random(sel)
+        try:
+            entry.policy.remember_decision(obs, action)
+        except Exception:
+            pass
+        return action, "policy_error"
     action = raw
     reason = ""
     if entry.rules:
@@ -78,7 +83,12 @@ def _policy_action(entry: DiagEntry, obs: dict) -> tuple[list[int], str]:
         except Exception as exc:
             reason = f"rule_error:{type(exc).__name__}"
             action = raw
-    return _sanitize(action, sel), reason
+    final = _sanitize(action, sel)
+    try:
+        entry.policy.remember_decision(obs, final)
+    except Exception:
+        pass
+    return final, reason
 
 
 def _reset_entry(entry: DiagEntry) -> None:

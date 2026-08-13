@@ -17,10 +17,27 @@ PLAN_LABELS = (
     "preserve",
     "stall",
     "finish",
+    "line_setup",
+    "draw_before_evolve",
+    "spread_prize_map",
+    "counter_engine",
 )
 PLAN_DIM = len(PLAN_LABELS)
 
-SETUP, ENGINE, POWER, ATTACK, DISRUPT, PRESERVE, STALL, FINISH = range(PLAN_DIM)
+(
+    SETUP,
+    ENGINE,
+    POWER,
+    ATTACK,
+    DISRUPT,
+    PRESERVE,
+    STALL,
+    FINISH,
+    LINE_SETUP,
+    DRAW_BEFORE_EVOLVE,
+    SPREAD_PRIZE_MAP,
+    COUNTER_ENGINE,
+) = range(PLAN_DIM)
 
 TYPE_PLAY = 7
 TYPE_ATTACH = 8
@@ -46,13 +63,27 @@ CTX_DISCARD_ENERGY_CARD = 26
 CTX_DISCARD_ENERGY = 30
 CTX_ATTACK = 35
 CTX_DRAW_COUNT = 38
+CTX_DAMAGE_COUNTER = 13
+CTX_DAMAGE_COUNTER_ANY = 14
+CTX_REMOVE_DAMAGE_COUNTER = 16
+CTX_ATTACH_FROM = 21
 
 _SETUP_CONTEXTS = {CTX_SETUP_ACTIVE, CTX_SETUP_BENCH, CTX_EVOLVE}
 _ENGINE_CONTEXTS = {CTX_TO_HAND, CTX_DRAW_COUNT}
 _POWER_CONTEXTS = {CTX_ATTACH_TO, CTX_DISCARD_ENERGY_CARD, CTX_DISCARD_ENERGY}
 _PRESERVE_CONTEXTS = {CTX_SWITCH, CTX_TO_ACTIVE, CTX_TO_BENCH, CTX_HEAL}
-_ATTACK_CONTEXTS = {CTX_ATTACK, CTX_DAMAGE}
+_ATTACK_CONTEXTS = {CTX_ATTACK, CTX_DAMAGE, CTX_DAMAGE_COUNTER, CTX_DAMAGE_COUNTER_ANY}
 _DISRUPT_CONTEXTS = {CTX_DISCARD, CTX_DISCARD_ENERGY, CTX_DISCARD_ENERGY_CARD}
+
+DRAGAPULT_DREEPY = 119
+DRAGAPULT_DRAKLOAK = 120
+DRAGAPULT_EX = 121
+DUSKULL = 131
+DUSCLOPS = 132
+DUSKNOIR = 133
+MUNKIDORI = 112
+BUDEW = 235
+CRISPIN = 1198
 
 
 def _as_int_array(value: Any) -> np.ndarray:
@@ -245,6 +276,49 @@ def label_decision_plan(
     if late and (first_type == TYPE_ATTACK or has_primary):
         labels[FINISH] = 1.0
 
+    if plan and plan.archetype == "Dragapult":
+        board_set = {int(x) for x in my_board if int(x) > 0}
+        hand_set = {int(x) for x in hand if int(x) > 0}
+        line_cards = {DRAGAPULT_DREEPY, DRAGAPULT_DRAKLOAK, DRAGAPULT_EX}
+        counter_cards = {DUSKULL, DUSCLOPS, DUSKNOIR, MUNKIDORI}
+        chosen_in_line = first_card in line_cards or first_card2 in line_cards
+        chosen_in_counter = first_card in counter_cards or first_card2 in counter_cards
+        has_dreepy = DRAGAPULT_DREEPY in board_set
+        has_drakloak = DRAGAPULT_DRAKLOAK in board_set
+        has_dragapult = DRAGAPULT_EX in board_set
+        if early or chosen_in_line:
+            labels[LINE_SETUP] = 1.0
+            labels[SETUP] = 1.0
+        if first_card == DRAGAPULT_DRAKLOAK or first_type == TYPE_ABILITY and (
+            has_drakloak or first_card2 == DRAGAPULT_DRAKLOAK
+        ):
+            labels[DRAW_BEFORE_EVOLVE] = 1.0
+            labels[ENGINE] = 1.0
+        if (
+            has_drakloak
+            and DRAGAPULT_EX in hand_set
+            and (first_type == TYPE_ABILITY or ctx in _ENGINE_CONTEXTS)
+        ):
+            labels[DRAW_BEFORE_EVOLVE] = 1.0
+            labels[ENGINE] = 1.0
+        if first_card == CRISPIN or first_card2 == CRISPIN or ctx == CTX_ATTACH_FROM:
+            labels[POWER] = 1.0
+        if first_type == TYPE_ATTACK and (active == DRAGAPULT_EX or first_card == DRAGAPULT_EX):
+            labels[SPREAD_PRIZE_MAP] = 1.0
+            labels[ATTACK] = 1.0
+            if has_dragapult:
+                labels[FINISH] = max(labels[FINISH], 0.5)
+        if ctx in {CTX_DAMAGE_COUNTER, CTX_DAMAGE_COUNTER_ANY, CTX_REMOVE_DAMAGE_COUNTER}:
+            labels[SPREAD_PRIZE_MAP] = 1.0
+            labels[FINISH] = max(labels[FINISH], 0.5)
+        if chosen_in_counter or (board_set & counter_cards):
+            labels[COUNTER_ENGINE] = 1.0
+        if (DUSCLOPS in board_set or DUSKNOIR in board_set) and labels[SPREAD_PRIZE_MAP] > 0:
+            labels[COUNTER_ENGINE] = 1.0
+        if early and not (has_dreepy or has_drakloak or has_dragapult):
+            labels[LINE_SETUP] = 1.0
+            labels[SETUP] = 1.0
+
     if labels.sum() <= 0:
         if first_type == TYPE_ATTACK:
             labels[ATTACK] = 1.0
@@ -262,4 +336,3 @@ def label_decision_plan(
             labels[SETUP] = 1.0
 
     return labels
-

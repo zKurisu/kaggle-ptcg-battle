@@ -205,6 +205,15 @@ class NumpyPolicy:
             if keep > 0 and len(self._board_history) > keep:
                 del self._board_history[:-keep]
 
+    def remember_decision(self, obs_dict: dict, picks: list[int]) -> None:
+        """Record the action that was actually sent to the game engine.
+
+        Rule overlays and search can replace the raw policy output.  History
+        features used by later turns must track the final legal action, not the
+        model's pre-overlay suggestion.
+        """
+        self._remember_decision(self.encoder.encode(obs_dict), picks)
+
     @classmethod
     def load(cls, path: str) -> "NumpyPolicy":
         with np.load(path) as z:
@@ -886,7 +895,8 @@ class NumpyPolicy:
     # ── MCTS search ─────────────────────────────────────────────────
 
     def select_mcts(self, obs_dict: dict, deck: list[int],
-                    sims: int = 64, time_budget: float = 5.0) -> list[int]:
+                    sims: int = 64, time_budget: float = 5.0,
+                    update_history: bool = True) -> list[int]:
         """MCTS search using engine's search API + this policy as leaf evaluator.
 
         Requires the engine's search_begin/search_step/search_end to be importable.
@@ -899,7 +909,7 @@ class NumpyPolicy:
             _SEARCH_OK = False
 
         if not _SEARCH_OK:
-            return self.select(obs_dict, greedy=True)
+            return self.select(obs_dict, greedy=True, update_history=update_history)
 
         obs = to_observation_class(obs_dict)
         state = obs.current
@@ -923,7 +933,7 @@ class NumpyPolicy:
                 opponent_active=[deck[0]] if (op_s.active and op_s.active[0] is None) else [],
             )
         except Exception:
-            return self.select(obs_dict, greedy=True)
+            return self.select(obs_dict, greedy=True, update_history=update_history)
 
         root_sel = ss.observation.select
         if root_sel is None:
@@ -1012,15 +1022,17 @@ class NumpyPolicy:
         # Best action = highest visit count
         best = max(children, key=lambda c: c.get("visits", 0))
         if best is None or best["sel"] == [n]:  # STOP
-            try:
-                self._remember_decision(self.encoder.encode(obs_dict), [])
-            except Exception:
-                pass
+            if update_history:
+                try:
+                    self.remember_decision(obs_dict, [])
+                except Exception:
+                    pass
             return []
 
         picks = best["sel"][:mc_sel]
-        try:
-            self._remember_decision(self.encoder.encode(obs_dict), picks)
-        except Exception:
-            pass
+        if update_history:
+            try:
+                self.remember_decision(obs_dict, picks)
+            except Exception:
+                pass
         return picks

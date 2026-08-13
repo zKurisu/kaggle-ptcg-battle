@@ -66,25 +66,37 @@ def agent(obs_dict: dict) -> list[int]:
     if USE_MCTS:
         try:
             picks = policy.select_mcts(obs_dict, MY_DECK,
-                                       sims=MCTS_SIMS, time_budget=MCTS_TIME_BUDGET)
+                                       sims=MCTS_SIMS, time_budget=MCTS_TIME_BUDGET,
+                                       update_history=False)
             if RULE_MODE:
                 picks = apply_rule_decision(obs_dict, picks, MY_DECK, mode=RULE_MODE, planner=planner).action
             picks = [p for p in picks if 0 <= p < n]
             picks = list(dict.fromkeys(picks))
-            if mn <= len(picks) <= mc: return picks[:mc]
+            if mn <= len(picks) <= mc:
+                picks = picks[:mc]
+                policy.remember_decision(obs_dict, picks)
+                return picks
         except Exception: pass
 
     # Greedy fallback
     try:
-        picks = policy.select(obs_dict, greedy=True, temperature=1.2)
+        picks = policy.select(obs_dict, greedy=True, temperature=1.2, update_history=False)
         if RULE_MODE:
             picks = apply_rule_decision(obs_dict, picks, MY_DECK, mode=RULE_MODE, planner=planner).action
         picks = [p for p in picks if 0 <= p < n]
         picks = list(dict.fromkeys(picks))
-        if mn <= len(picks) <= mc: return picks[:mc]
+        if mn <= len(picks) <= mc:
+            picks = picks[:mc]
+            policy.remember_decision(obs_dict, picks)
+            return picks
     except Exception: pass
 
-    return _safe_random(obs_dict)
+    picks = _safe_random(obs_dict)
+    try:
+        policy.remember_decision(obs_dict, picks)
+    except Exception:
+        pass
+    return picks
 
 
 if __name__ == "__main__":

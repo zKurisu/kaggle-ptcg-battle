@@ -38,9 +38,14 @@ def _policy_action(policy: NumpyPolicy | None, obs: dict, deck: list[int],
     if policy is None:
         return legal_random(sel), ""
     try:
-        raw = policy.select(obs, greedy=True)
+        raw = policy.select(obs, greedy=True, update_history=False)
     except Exception:
-        return legal_random(sel), ""
+        action = legal_random(sel)
+        try:
+            policy.remember_decision(obs, action)
+        except Exception:
+            pass
+        return action, ""
     reason = ""
     action = raw
     if rules:
@@ -50,7 +55,12 @@ def _policy_action(policy: NumpyPolicy | None, obs: dict, deck: list[int],
             reason = decision.reason if decision.action != raw else ""
         except Exception:
             action = raw
-    return _sanitize(action, sel), reason
+    final = _sanitize(action, sel)
+    try:
+        policy.remember_decision(obs, final)
+    except Exception:
+        pass
+    return final, reason
 
 
 def _play_game(

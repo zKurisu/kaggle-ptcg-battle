@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-13 19:05 Asia/Shanghai.
+Last updated: 2026-08-13 21:18 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -10259,3 +10259,142 @@ Update 2026-08-13 20:35 CST:
   some Mega Lopunny/Marnie variants. Do not use raw 81-shadow manifest as a
   trusted ladder proxy. Use the random audit with `tools/split_shadow_pools.py`
   to create trusted/environment/debug pools after random finishes.
+
+Update 2026-08-13 21:18 CST:
+
+- ks random and RR recovery evals completed.
+- Full 81-shadow random g500:
+  mean `0.855`, median `0.884`, min `0.460`, max `0.996`;
+  `>=0.99`: 6/81, `>=0.97`: 16/81, `>=0.95`: 24/81,
+  `>=0.90`: 38/81. By archetype, Dragapult shadows are very poor
+  (`n=8`, mean `0.615`, max `0.788`), Crustle is also weak
+  (`n=8`, mean `0.812`, max `0.906`). Strong clusters include selected
+  Marnie/Ogerpon/Festival/Lucario/Starmie shadows. Raw 0812 shadow81 is not a
+  trusted ladder pool. Build filtered pools before using it for decisions.
+- Dragapult v13 local candidate RR phase:
+  `w4_state_token` beats `w3_state_token` head-to-head `0.567`, beats
+  `w4_no_state_token` `0.513`, and beats `recent0805` `0.597`.
+  `recent0805` is the weakest in this local mirror/candidate set.
+- Dragapult vs 81 shadows with `w3_state_token` as baseline:
+  `drag_w4` is best: average delta `+0.069`, candidate mean `0.717` vs
+  baseline `0.649`, lost only `12/81`. The improvement also holds on
+  `opp_random_wr>=0.90` (`+0.074`) and `>=0.97` (`+0.080`) subsets.
+  `drag_w4_no_state` is positive but weaker: average delta `+0.039`,
+  candidate mean `0.687`, lost `21/81`.
+  `drag_recent0805` regresses: average delta `-0.030`, lost `53/81`.
+- Dragapult `w4_state_token` random loss trace g800:
+  `791-9-0`, WR `0.989`, no timeouts. Loss games are much longer
+  (`119.7` decisions/game) than wins (`74.8`), and have worse MAIN miss rates:
+  attack `0.813` vs `0.800`, attach `0.748` vs `0.709`, evolve `0.645` vs
+  `0.608`, early END `0.033` vs `0.016`. Losses show more digging/play/ability
+  activity, which looks like stalled setup or poor finish/prize planning rather
+  than a pure opening-randomness issue.
+- Dragapult corpus audit for target sig `cc2e995b5ad0` over v13 0801-0812:
+  about `438634` decisions, `3894` games, game WR `0.568`.
+  Score-band rows are mostly `1000-1099` (`235962`) and `900-999`
+  (`124427`), with less `1100-1199` (`41957`) and `1200+` (`36288`).
+  Top team styles differ substantially: `flg` `315` games WR `0.667`,
+  `213tubo` `477` games WR `0.614`, `Kh0a` `714` games WR `0.580`,
+  `Pokemon Siuuuu` `380` games WR `0.529`, `Pokopia` `95` games WR `0.453`,
+  `Budew` `90` games WR `0.400`.
+- Interpretation for Dragapult:
+  data volume is not the main shortage for `cc2e995b5ad0`; the problem is
+  mixed/noisy strategy labels plus a training target that still mostly imitates
+  one-step actions. The current v13 runs enabled `--state-token-feat-dim 24`
+  but did not enable `--history-k`, `--history-summary`, `--step-plan`, or
+  `--hierarchical-plan`. Public Dragapult strategy and local trace both say
+  the deck needs Dreepy/Drakloak/Dragapult setup coherence, Crispin/energy
+  routing, and multi-prize Phantom Dive planning. Treat future Dragapult work
+  as a pipeline/strategy-target problem, not as "add more epoch" or "take only
+  newer dates".
+- Existing strategy seed already records the useful Dragapult hypothesis:
+  `data/matchup_strategy_seeds_v1.csv` has
+  `dragapult_setup_vs_marnie_crustle`, saying successful rows choose
+  Dragapult ex active more often, use Drakloak attach-from, and set up Dreepy
+  earlier. This seed has not yet become a strong training constraint; do not
+  count it as already solved.
+- Recommended next Dragapult direction:
+  build a setup-coherent filtered/teacher corpus from scratch rather than
+  micro-finetuning. Prefer high-quality `cc2e995b5ad0` teams (`flg`,
+  `213tubo`, `Kh0a` with caution, `やる気元気ミワハルキ`, `Petit Canard`) and
+  downweight or exclude low-WR teams when training a specialist. Add explicit
+  auxiliary targets for early Dreepy count, Drakloak/Dragapult online timing,
+  first Phantom Dive turn, correct red/psychic energy route, attack gaps, and
+  late prize-map/bench-counter selection. Also split shadow pools by random
+  quality before trusting RR results.
+
+Update 2026-08-13 23:10 CST:
+
+- Important history pipeline bugs were found and fixed. These likely explain
+  why earlier history/summary experiments looked almost unchanged or worse.
+- Bug 1: `BCCorpus.collate(..., history_augment=True)` recomputed
+  `history_summary` from the currently enabled raw streams after augmentation.
+  For summary-only runs (`history_k=0`, `log_history_k=0`,
+  `board_history_k=0`, `history_summary_dim=48`) this silently replaced the
+  corpus summary with all zeros. This affected prior summary-only Marnie
+  history repair attempts.
+- Bug 2: extracted `history_summary` previously included offline
+  `opp_hist_*` labeled opponent decisions, but Kaggle live inference can only
+  reproduce own decisions, public logs, and board snapshots. Training and live
+  inference therefore had mismatched history features. The default training
+  path is now live-compatible: `offline_opp_history=False`, and
+  `--offline-opp-history` must be explicitly passed for offline diagnostics.
+- Fixes applied locally and synced to
+  `ks:/data/jie/ptcg_rl_git_v7_baseline_20260804`:
+  - `ptcg_rl/bc2/data.py`: summary is rebuilt from raw own/log/board streams
+    when available; opponent labeled history is excluded by default; old saved
+    summary fallback zeros opponent-label fields; history augmentation no
+    longer erases summary.
+  - `tools/bc2_train.py`: added `--offline-opp-history`, and logs
+    `offline_opp_history=...`.
+  - `tools/bc_extract_v2.py`: future extracted summaries are live-compatible
+    and do not include offline opponent labeled action history.
+  - `ptcg_rl/numpy_policy.py`: added `remember_decision(obs, picks)` and
+    `select_mcts(..., update_history=...)`.
+  - `main.py`, `tools/eval_bc.py`, `tools/eval_round_robin.py`,
+    `tools/eval_rule_overlay_stats*.py`, `tools/build_weakness_state_bank.py`,
+    `tools/generate_rollout_bc.py`, `tools/search_action_teacher.py`: rule
+    overlay/search/fallback paths now record the final legal action actually
+    sent to the engine, not the raw pre-rule model action.
+  - `tools/bc2_accuracy.py` and `tools/bc2_failure_report.py`: now load
+    `history_summary_dim`; `bc2_failure_report.py` also loads
+    `state_token_feat_dim`. Earlier diagnostics for history/state-token models
+    may have been incomplete.
+  - Added `tools/check_history_summary_integrity.py` for preflight checks.
+- Remote smoke tests on the real v13 0801-0812 corpus passed:
+  - Dragapult `cc2e995b5ad0`, `--max-files 2`: summary abs mean `0.20885`,
+    nonzero `0.407`, opponent-label slice `0.00000000` for noaug, summary-aug,
+    and raw+summary-aug.
+  - Marnie `b8f251a476e7`, `--max-files 2`: summary abs mean `0.19336`,
+    nonzero `0.401`, opponent-label slice `0.00000000` for all three cases.
+- A checked overnight runner was started on ks:
+  `/tmp/run_overnight_strategy_checked_20260813.sh`.
+  Main remote PID tree starts at `663042`; logs are under
+  `logs/overnight_strategy_checked_20260813/`, checkpoints under
+  `checkpoints/overnight_strategy_checked_20260813/`.
+  It first ran the summary integrity smoke tests, copied the existing Marnie
+  trajectory from `logs/overnight_strategy_safe_20260813/`, then launched four
+  GPU queues:
+  - GPU0: `drag_plan_full` then `marnie_summary`
+  - GPU1: `drag_lowloss` then `marnie_rawhist`
+  - GPU2: `drag_success_aux`
+  - GPU3: `drag_teamclean`
+  After all training queues finish, the runner will evaluate random g500 and
+  baseline-delta g60 versus the 81-score-labeled 0812 shadow manifest.
+- Current run sanity at launch:
+  four Dragapult jobs entered epoch 1 successfully; GPU memory was about
+  16-20 GiB per card; `offline_opp_history=False` appeared in training logs.
+  `drag_teamclean` retained `201407` decisions after team filtering and saved
+  an epoch-1 checkpoint, so the UTF-8 team-name filter did not collapse to zero
+  even though `ps` may display one Japanese team name as question marks.
+- Monitor commands:
+  `ssh ks 'cd /data/jie/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/overnight_strategy_checked_20260813/runner.log'`
+  `ssh ks 'cd /data/jie/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/overnight_strategy_checked_20260813/drag_plan_full_checked_w4_seed61.log'`
+  `ssh ks 'cd /data/jie/ptcg_rl_git_v7_baseline_20260804 && cat logs/overnight_strategy_checked_20260813/status.csv'`
+  `ssh ks 'nvidia-smi --query-gpu=index,memory.used,memory.free --format=csv,noheader,nounits'`
+- When this checked run finishes, first inspect:
+  `logs/overnight_strategy_checked_20260813/eval/random_g500.csv`,
+  `logs/overnight_strategy_checked_20260813/eval/drag_vs_shadow81_g60.csv`,
+  and `logs/overnight_strategy_checked_20260813/eval/marnie_vs_shadow81_g60.csv`.
+  Pull key logs/checkpoints back locally if results look useful; ks storage is
+  ephemeral.

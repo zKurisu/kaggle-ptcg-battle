@@ -95,11 +95,22 @@ def policy_action(entry: Entry, obs: dict, use_mcts: bool, sims: int, time_budge
 
     try:
         if use_mcts or entry.mcts:
-            picks = entry.policy.select_mcts(obs, entry.deck, sims=sims, time_budget=time_budget)
+            picks = entry.policy.select_mcts(
+                obs,
+                entry.deck,
+                sims=sims,
+                time_budget=time_budget,
+                update_history=False,
+            )
         else:
-            picks = entry.policy.select(obs, greedy=True)
+            picks = entry.policy.select(obs, greedy=True, update_history=False)
     except Exception:
-        return legal_random(sel)
+        picks = legal_random(sel)
+        try:
+            entry.policy.remember_decision(obs, picks)
+        except Exception:
+            pass
+        return picks
     if entry.rules:
         try:
             picks = apply_rule_decision(obs, picks, entry.deck, mode=entry.rules, planner=entry.planner).action
@@ -109,8 +120,14 @@ def policy_action(entry: Entry, obs: dict, use_mcts: bool, sims: int, time_budge
     picks = [p for p in picks if 0 <= p < n]
     picks = list(dict.fromkeys(picks))
     if mn <= len(picks) <= mc:
-        return picks[:mc]
-    return legal_random(sel)
+        picks = picks[:mc]
+    else:
+        picks = legal_random(sel)
+    try:
+        entry.policy.remember_decision(obs, picks)
+    except Exception:
+        pass
+    return picks
 
 
 def parse_entry(spec: str, default_deck: str, registry: str = "") -> tuple[str, str, str]:

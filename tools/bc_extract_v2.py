@@ -197,7 +197,10 @@ def _append_decision(all_data, encoder, obs: dict, action: list,
         row["board_hist_mask"] = board_hist.get("mask")
         row["history_summary"] = history_summary_from_arrays(
             own_hist=history.get("own_hist") or {},
-            opp_hist=history.get("opp_hist") or {},
+            # Kaggle inference cannot reconstruct opponent labeled decisions;
+            # keep saved summaries live-compatible and let public logs carry
+            # opponent-visible tempo.
+            opp_hist={},
             log_hist=log_hist,
             board_hist=board_hist,
             dim=HISTORY_SUMMARY_DIM,

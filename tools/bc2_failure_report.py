@@ -25,9 +25,11 @@ from ptcg_rl.model import (
     checkpoint_feature_dims,
     checkpoint_hierarchical_plan,
     checkpoint_history_k,
+    checkpoint_history_summary_dim,
     checkpoint_log_history_k,
     checkpoint_opp_history_k,
     checkpoint_plan_dim,
+    checkpoint_state_token_feat_dim,
     checkpoint_width,
 )
 from tools.bc2_accuracy import CONTEXT_NAMES, OPT_NAMES, SET_CONTEXTS, first_action_topk
@@ -59,6 +61,8 @@ def _load_model(path: str, width: float, device: torch.device):
         opp_history_k = checkpoint_opp_history_k(z)
         log_history_k = checkpoint_log_history_k(z)
         board_history_k, board_history_feat_dim = checkpoint_board_history_dims(z)
+        history_summary_dim = checkpoint_history_summary_dim(z)
+        state_token_feat_dim = checkpoint_state_token_feat_dim(z)
         model = build_policy_model(
             arch,
             width=model_width,
@@ -73,6 +77,8 @@ def _load_model(path: str, width: float, device: torch.device):
             log_history_k=log_history_k,
             board_history_k=board_history_k,
             board_history_feat_dim=board_history_feat_dim,
+            history_summary_dim=history_summary_dim,
+            state_token_feat_dim=state_token_feat_dim,
         ).to(device)
         state = {k: torch.as_tensor(z[k], device=device) for k in z.files}
     current = model.state_dict()
@@ -88,6 +94,8 @@ def _load_model(path: str, width: float, device: torch.device):
         log_history_k,
         board_history_k,
         board_history_feat_dim,
+        history_summary_dim,
+        state_token_feat_dim,
     )
 
 
@@ -260,6 +268,8 @@ def main() -> None:
         log_history_k,
         board_history_k,
         board_history_feat_dim,
+        history_summary_dim,
+        state_token_feat_dim,
     ) = _load_model(args.policy, args.width, device)
     paths = discover_npz_paths(args.corpus, args.archetype, args.score_bands)
     corpus = BCCorpus(
@@ -277,6 +287,8 @@ def main() -> None:
         log_history_k=log_history_k,
         board_history_k=board_history_k,
         board_history_feat_dim=board_history_feat_dim,
+        history_summary_dim=history_summary_dim,
+        state_token_feat_dim=state_token_feat_dim,
         load_progress_every=args.load_progress_every,
     )
     indices = corpus.all_indices()

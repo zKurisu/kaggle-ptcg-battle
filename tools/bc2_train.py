@@ -730,6 +730,11 @@ def main() -> None:
                             "condition on previous opponent labeled decisions saved by v12 extraction. "
                             "Use mainly for offline diagnostics; public Kaggle inference cannot exactly reproduce it."
                         ))
+    parser.add_argument("--offline-opp-history", action="store_true",
+                        help=(
+                            "actually feed saved opponent labeled decisions to --opp-history-k and summary. "
+                            "Do not use for Kaggle submission candidates; live inference keeps this stream empty."
+                        ))
     parser.add_argument("--log-history-k", type=int, default=0,
                         help="condition on this many recent public observation log events saved by v12 extraction")
     parser.add_argument("--board-history-k", type=int, default=0,
@@ -1032,6 +1037,7 @@ def main() -> None:
         board_history_k=board_history_k,
         board_history_feat_dim=board_history_feat_dim,
         history_summary_dim=history_summary_dim,
+        offline_opp_history=args.offline_opp_history,
         split_by_game=(
             args.split_by_game
             or bool(trajectory_weights)
@@ -1133,6 +1139,7 @@ def main() -> None:
         f"arch={args.arch} width={args.width} state_layers={args.state_layers} "
         f"hierarchical_plan={args.hierarchical_plan} "
         f"history_k={history_k} opp_history_k={opp_history_k} "
+        f"offline_opp_history={args.offline_opp_history} "
         f"log_history_k={log_history_k} board_history_k={board_history_k} "
         f"board_history_feat_dim={board_history_feat_dim} "
         f"history_summary_dim={history_summary_dim} "

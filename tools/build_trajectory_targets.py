@@ -30,6 +30,17 @@ END = 14
 PRESSING_TYPES = {PLAY, ATTACH, EVOLVE, ABILITY, RETREAT, ATTACK}
 DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
+DREEPY = 119
+DRAKLOAK = 120
+DRAGAPULT_EX = 121
+DUSKULL = 131
+DUSCLOPS = 132
+DUSKNOIR = 133
+MUNKIDORI = 112
+DRAGAPULT_LINE = {DREEPY, DRAKLOAK, DRAGAPULT_EX}
+DRAGAPULT_COUNTER_ENGINE = {DUSKULL, DUSCLOPS, DUSKNOIR, MUNKIDORI}
+DAMAGE_COUNTER_CONTEXTS = {13, 14, 16}
+
 FIELDS = [
     "game_key",
     "episode_id",
@@ -98,6 +109,23 @@ FIELDS = [
     "tempo_success",
     "strategy_success",
     "strategy_weight",
+    "first_dreepy_board_turn",
+    "first_drakloak_board_turn",
+    "first_dragapult_board_turn",
+    "first_dragapult_evolve_turn",
+    "first_dusknoir_line_board_turn",
+    "first_dragapult_attack_turn",
+    "drakloak_ability_count",
+    "dragapult_evolve_count",
+    "damage_counter_count",
+    "dreepy_board_by_2",
+    "drakloak_board_by_4",
+    "dragapult_board_by_6",
+    "dusknoir_line_by_6",
+    "dragapult_attack_by_6",
+    "damage_counter_used",
+    "drakloak_before_dragapult_evolve",
+    "dragapult_strategy_success",
 ]
 
 
@@ -185,6 +213,26 @@ def first_type(data: dict[str, np.ndarray], i: int) -> int:
     return int(ot[first])
 
 
+def first_action(data: dict[str, np.ndarray], i: int) -> tuple[int, int, int, int]:
+    action = np.asarray(data["action"][i], dtype=np.int64)
+    if len(action) == 0:
+        return -1, 0, 0, -1
+    first = int(action[0])
+    ot = np.asarray(data["ot"][i], dtype=np.int64)
+    if not 0 <= first < len(ot):
+        return -1, 0, 0, -1
+    oc = np.asarray(data["oc"][i], dtype=np.int64) if "oc" in data else np.zeros(0, dtype=np.int64)
+    oc2 = np.asarray(data["oc2"][i], dtype=np.int64) if "oc2" in data else np.zeros(0, dtype=np.int64)
+    feats = np.asarray(data["feats"][i], dtype=np.float32)
+    ctx = inum(fnum(feats[17]) * 64.0) if len(feats) > 17 else -1
+    return (
+        int(ot[first]),
+        int(oc[first]) if first < len(oc) else 0,
+        int(oc2[first]) if first < len(oc2) else 0,
+        ctx,
+    )
+
+
 def option_types(data: dict[str, np.ndarray], i: int) -> set[int]:
     try:
         return {int(x) for x in np.asarray(data["ot"][i], dtype=np.int64).tolist()}
@@ -253,6 +301,16 @@ def new_row(args: argparse.Namespace, data: dict[str, np.ndarray], i: int) -> di
         "first_secondary_board_turn": 999,
         "first_setup_board_turn": 999,
         "first_engine_board_turn": 999,
+        "first_dreepy_board_turn": 999,
+        "first_drakloak_board_turn": 999,
+        "first_dragapult_board_turn": 999,
+        "first_dragapult_evolve_turn": 999,
+        "first_dusknoir_line_board_turn": 999,
+        "first_dragapult_attack_turn": 999,
+        "drakloak_ability_count": 0,
+        "dragapult_evolve_count": 0,
+        "damage_counter_count": 0,
+        "_saw_drakloak_ability_before_dragapult_evolve": 0,
     }
 
 
@@ -311,6 +369,30 @@ def finalize(row: dict) -> dict:
         int(row["outcome_win"]) == 1
         and (int(row["setup_success"]) == 1 or int(row["tempo_success"]) == 1)
     )
+    row["dreepy_board_by_2"] = int(int(row.get("first_dreepy_board_turn", 999)) <= 2)
+    row["drakloak_board_by_4"] = int(int(row.get("first_drakloak_board_turn", 999)) <= 4)
+    row["dragapult_board_by_6"] = int(int(row.get("first_dragapult_board_turn", 999)) <= 6)
+    row["dusknoir_line_by_6"] = int(int(row.get("first_dusknoir_line_board_turn", 999)) <= 6)
+    row["dragapult_attack_by_6"] = int(int(row.get("first_dragapult_attack_turn", 999)) <= 6)
+    row["damage_counter_used"] = int(int(row.get("damage_counter_count", 0)) > 0)
+    row["drakloak_before_dragapult_evolve"] = int(
+        int(row.get("_saw_drakloak_ability_before_dragapult_evolve", 0)) > 0
+    )
+    row["dragapult_strategy_success"] = int(
+        int(row["outcome_win"]) == 1
+        and int(row["no_early_end"]) == 1
+        and int(row["dreepy_board_by_2"]) == 1
+        and (
+            int(row["drakloak_board_by_4"]) == 1
+            or int(row["dragapult_board_by_6"]) == 1
+            or int(row["dragapult_attack_by_6"]) == 1
+        )
+        and (
+            int(row["damage_counter_used"]) == 1
+            or int(row["dragapult_attack_by_6"]) == 1
+            or int(row["dusknoir_line_by_6"]) == 1
+        )
+    )
     # A numeric column for whole-game sample weighting. It intentionally keeps
     # losing trajectories present, but gives strongest mass to wins that also
     # exhibit coherent setup/tempo signals.
@@ -325,6 +407,8 @@ def finalize(row: dict) -> dict:
         weight *= 1.25
     if int(row["tempo_success"]) == 1:
         weight *= 1.20
+    if int(row.get("dragapult_strategy_success", 0)) == 1:
+        weight *= 1.50
     if int(row["no_early_end"]) == 0:
         weight *= 0.75
     row["strategy_weight"] = min(weight, 4.0)
@@ -399,7 +483,7 @@ def main() -> None:
                 row = new_row(args, data, i)
                 rows[key] = row
             turn, ctx = turn_context(data, i)
-            typ = first_type(data, i)
+            typ, first_card, first_card2, action_ctx = first_action(data, i)
             row["decisions"] += 1
             row["max_turn"] = max(int(row["max_turn"]), turn)
             if ctx == MAIN:
@@ -447,6 +531,32 @@ def main() -> None:
                 row["first_setup_board_turn"] = min(int(row["first_setup_board_turn"]), turn)
             if engine_cards and board_set & engine_cards:
                 row["first_engine_board_turn"] = min(int(row["first_engine_board_turn"]), turn)
+            if args.archetype == "Dragapult":
+                if DREEPY in board_set:
+                    row["first_dreepy_board_turn"] = min(int(row["first_dreepy_board_turn"]), turn)
+                if DRAKLOAK in board_set:
+                    row["first_drakloak_board_turn"] = min(int(row["first_drakloak_board_turn"]), turn)
+                if DRAGAPULT_EX in board_set:
+                    row["first_dragapult_board_turn"] = min(int(row["first_dragapult_board_turn"]), turn)
+                if board_set & DRAGAPULT_COUNTER_ENGINE:
+                    row["first_dusknoir_line_board_turn"] = min(
+                        int(row["first_dusknoir_line_board_turn"]), turn
+                    )
+                if typ == ABILITY and first_card == DRAKLOAK:
+                    row["drakloak_ability_count"] += 1
+                    if int(row.get("first_dragapult_evolve_turn", 999)) == 999:
+                        row["_saw_drakloak_ability_before_dragapult_evolve"] = 1
+                if typ == EVOLVE and (first_card == DRAGAPULT_EX or first_card2 == DRAGAPULT_EX):
+                    row["dragapult_evolve_count"] += 1
+                    row["first_dragapult_evolve_turn"] = min(
+                        int(row["first_dragapult_evolve_turn"]), turn
+                    )
+                if typ == ATTACK and active == DRAGAPULT_EX:
+                    row["first_dragapult_attack_turn"] = min(
+                        int(row["first_dragapult_attack_turn"]), turn
+                    )
+                if ctx in DAMAGE_COUNTER_CONTEXTS or action_ctx in DAMAGE_COUNTER_CONTEXTS:
+                    row["damage_counter_count"] += 1
         if args.progress_every and (path_i == 1 or path_i % args.progress_every == 0 or path_i == len(paths)):
             rate = raw / max(time.time() - t0, 1e-9)
             print(

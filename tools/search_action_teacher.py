@@ -512,11 +512,10 @@ def heuristic_score(obs: dict[str, Any], candidate_side: int) -> float:
 
 
 def remember_external_action(policy: NumpyPolicy | None, obs: dict[str, Any], action: list[int]) -> None:
-    if policy is None or not hasattr(policy, "_remember_decision"):
+    if policy is None:
         return
     try:
-        d = policy.encoder.encode(obs)
-        policy._remember_decision(d, action)  # noqa: SLF001 - teacher rollout must track root decisions.
+        policy.remember_decision(obs, action)
     except Exception:
         pass
 
@@ -529,14 +528,18 @@ def rollout_policy_action(entry: Entry, obs: dict[str, Any], rng: random.Random,
         return legal_random(sel, rng)
     try:
         if temperature > 0:
-            action = entry.policy.select(obs, greedy=False, temperature=temperature, top_k=0, update_history=True)
+            action = entry.policy.select(obs, greedy=False, temperature=temperature, top_k=0, update_history=False)
         else:
-            action = entry.policy.select(obs, greedy=True, update_history=True)
+            action = entry.policy.select(obs, greedy=True, update_history=False)
     except Exception:
         action = legal_random(sel, rng)
-    if valid_action(action, sel):
-        return action
-    return legal_random(sel, rng)
+    if not valid_action(action, sel):
+        action = legal_random(sel, rng)
+    try:
+        entry.policy.remember_decision(obs, action)
+    except Exception:
+        pass
+    return action
 
 
 def rollout_once(record: dict[str, Any], root_action: list[int], seed: int, args: argparse.Namespace) -> tuple[str, int, float]:

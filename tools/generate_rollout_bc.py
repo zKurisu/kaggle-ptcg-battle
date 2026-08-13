@@ -190,13 +190,30 @@ def _select_candidate_action(
         if entry.policy is None or actor.base == "random":
             action = _legal_random(sel, rng)
         elif actor.base == "mcts":
-            action = entry.policy.select_mcts(obs, entry.deck, sims=mcts_sims, time_budget=time_budget)
+            action = entry.policy.select_mcts(
+                obs,
+                entry.deck,
+                sims=mcts_sims,
+                time_budget=time_budget,
+                update_history=False,
+            )
         elif actor.base == "topk":
-            action = entry.policy.select(obs, greedy=False, temperature=actor.temperature, top_k=actor.top_k)
+            action = entry.policy.select(
+                obs,
+                greedy=False,
+                temperature=actor.temperature,
+                top_k=actor.top_k,
+                update_history=False,
+            )
         elif actor.base == "sample":
-            action = entry.policy.select(obs, greedy=False, temperature=actor.temperature)
+            action = entry.policy.select(
+                obs,
+                greedy=False,
+                temperature=actor.temperature,
+                update_history=False,
+            )
         else:
-            action = entry.policy.select(obs, greedy=True)
+            action = entry.policy.select(obs, greedy=True, update_history=False)
         if actor.rules:
             decision = apply_rule_decision(
                 obs,
@@ -211,7 +228,13 @@ def _select_candidate_action(
     except Exception:
         action = _legal_random(sel, rng)
         actor_label = f"{actor.raw}|fallback_random"
-    return _sanitize_action(action, sel, rng), actor_label
+    action = _sanitize_action(action, sel, rng)
+    if entry.policy is not None:
+        try:
+            entry.policy.remember_decision(obs, action)
+        except Exception:
+            pass
+    return action, actor_label
 
 
 def _encode_decision(

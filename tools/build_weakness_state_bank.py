@@ -155,7 +155,7 @@ def choose_action(
         if entry.policy is None:
             action = legal_random(sel, rng)
         else:
-            action = entry.policy.select(obs, greedy=True, update_history=True)
+            action = entry.policy.select(obs, greedy=True, update_history=False)
         if rules:
             decision = apply_rule_decision(obs, action, entry.deck, mode=rules, planner=planner)
             action = decision.action
@@ -164,7 +164,13 @@ def choose_action(
     except Exception as exc:
         action = legal_random(sel, rng)
         label = f"fallback_random:{type(exc).__name__}"
-    return sanitize_action(action, sel, rng), label
+    action = sanitize_action(action, sel, rng)
+    if entry.policy is not None:
+        try:
+            entry.policy.remember_decision(obs, action)
+        except Exception:
+            pass
+    return action, label
 
 
 def active_id(player: dict[str, Any]) -> int:

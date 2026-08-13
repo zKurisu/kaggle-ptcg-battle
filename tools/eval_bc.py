@@ -47,9 +47,15 @@ def _policy_action(policy, obs, deck, use_mcts=False, sims=48, time_budget=4.0,
         return []
     try:
         if use_mcts:
-            act = policy.select_mcts(obs, deck, sims=sims, time_budget=time_budget)
+            act = policy.select_mcts(
+                obs,
+                deck,
+                sims=sims,
+                time_budget=time_budget,
+                update_history=False,
+            )
         else:
-            act = policy.select(obs, greedy=True)
+            act = policy.select(obs, greedy=True, update_history=False)
     except Exception:
         act = []
     if rules:
@@ -60,8 +66,14 @@ def _policy_action(policy, obs, deck, use_mcts=False, sims=48, time_budget=4.0,
     act = [a for a in act if 0 <= a < n]
     act = list(dict.fromkeys(act))
     if mn <= len(act) <= mc:
-        return act[:mc]
-    return _legal_random(sel)
+        act = act[:mc]
+    else:
+        act = _legal_random(sel)
+    try:
+        policy.remember_decision(obs, act)
+    except Exception:
+        pass
+    return act
 
 def _play_one_game(policy, deck, game_index, use_mcts=False, sims=48,
                    time_budget=4.0, seed=0, max_turns=700, rules=""):

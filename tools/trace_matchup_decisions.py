@@ -43,6 +43,17 @@ ACTION_TYPES = {
 PRESSING_TYPES = {7, 8, 9, 10, 12, 13}
 _CARD_NAME_BY_ID: dict[int, str] | None = None
 
+DREEPY = 119
+DRAKLOAK = 120
+DRAGAPULT_EX = 121
+DUSKULL = 131
+DUSCLOPS = 132
+DUSKNOIR = 133
+MUNKIDORI = 112
+DRAGAPULT_LINE = {DREEPY, DRAKLOAK, DRAGAPULT_EX}
+DUSKNOIR_LINE = {DUSKULL, DUSCLOPS, DUSKNOIR, MUNKIDORI}
+DAMAGE_COUNTER_CONTEXTS = {13, 14, 16}
+
 
 GAME_FIELDS = [
     "game",
@@ -128,6 +139,22 @@ DECISION_FIELDS = [
     "top1_card_name",
     "chosen_first_rank",
     "chosen_first_prob",
+    "chosen_target_id",
+    "chosen_target_name",
+    "chosen_target_area",
+    "chosen_target_owner",
+    "chosen_target_hp",
+    "chosen_target_max_hp",
+    "chosen_target_damage",
+    "chosen_target_remaining_hp",
+    "damage_counter_context",
+    "damage_counter_to_small_ko",
+    "damage_counter_sets_up_200",
+    "dragapult_line_count",
+    "dusknoir_line_count",
+    "drakloak_before_evolve_opportunity",
+    "drakloak_before_evolve_hit",
+    "drakloak_before_evolve_miss",
 ]
 
 SUMMARY_FIELDS = [
@@ -165,6 +192,18 @@ SUMMARY_FIELDS = [
     "early_end_rate",
     "short_optional_multi",
     "short_optional_multi_rate",
+    "damage_counter_context",
+    "damage_counter_to_small_ko",
+    "damage_counter_to_small_ko_rate",
+    "damage_counter_sets_up_200",
+    "damage_counter_sets_up_200_rate",
+    "avg_dragapult_line_count",
+    "avg_dusknoir_line_count",
+    "drakloak_before_evolve_opportunity",
+    "drakloak_before_evolve_hit",
+    "drakloak_before_evolve_rate",
+    "drakloak_before_evolve_miss",
+    "drakloak_before_evolve_miss_rate",
 ]
 
 CHOICE_FIELDS = [
@@ -231,6 +270,45 @@ def bench_cards(player: dict) -> list[int]:
             if cid:
                 cards.append(cid)
     return cards
+
+
+def pokemon_hp(pokemon: dict | None) -> tuple[int, int, int]:
+    if not pokemon:
+        return 0, 0, 0
+    hp = safe_int(pokemon.get("hp"))
+    max_hp = safe_int(pokemon.get("maxHp") or pokemon.get("maxHP"))
+    if max_hp <= 0:
+        max_hp = hp
+    damage = max(0, max_hp - hp) if max_hp > 0 else 0
+    return hp, max_hp, damage
+
+
+def target_pokemon_from_option(cur: dict, option: dict | None) -> tuple[dict | None, int, int]:
+    if not option:
+        return None, 0, -1
+    players = cur.get("players") or []
+    pid = safe_int(option.get("playerIndex"), safe_int(cur.get("yourIndex")))
+    area = safe_int(option.get("area"), 0)
+    idx = safe_int(option.get("index"), 0)
+    if area not in (4, 5):
+        area = safe_int(option.get("inPlayArea"), 0)
+        idx = safe_int(option.get("inPlayIndex"), 0)
+    if not (0 <= pid < len(players)):
+        return None, area, pid
+    player = players[pid]
+    if area == 4:
+        active = player.get("active") or []
+        if active and idx < len(active) and active[idx]:
+            return active[idx], area, pid
+    if area == 5:
+        bench = player.get("bench") or []
+        if idx < len(bench) and bench[idx]:
+            return bench[idx], area, pid
+    return None, area, pid
+
+
+def count_ids(values: list[int], ids: set[int]) -> int:
+    return sum(1 for x in values if int(x) in ids)
 
 
 def in_play_count(player: dict) -> int:
@@ -334,13 +412,43 @@ def encode_decision(
     encoded = encoder.encode(obs)
     opt_types = [int(x) for x in encoded.opt_type.tolist()]
     opt_cards = [int(x) for x in encoded.opt_card.tolist()]
+    opt_cards2 = [int(x) for x in encoded.opt_card2.tolist()]
     chosen = [i for i in action if 0 <= i < len(opt_types)]
     chosen_types = [opt_types[i] for i in chosen]
     chosen_cards = [opt_cards[i] for i in chosen]
+    chosen_cards2 = [opt_cards2[i] for i in chosen]
     types_set = set(opt_types)
     context = safe_int(sel.get("context"))
     my_bench = bench_cards(me)
     opp_bench = bench_cards(opp)
+    options = sel.get("option") or []
+    first_chosen_option = options[chosen[0]] if chosen and chosen[0] < len(options) else None
+    chosen_target, chosen_target_area, chosen_target_owner = target_pokemon_from_option(cur, first_chosen_option)
+    target_hp, target_max_hp, target_damage = pokemon_hp(chosen_target)
+    target_id = safe_int((chosen_target or {}).get("id"))
+    my_board_ids = [active_card(me), *my_bench]
+    damage_counter_context = int(context in DAMAGE_COUNTER_CONTEXTS)
+    drakloak_ability_available = any(
+        typ == ACTION_TYPES["ability"] and card == DRAKLOAK
+        for typ, card in zip(opt_types, opt_cards)
+    )
+    dragapult_evolve_available = any(
+        typ == ACTION_TYPES["evolve"] and (card == DRAGAPULT_EX or card2 == DRAGAPULT_EX)
+        for typ, card, card2 in zip(opt_types, opt_cards, opt_cards2)
+    )
+    drakloak_before_evolve_opportunity = int(drakloak_ability_available and dragapult_evolve_available)
+    drakloak_before_evolve_hit = int(
+        drakloak_before_evolve_opportunity
+        and bool(chosen_types)
+        and chosen_types[0] == ACTION_TYPES["ability"]
+        and chosen_cards[0] == DRAKLOAK
+    )
+    drakloak_before_evolve_miss = int(
+        drakloak_before_evolve_opportunity
+        and bool(chosen_types)
+        and chosen_types[0] == ACTION_TYPES["evolve"]
+        and (chosen_cards[0] == DRAGAPULT_EX or chosen_cards2[0] == DRAGAPULT_EX)
+    )
 
     row = {
         "game": game,
@@ -377,6 +485,22 @@ def encode_decision(
         "my_hand": len(me.get("hand") or []) if me.get("hand") is not None else safe_int(me.get("handCount")),
         "opp_hand": safe_int(opp.get("handCount")),
         "available_type_counts": option_counts(opt_types),
+        "chosen_target_id": target_id,
+        "chosen_target_name": card_name(target_id),
+        "chosen_target_area": chosen_target_area,
+        "chosen_target_owner": chosen_target_owner,
+        "chosen_target_hp": target_hp,
+        "chosen_target_max_hp": target_max_hp,
+        "chosen_target_damage": target_damage,
+        "chosen_target_remaining_hp": target_hp,
+        "damage_counter_context": damage_counter_context,
+        "damage_counter_to_small_ko": int(damage_counter_context and 0 < target_hp <= 60),
+        "damage_counter_sets_up_200": int(damage_counter_context and 200 < target_hp <= 260),
+        "dragapult_line_count": count_ids(my_board_ids, DRAGAPULT_LINE),
+        "dusknoir_line_count": count_ids(my_board_ids, DUSKNOIR_LINE),
+        "drakloak_before_evolve_opportunity": drakloak_before_evolve_opportunity,
+        "drakloak_before_evolve_hit": drakloak_before_evolve_hit,
+        "drakloak_before_evolve_miss": drakloak_before_evolve_miss,
     }
     for label in ("play", "attach", "evolve", "ability", "retreat", "attack"):
         cards = cards_by_type(opt_types, opt_cards, ACTION_TYPES[label])
@@ -558,6 +682,14 @@ def empty_summary() -> Counter:
         "end_chosen": 0,
         "early_end": 0,
         "short_optional_multi": 0,
+        "damage_counter_context": 0,
+        "damage_counter_to_small_ko": 0,
+        "damage_counter_sets_up_200": 0,
+        "dragapult_line_count_sum": 0,
+        "dusknoir_line_count_sum": 0,
+        "drakloak_before_evolve_opportunity": 0,
+        "drakloak_before_evolve_hit": 0,
+        "drakloak_before_evolve_miss": 0,
     })
 
 
@@ -572,6 +704,14 @@ def add_summary(row: dict, table: Counter) -> None:
     table["end_chosen"] += safe_int(row.get("end_chosen"))
     table["early_end"] += safe_int(row.get("early_end"))
     table["short_optional_multi"] += safe_int(row.get("short_optional_multi"))
+    table["damage_counter_context"] += safe_int(row.get("damage_counter_context"))
+    table["damage_counter_to_small_ko"] += safe_int(row.get("damage_counter_to_small_ko"))
+    table["damage_counter_sets_up_200"] += safe_int(row.get("damage_counter_sets_up_200"))
+    table["dragapult_line_count_sum"] += safe_int(row.get("dragapult_line_count"))
+    table["dusknoir_line_count_sum"] += safe_int(row.get("dusknoir_line_count"))
+    table["drakloak_before_evolve_opportunity"] += safe_int(row.get("drakloak_before_evolve_opportunity"))
+    table["drakloak_before_evolve_hit"] += safe_int(row.get("drakloak_before_evolve_hit"))
+    table["drakloak_before_evolve_miss"] += safe_int(row.get("drakloak_before_evolve_miss"))
 
 
 def finalize_summary(table_name: str, key: str, row: Counter, game_counts: Counter) -> dict:
@@ -619,6 +759,22 @@ def finalize_summary(table_name: str, key: str, row: Counter, game_counts: Count
         "early_end_rate": row["early_end"] / decisions,
         "short_optional_multi": row["short_optional_multi"],
         "short_optional_multi_rate": row["short_optional_multi"] / decisions,
+        "damage_counter_context": row["damage_counter_context"],
+        "damage_counter_to_small_ko": row["damage_counter_to_small_ko"],
+        "damage_counter_to_small_ko_rate": row["damage_counter_to_small_ko"] / max(row["damage_counter_context"], 1),
+        "damage_counter_sets_up_200": row["damage_counter_sets_up_200"],
+        "damage_counter_sets_up_200_rate": row["damage_counter_sets_up_200"] / max(row["damage_counter_context"], 1),
+        "avg_dragapult_line_count": row["dragapult_line_count_sum"] / decisions,
+        "avg_dusknoir_line_count": row["dusknoir_line_count_sum"] / decisions,
+        "drakloak_before_evolve_opportunity": row["drakloak_before_evolve_opportunity"],
+        "drakloak_before_evolve_hit": row["drakloak_before_evolve_hit"],
+        "drakloak_before_evolve_rate": (
+            row["drakloak_before_evolve_hit"] / max(row["drakloak_before_evolve_opportunity"], 1)
+        ),
+        "drakloak_before_evolve_miss": row["drakloak_before_evolve_miss"],
+        "drakloak_before_evolve_miss_rate": (
+            row["drakloak_before_evolve_miss"] / max(row["drakloak_before_evolve_opportunity"], 1)
+        ),
     }
 
 

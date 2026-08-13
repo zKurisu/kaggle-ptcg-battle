@@ -282,6 +282,9 @@ def train_cmd(row: dict, args: argparse.Namespace, checkpoint_path: str) -> str:
         "--loss-weight", str(args.loss_weight),
         "--draw-weight", str(args.draw_weight),
         "--multi-select-weight", str(args.multi_select_weight),
+        "--multi-select-sequence-weight", str(args.multi_select_sequence_weight),
+        "--raw-policy-loss-weight", str(args.raw_policy_loss_weight),
+        "--best-metric", args.best_metric,
         "--checkpoint-every", str(args.checkpoint_every),
         "--save", checkpoint_path,
     ]
@@ -293,6 +296,8 @@ def train_cmd(row: dict, args: argparse.Namespace, checkpoint_path: str) -> str:
         cmd.extend(["--state-feat-dim", str(args.state_feat_dim)])
     if args.opt_feat_dim:
         cmd.extend(["--opt-feat-dim", str(args.opt_feat_dim)])
+    if args.state_token_feat_dim:
+        cmd.extend(["--state-token-feat-dim", str(args.state_token_feat_dim)])
     if args.history_k:
         cmd.extend(["--history-k", str(args.history_k)])
     if args.opp_history_k:
@@ -318,6 +323,8 @@ def train_cmd(row: dict, args: argparse.Namespace, checkpoint_path: str) -> str:
         cmd.append("--legacy-state-pool")
     if args.include_empty:
         cmd.append("--include-empty")
+    if args.split_by_game:
+        cmd.append("--split-by-game")
     return " ".join(shlex.quote(x) for x in cmd)
 
 
@@ -448,6 +455,24 @@ def main() -> None:
     p.add_argument("--loss-weight", type=float, default=0.4)
     p.add_argument("--draw-weight", type=float, default=0.8)
     p.add_argument("--multi-select-weight", type=float, default=1.0)
+    p.add_argument("--multi-select-sequence-weight", type=float, default=1.0,
+                   help="emit ordered sequence NLL weight for multi-select rows")
+    p.add_argument("--raw-policy-loss-weight", type=float, default=0.0,
+                   help="emit extra unweighted action-sequence NLL")
+    p.add_argument("--best-metric",
+                   choices=[
+                       "loss",
+                       "policy",
+                       "policy_raw",
+                       "first_action",
+                       "first_action_raw",
+                       "set",
+                       "trajectory",
+                       "step_plan",
+                       "history_sensitivity",
+                   ],
+                   default="loss",
+                   help="emit validation metric used to save the best checkpoint")
     p.add_argument("--context-weight", action="append", default=[])
     p.add_argument("--type-weight", action="append", default=[])
     p.add_argument("--legacy-state-pool", action="store_true")
@@ -455,6 +480,8 @@ def main() -> None:
                    help="override state feature width in emitted train commands")
     p.add_argument("--opt-feat-dim", type=int, default=0,
                    help="override per-option feature width in emitted train commands")
+    p.add_argument("--state-token-feat-dim", type=int, default=0,
+                   help="emit per board/hand token scalar feature width for cross-attn")
     p.add_argument("--history-k", type=int, default=0,
                    help="emit own-decision history length in train commands")
     p.add_argument("--opp-history-k", type=int, default=0,
@@ -472,6 +499,8 @@ def main() -> None:
     p.add_argument("--opponent-team-name", action="append", default=[],
                    help="append opponent team-name filters to emitted train commands")
     p.add_argument("--checkpoint-every", type=int, default=1)
+    p.add_argument("--split-by-game", action="store_true",
+                   help="emit --split-by-game in train commands")
     p.add_argument("--progress-every-files", type=int, default=10)
     p.add_argument("--print-top", type=int, default=20)
     p.add_argument("--out", default="logs/shadow_pool_manifest.csv")

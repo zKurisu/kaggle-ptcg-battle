@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-13 17:51 Asia/Shanghai.
+Last updated: 2026-08-13 18:35 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -84,6 +84,51 @@ Remote restore state at `2026-08-13 17:20`:
   `ptcg_rl/numpy_policy.py`, and `ptcg_rl/bc2/data.py`.
 - All GPU memory was free when checked after reset. Recheck `nvidia-smi` before
   launching training and increase batch/CUDA caps if A800 memory is idle.
+
+Active remote restore job started `2026-08-13 18:19`:
+
+- User restored August episode zips on ks under `/data/jie/episodes_raw`.
+  The files `2026-08-01` through `2026-08-12` were verified present and
+  full-sized. A v13 extraction/training recovery job is running from
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804`.
+- The `cg` engine was missing after the ks reset. It was restored by uploading
+  local `data/sample_submission/sample_submission/cg` to the remote repo root.
+  Remote smoke test succeeded with `from cg.api import all_card_data` and
+  `1267` cards.
+- Long-run script:
+  `ks:/tmp/run_restore_0812_dragapult_v13_20260813.sh`.
+- Main log:
+  `logs/restore_0812_dragapult_v13_20260813/runner.log`.
+- The script uses a symlink-only episode directory
+  `/tmp/ptcg_episodes_0801_0812_v13_20260813` so the v13 corpus is August-only
+  even if `/data/jie/episodes_raw` also contains July files.
+- Leaderboard snapshot used for the 0812-ish shadow RR recovery:
+  `logs/info_pull_20260813/leaderboard_full/pokemon-tcg-ai-battle-publicleaderboard-2026-08-13T09:36:23.csv`.
+  There was no saved true 2026-08-12 public leaderboard snapshot after the
+  reset, so this latest saved snapshot is the recovery source.
+- Corpus target:
+  `data/bc_corpus_banded_v13_0801_0812_state_token_20260813`.
+  Extraction command uses `--action-history-k 32 --log-history-k 128
+  --board-history-k 12 --board-history-feat-dim 32 --workers 12`.
+- Dragapult v13 manifest:
+  `logs/restore_0812_dragapult_v13_20260813/dragapult_v13_train_manifest.csv`.
+  It contains four `cc2e995b5ad0` Dragapult jobs: cross-attn width 3
+  state-token, width 4 state-token, width 4 no-state-token control, and recent
+  `0805-0812` width 4 state-token.
+- 0812 shadow manifest target:
+  `logs/restore_0812_dragapult_v13_20260813/shadow_manifest_0812_v13_cross_w3.csv`.
+  It is built with `tools/build_shadow_pool.py` top 96 / top-per-archetype 8 /
+  max-per-deck-sig 3 and emits v13 train args including state-token dim 24,
+  raw-policy loss, sequence loss, `--best-metric policy_raw`, and
+  `--split-by-game`.
+- Training runner logs after extraction/manifest build:
+  `logs/restore_0812_dragapult_v13_20260813/dragapult_train_runner.log` and
+  `logs/restore_0812_dragapult_v13_20260813/shadow_train_runner.log`.
+  Dragapult uses GPUs `0,1`; shadow uses GPUs `2,3` with two jobs per GPU.
+- At the time of this update, the rerun had passed the missing-`cg` failure and
+  was actively extracting 12 August zips with 12 workers. The old failed
+  `ModuleNotFoundError: cg` remains earlier in the appended runner log; check
+  the latest timestamped block, not only the first traceback.
 
 Was July data used by the lost jobs?
 

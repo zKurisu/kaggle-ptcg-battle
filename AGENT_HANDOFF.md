@@ -10234,3 +10234,28 @@ Update 2026-08-13 20:15 CST:
   `logs/eval_restore_0812_v13_20260813/dragapult_v13_vs_shadow81_g80.csv`.
   First phase is 4 Dragapult candidate RR, then it compares w4/no-state/recent
   against w3 over all 81 enriched shadow opponents.
+
+Update 2026-08-13 20:35 CST:
+
+- Dragapult v13 random g500 was checked in detail. All four candidate rows had
+  `timeouts=0`, so the gap to 100% is not an engine timeout or illegal-action
+  fallback issue.
+  Results:
+  `w3_state_token=0.978`, `w4_state_token=0.984`,
+  `w4_no_state_token=0.958`, `recent0805_w4_state_token=0.956`.
+- Interpretation: Dragapult random weakness is partly deck/style variance
+  because same-deck random can occasionally attack/prize-race if our setup
+  stalls, but `0.956-0.984` is still below the reliability expected from a
+  submit-ready specialist. Treat it as a real BC/setup-coherence problem.
+- A low-CPU trace job was started to inspect `w4_state_token` losses versus
+  same-deck random:
+  `logs/eval_restore_0812_v13_20260813/trace_random/drag_w4_vs_random_g800.*`.
+  It records win/loss decision summaries for attack/evolve/attach/play misses,
+  early end, and top policy choices.
+- Partial shadow random audit after 50 completed rows:
+  mean `0.871`, median `0.910`, min `0.470`, max `0.996`;
+  `>=0.97`: 13/50, `>=0.95`: 17/50, `>=0.90`: 27/50.
+  Current poor clusters are Dragapult, Crustle, several Ogerpon signatures, and
+  some Mega Lopunny/Marnie variants. Do not use raw 81-shadow manifest as a
+  trusted ladder proxy. Use the random audit with `tools/split_shadow_pools.py`
+  to create trusted/environment/debug pools after random finishes.

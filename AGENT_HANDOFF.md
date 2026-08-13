@@ -9776,3 +9776,33 @@ Immediate next steps:
      `--set-loss-weight 0.8 --set-loss-min-count 2 --set-loss-negative-weight 0.15
       --multi-select-sequence-weight 0.25`.
 5. Evaluate with the exact same Dragapult random and coverage RR used above.
+
+Update 2026-08-13 12:55 CST:
+
+- Local branch `dragapult-pipeline-v13` is committed at `2bd6c4a`
+  (`Add v13 state token BC pipeline`).
+- Code has been synced to ks workspace:
+  `/home/jie/Do/0_PTCG/workspace/ptcg_rl_git_v7_baseline_20260804`.
+- Remote smoke passed:
+  `NumpyPolicy` loaded a dummy cross-attn checkpoint with
+  `_state_token_feat_dim=24`.
+- Tiny v13 extraction smoke passed:
+  `state_token_feats` shape is `(37, 24)`, feature version is
+  `v13_state_token_multistream_history`.
+- Full v13 0801-0812 extraction is running on ks:
+  `data/bc_corpus_banded_v13_0801_0812_state_token_20260813`.
+  Logs:
+  `logs/dragapult_v13_pipeline_20260813/extract_v13_0801_0812.log`.
+- The original runner shell was accidentally killed while checking a false
+  Dragapult ID alarm; the extract worker process survived. A watcher was
+  started to continue automatically after extraction:
+  `/tmp/watch_and_train_dragapult_v13_20260813.sh`,
+  log `logs/dragapult_v13_pipeline_20260813/watcher.log`.
+- Important: Dragapult card IDs were rechecked by `cardId`, not list index:
+  `119 Dreepy`, `120 Drakloak`, `121 Dragapult ex`. The v13 constant
+  `{119, 120, 121}` is correct.
+- Watcher will train/evaluate three AB models after extraction:
+  `cross_w3_state_token`, `cross_w4_state_token`, and
+  `cross_w4_no_state_token`, all against
+  `cc2e995b5ad0_dragapult_kh0a.csv`, with the old all900 w4 Dragapult model
+  as baseline.

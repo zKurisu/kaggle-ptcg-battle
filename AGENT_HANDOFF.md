@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-13 17:20 Asia/Shanghai.
+Last updated: 2026-08-13 17:51 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -46,8 +46,10 @@ Critical implications:
   using `scp`/`rsync` to restore `ks:/home/jie/Do/0_PTCG/workspace/episodes_raw`
   after a server rebuild. Avoid depending on remote Kaggle downloads as the
   only copy.
-- Use only the `jie` Kaggle account for downloads/API calls. Do not use the
-  `by` Kaggle API.
+- Use only the `jie` Kaggle account for downloads/API calls. The local machine
+  now defaults to `jie`, so plain `kaggle ...` is enough locally. Do not use the
+  `by` Kaggle API. On ks, verify the active Kaggle config before running any
+  API command.
 
 Local raw episode cache after recovery:
 
@@ -64,6 +66,10 @@ Local raw episode cache after recovery:
 - Uploading 20+ large zip files from local to ks was too slow. The preferred
   short-term restore path is to run `kaggle datasets download` directly on ks
   under `/data/jie/episodes_raw`, using only the jie Kaggle config.
+- User will handle slow episode zip downloads manually because Kaggle has
+  throttled large downloads. Do not start more bulk episode downloads unless
+  asked. It is still useful to pull small Kaggle metadata such as submissions,
+  leaderboard CSVs, topics, and selected replay JSONs.
 
 Remote restore state at `2026-08-13 17:20`:
 
@@ -117,6 +123,63 @@ two 2026-08-13 submissions are repeats of 2026-08-12 packages:
   as 806.8 on 2026-08-13.
 - `submission_high900win_old_marnie_b8f_20260812`: 953.4 on 2026-08-12,
   repeated as 890.1 on 2026-08-13.
+
+Small info pull saved locally:
+
+- Summary:
+  `logs/info_pull_20260813/info_pull_summary.md`.
+- Submissions snapshot:
+  `logs/info_pull_20260813/jie_submissions_20260813.csv`.
+- Leaderboard:
+  `logs/info_pull_20260813/leaderboard_top200_20260813.csv` and full
+  `logs/info_pull_20260813/leaderboard_full/pokemon-tcg-ai-battle-publicleaderboard-2026-08-13T09:36:23.csv`.
+- Topic index:
+  `logs/info_pull_20260813/topics_time_filtered_20260813.md`.
+- Topic details:
+  `logs/info_pull_20260813/topic_*.json`.
+- Lightweight episode metadata:
+  `logs/info_pull_20260813/episodes_meta/*.json`.
+- Selected replay pulls for latest repeats:
+  `logs/info_pull_20260813/replay_55475933_marnie_rows.csv`,
+  `logs/info_pull_20260813/replay_55475933_marnie_by_deck.csv`,
+  `logs/info_pull_20260813/replay_55478159_alakazam_rows.csv`,
+  `logs/info_pull_20260813/replay_55478159_alakazam_by_deck.csv`.
+- Opponent deck CSVs from those replay pulls:
+  `logs/info_pull_20260813/opponent_decks/`.
+
+Current leaderboard snapshot at `2026-08-13T09:36:23`:
+
+- full rows: 6791 teams.
+- score >= 1200: 4 teams.
+- score >= 1100: 22 teams.
+- score >= 1000: 108 teams.
+- score >= 900: 394 teams.
+- score >= 800: 986 teams.
+- score >= 700: 2180 teams.
+- score >= 600: 3688 teams.
+- top 1200+ teams: Luca, flg, Dominic Peel & Rory Neville, ANDPAD kaggler team.
+
+Latest replay pull results:
+
+- `55475933` Marnie high900 repeat: analyzed 25 non-mirror-identifiable games,
+  `16-9`, WR `0.640`. Same-deck mirrors were skipped when deck matching could
+  not identify our side. Chronological losses include Ogerpon `5899c772bace`,
+  Ogerpon `697a82e582d5`, Crustle `96d572411df0`, and unknown/new signatures
+  `ae759424cfd9`, `22aed7613909`, `90abbfb0eee0`, `56ff24f629ed`,
+  `82a7789211b6`, `f2c3693911b6`.
+- `55478159` Alakazam lossopt repeat: analyzed 17 non-mirror-identifiable
+  games, `13-4`, WR `0.765`. Losses were to unknown/new signatures
+  `a92ef7135802`, `2878a7405032`, and Marnie b8f twice.
+
+Topic timing rule:
+
+- Current-meta claims should use topics on or after `2026-08-02`, preferably
+  `2026-08-08` or later.
+- Late-July topics are method/background unless validated against 0809+ episode
+  or replay data.
+- June and early-July topics are durable only for official rules, engine
+  behavior, API limits, and broad method lessons. Do not treat them as current
+  meta evidence.
 
 This strongly supports the user's observation that public score is unstable and
 early climb matters. A package that can sit near 950 can still fail early when

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-14 11:29 Asia/Shanghai.
+Last updated: 2026-08-14 19:52 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -238,6 +238,55 @@ Handoff recoverability:
 Do not restart the Marnie history-summary repair until July `2026-07-01..31`
 and August `2026-08-01..11` data have been restored, because that run depends
 on the all-date v12 history corpus. Record explicitly: as of this note, the
+
+## Update: v14 HQ Round 2026-08-14
+
+Goal for the current session:
+
+- Rebuild a higher-quality sequence corpus and retrain key deck-specific
+  sequence policies without touching the locked BC baseline stack.
+- Keep GPU usage high while the ks workspace is live again.
+
+Current remote orchestrator:
+
+- Script: `ks:/tmp/start_next_v14_hq_round.sh`
+- Main log: `logs/v14_next_hq_20260814/orchestrator.nohup.log`
+
+What is running now on `ks`:
+
+- Full sequence extraction:
+  `python3 tools/v14_extract_sequences.py /data/jie/episodes_raw --out data/seq_corpus_v14_0801_0813_hq --lb-csv logs/info_pull_20260813/leaderboard_full/pokemon-tcg-ai-battle-publicleaderboard-2026-08-13T09:36:23.csv --workers 10 --future-horizon 16 --min-rows 100`
+- Immediate high-quality DCA-focused training on existing corpus:
+  - Dragapult `cc2e995b5ad0`
+  - Alakazam `7f9a538936e3`
+  - Mega Lopunny `f1445356c3a7`
+  - Mega Lucario `43d6d8b0fce9`
+  - Marnie `b8f251a476e7` is queued and will start when a GPU frees up
+
+Current immediate-train settings:
+
+- Corpus: `data/seq_corpus_v14_dca_0808_0813`
+- Width/layers/heads: `512 / 5 / 8`
+- Batch size: `1024`
+- Epochs: `8`
+- Loss weights emphasize high-quality sequence signals:
+  `win=1.8 loss=0.20 draw=0.8 plan=0.60 multi_target=3.0 damage_counter=4.0`
+
+Follow-up phase already scripted:
+
+- Once extraction and the immediate focus train both finish, the orchestrator
+  will build:
+  `logs/v14_next_hq_20260814/train_manifest_full0801_0813_high900_top2.csv`
+- Then it will launch full-date training on
+  `data/seq_corpus_v14_0801_0813_hq` with the same high-quality settings.
+
+Important note:
+
+- The current extraction scans every zip in `/data/jie/episodes_raw`, which at
+  the moment includes `2026-07-24` and `2026-07-25` in addition to
+  `2026-08-01..2026-08-13`.
+- If strict `0801..0813` only is required later, narrow the input set before
+  re-running extraction.
 post-reset Marnie history repair has not been retrained.
 
 ## Submission Stability Analysis 2026-08-13

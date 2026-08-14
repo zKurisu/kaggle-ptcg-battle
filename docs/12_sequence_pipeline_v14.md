@@ -18,6 +18,7 @@ causal prefix of decisions. The model must predict:
 
 - current action among legal options,
 - multi-select option set,
+- multi-select count and ordered selected option sequence,
 - current action type,
 - future behavior over the next horizon,
 - game outcome.
@@ -90,9 +91,18 @@ Check:
 
 - game length distribution,
 - action type distribution,
+- multi-select count distribution,
 - opponent archetype coverage,
 - top deck signatures,
 - future-plan means.
+
+Run the integrity checker before launching long jobs:
+
+```bash
+python3 tools/v14_check_sequence_integrity.py \
+  --corpus data/seq_corpus_v14_0801_0812 \
+  --samples 20000
+```
 
 ## Train One Model
 
@@ -115,6 +125,13 @@ CUDA_VISIBLE_DEVICES=0 python3 -u tools/v14_train_sequence_policy.py \
 
 For A800 with idle memory, increase `--batch-size` to `512` or `768` after
 watching `nvidia-smi`.
+
+Training progress is diagnostic by default. Each progress line should include
+loss parts, top1/type/count accuracy, count MAE, predicted/target selection
+count, set-F1, ordered-selection accuracy, outcome accuracy, samples/s, ETA,
+and CUDA allocated/reserved memory. If `pred_k` collapses away from `target_k`,
+`setF1` stays flat, or `orderAcc` does not move, stop the run and inspect the
+pipeline before waiting for RR.
 
 ## Population
 
@@ -148,6 +165,10 @@ python3 -u tools/v14_train_population.py \
   --amp \
   2>&1 | tee logs/v14_sequence/pop_top2.runner.log
 ```
+
+The population runner prints each running job plus the latest training progress
+line from its log on every poll. A status line that only says a job is running
+without metric movement is not sufficient for long overnight runs.
 
 ## Probe Sequence Use
 
@@ -195,3 +216,18 @@ Round robin uses the same `--entry name=checkpoint.pt:deck.csv` format.
 but v14 submission has not been validated for Kaggle runtime/size. Treat v14
 as a local validation pipeline first. If v14 clearly improves random/RR and
 probe metrics prove sequence use, then optimize/export for submission.
+
+Compatibility notes:
+
+- `TorchSequencePolicy.select()` accepts the legacy `temperature` and
+  `update_history` arguments used by old eval/submission paths.
+- `TorchSequencePolicy.select_mcts()` is only a compatibility shim; v14 does
+  not train a value head for MCTS yet, so this shim returns the greedy sequence
+  policy instead of falling back to random actions.
+- `tools/eval_round_robin.py` parallel workers must use
+  `ptcg_rl.policy_loader.load_policy()` so `.pt` checkpoints are evaluated
+  correctly with `--workers > 1`.
+- Logit masks must stay fp16-safe under AMP. Do not change `NEG_INF` back to
+  `-1e9`.
+- Ordered multi-select scoring must not materialize `[B,T,K,N,W]`; population
+  training relies on the low-memory dot-product scorer.

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-14 09:55 Asia/Shanghai.
+Last updated: 2026-08-14 11:29 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -300,7 +300,8 @@ Design:
   action event, action label, action type label, outcome, and a future-plan
   label over the next horizon.
 - Model is `SequencePolicyNet`, a causal Transformer over decision tokens.
-  It trains action, multi-select, action-type, future-plan, and outcome heads.
+  It trains action, ordered multi-select, selection-count, action-type,
+  future-plan, and outcome heads.
 - The future-plan/outcome heads are deliberately part of the objective so the
   representation has pressure to encode long-game behavior.
 
@@ -310,6 +311,66 @@ Important implementation note:
   causal mask plus key-padding mask caused all-masked attention rows. This was
   fixed by not passing `src_key_padding_mask` to the sequence encoder; padded
   input/output tokens are explicitly zeroed and loss uses `step_mask`.
+- The 2026-08-14 audit found and fixed three hard defects that could make v14
+  look ineffective even if training ran:
+  1. Initial multi-select inference had no count head, so live play defaulted
+     to one option even when labels selected multiple options.
+  2. Initial multi-select training had set BCE but no ordered target; v14 now
+     stores `target_order` and trains per-position option logits.
+  3. `TorchSequencePolicy.select()` initially did not accept legacy
+     `temperature` kwargs from `main.py`, and `select_mcts()` did not exist.
+     Both are now compatible; `select_mcts()` is only a greedy shim, not real
+     MCTS.
+- The same audit found an RR infrastructure bug: `tools/eval_round_robin.py`
+  parallel workers were still trying to call an undefined `NumpyPolicy.load`.
+  They now use `ptcg_rl.policy_loader.load_policy()`, which is required for
+  `.pt` v14 checkpoints and fixes `--workers > 1`.
+- New audit file: `docs/13_v14_sequence_audit_checklist.md`.
+- New integrity checker: `tools/v14_check_sequence_integrity.py`.
+- Training telemetry was expanded because user explicitly requested progress
+  and in-training diagnostics by default. `tools/v14_train_sequence_policy.py`
+  now prints batch totals, seen samples, ETA, CUDA allocated/reserved memory,
+  loss parts, top1/type/count accuracy, count MAE, predicted/target selection
+  count, set-F1, ordered-selection accuracy, and outcome accuracy. Treat flat
+  `setF1`, bad `pred_k/target_k`, or stagnant `orderAcc` as early stop signals.
+- `tools/v14_train_population.py` now passes loss-head weights through to
+  single-model training and prints the latest metric line from each running
+  job's log on every poll.
+- `tools/v14_audit_sequence_corpus.py` and
+  `tools/v14_check_sequence_integrity.py` now support progress output; long
+  audit commands should use `--max-rows` or visible progress so they do not
+  silently block GPU training.
+- Two additional hard bugs were found only after CUDA/AMP population launch:
+  1. Masking logits with `-1e9` overflows fp16 under AMP. `NEG_INF` is now
+     fp16-safe (`-1e4`).
+  2. The initial ordered multi-select scorer expanded `[B,T,K,N,W]` activations
+     and OOMed with two jobs on one A800. It now uses a low-memory
+     position-conditioned dot-product scorer and keeps only `[B,T,K,N]` order
+     logits.
+
+Active v14 remote training as of 2026-08-14 11:29 Asia/Shanghai:
+
+- Running script:
+  `ks:/tmp/run_v14_population_parallel3_20260814.sh`.
+- Main log:
+  `logs/v14_sequence_0808_0812/pop_parallel3.nohup.log`.
+- Runner log:
+  `logs/v14_sequence_0808_0812/train_pop_top2_allbands_parallel3.runner.log`.
+- Checkpoints:
+  `checkpoints/v14_sequence_0808_0812/pop_top2_allbands_parallel3`.
+- Per-job logs:
+  `logs/v14_sequence_0808_0812/pop_top2_allbands_parallel3/*.log`.
+- Config: v14 sequence corpus `data/seq_corpus_v14_0808_0812`, manifest
+  `logs/v14_sequence_0808_0812/train_manifest_top2_allbands.csv`, 23 jobs,
+  8 running slots (`jobs-per-gpu=2`), `seq_len=32`, `width=384`, `layers=4`,
+  `heads=6`, `batch_size=256`, `epochs=8`, AMP on.
+- First healthy poll showed all 8 jobs running with no failures and memory
+  around 25-27 GiB per GPU. Telemetry lines include `pred_k/target_k`,
+  `setF1`, `orderAcc`, `outAcc`, ETA, and CUDA memory.
+- Ignore failed attempts under:
+  `pop_top2_allbands_parallel` and `pop_top2_allbands_parallel2`.
+  They failed before useful training because of the fp16 mask and high-memory
+  order-head bugs.
 
 Local smoke validation:
 

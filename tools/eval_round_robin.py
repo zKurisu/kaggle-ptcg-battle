@@ -245,7 +245,7 @@ def entry_payload(e: Entry) -> tuple[str, str, str, str, bool]:
 def entry_from_payload(payload: tuple[str, str, str, str, bool]) -> Entry:
     name, policy_path, deck_path, rules, mcts = payload
     deck = read_deck(deck_path)
-    policy = None if policy_path == "random" else NumpyPolicy.load(policy_path)
+    policy = None if policy_path == "random" else load_policy(policy_path, device="cpu")
     planner = make_rule_planner(rules, deck)
     return Entry(name, policy_path, deck_path, policy, deck, rules, bool(mcts), planner)
 

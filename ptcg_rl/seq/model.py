@@ -16,16 +16,19 @@ from ptcg_rl.encoder import (
     STATE_FEAT_DIM,
     STATE_TOKEN_FEAT_DIM,
 )
-from ptcg_rl.seq.constants import FUTURE_PLAN_DIM, LEDGER_FEAT_DIM, N_ACTION_TYPES
+from ptcg_rl.seq.constants import FUTURE_PLAN_DIM, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, N_ACTION_TYPES
 from ptcg_rl.seq.data import SequenceBatch
 
-NEG_INF = -1e9
+# Keep this fp16-safe. ``masked_fill`` runs under AMP during training, and
+# values like -1e9 cannot be represented in float16.
+NEG_INF = -1e4
 
 
 @dataclass
 class SequenceLossConfig:
     action_weight: float = 1.0
     multi_weight: float = 0.15
+    count_weight: float = 0.20
     plan_weight: float = 0.35
     outcome_weight: float = 0.10
     type_weight: float = 0.10
@@ -150,6 +153,7 @@ class SequencePolicyNet(nn.Module):
 
         self.option_query = nn.Linear(width, width)
         self.option_key = nn.Linear(width, width)
+        self.order_pos_emb = nn.Embedding(MAX_SELECT_COUNT, width)
         self.action_score = nn.Sequential(
             nn.Linear(width * 3, width),
             nn.GELU(),
@@ -170,6 +174,11 @@ class SequencePolicyNet(nn.Module):
             nn.Linear(width, width // 2),
             nn.GELU(),
             nn.Linear(width // 2, N_OPT_TYPES + 1),
+        )
+        self.count_head = nn.Sequential(
+            nn.Linear(width, width // 2),
+            nn.GELU(),
+            nn.Linear(width // 2, MAX_SELECT_COUNT + 1),
         )
         self._init_weights()
 
@@ -231,15 +240,29 @@ class SequencePolicyNet(nn.Module):
         seq = self.sequence_encoder(decision, mask=causal)
         seq = self.sequence_norm(seq) * step_mask.unsqueeze(-1)
 
-        q = self.option_query(seq).unsqueeze(2)
+        q_base = self.option_query(seq)
+        q = q_base.unsqueeze(2)
         k = self.option_key(opt_emb)
         scores = self.action_score(torch.cat([q.expand_as(k), k, q.expand_as(k) * k], dim=-1)).squeeze(-1)
         scores = scores.masked_fill(opt_mask <= 0, NEG_INF)
+        order_queries = q_base.unsqueeze(2) + self.order_pos_emb(
+            torch.arange(MAX_SELECT_COUNT, device=seq.device)
+        ).view(1, 1, MAX_SELECT_COUNT, self.width)
+        # Do not reuse ``action_score`` here. Expanding [B,T,K,N,W] and
+        # concatenating three copies is the largest activation in the model and
+        # OOMs under population training. The dot-product scorer keeps only
+        # [B,T,K,N] order logits while still conditioning on selection position.
+        order_scores = torch.einsum("btkd,btnd->btkn", order_queries, k)
+        order_scores = order_scores * (float(self.width) ** -0.5)
+        order_scores = order_scores + scores.unsqueeze(2)
+        order_scores = order_scores.masked_fill(opt_mask.unsqueeze(2) <= 0, NEG_INF)
         return {
             "action_logits": scores,
+            "order_logits": order_scores,
             "plan_logits": self.plan_head(seq),
             "outcome_logits": self.outcome_head(seq).squeeze(-1),
             "type_logits": self.type_head(seq),
+            "count_logits": self.count_head(seq),
         }
 
     def _state_tokens(
@@ -310,6 +333,22 @@ def sequence_policy_loss(
     else:
         action_loss = outputs["action_logits"].sum() * 0.0
 
+    order_logits = outputs.get("order_logits")
+    if order_logits is not None:
+        valid_order = (batch.target_order >= 0) & (step_mask.unsqueeze(-1) > 0)
+        if bool(valid_order.any()):
+            order_loss_raw = F.cross_entropy(
+                order_logits[valid_order],
+                batch.target_order.long()[valid_order],
+                reduction="none",
+            )
+            order_weights = batch.sample_weight.float().unsqueeze(-1).expand_as(batch.target_order.float())[valid_order]
+            order_loss = (order_loss_raw * order_weights).sum() / order_weights.sum().clamp(min=1.0)
+        else:
+            order_loss = outputs["action_logits"].sum() * 0.0
+    else:
+        order_loss = outputs["action_logits"].sum() * 0.0
+
     opt_mask = batch.option_mask.float() * step_mask.unsqueeze(-1)
     multi_loss_raw = F.binary_cross_entropy_with_logits(
         outputs["action_logits"].clamp(min=-30.0, max=30.0),
@@ -317,6 +356,14 @@ def sequence_policy_loss(
         reduction="none",
     )
     multi_loss = (multi_loss_raw * opt_mask * batch.sample_weight.float().unsqueeze(-1)).sum() / opt_mask.sum().clamp(min=1.0)
+
+    target_count = batch.target_multi.float().sum(dim=-1).long().clamp(0, MAX_SELECT_COUNT)
+    count_loss_raw = F.cross_entropy(
+        outputs["count_logits"].reshape(-1, outputs["count_logits"].shape[-1]),
+        target_count.reshape(-1),
+        reduction="none",
+    ).reshape_as(step_mask)
+    count_loss = (count_loss_raw * weights).sum() / weights.sum().clamp(min=1.0)
 
     plan_loss_raw = F.binary_cross_entropy_with_logits(
         outputs["plan_logits"],
@@ -337,7 +384,9 @@ def sequence_policy_loss(
 
     loss = (
         cfg.action_weight * action_loss
+        + 0.35 * cfg.action_weight * order_loss
         + cfg.multi_weight * multi_loss
+        + cfg.count_weight * count_loss
         + cfg.plan_weight * plan_loss
         + cfg.outcome_weight * outcome_loss
         + cfg.type_weight * type_loss
@@ -345,7 +394,9 @@ def sequence_policy_loss(
     parts = {
         "loss": float(loss.detach().cpu()),
         "action": float(action_loss.detach().cpu()),
+        "order": float(order_loss.detach().cpu()),
         "multi": float(multi_loss.detach().cpu()),
+        "count": float(count_loss.detach().cpu()),
         "plan": float(plan_loss.detach().cpu()),
         "outcome": float(outcome_loss.detach().cpu()),
         "type": float(type_loss.detach().cpu()),
@@ -357,12 +408,68 @@ def sequence_policy_loss(
 def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) -> dict[str, float]:
     valid = (batch.target_first >= 0) & (batch.step_mask > 0)
     if not bool(valid.any()):
-        return {"top1": 0.0, "type_acc": 0.0, "n": 0.0}
+        return {"top1": 0.0, "type_acc": 0.0, "count_acc": 0.0, "n": 0.0}
     pred = outputs["action_logits"].argmax(dim=-1)
     top1 = (pred[valid] == batch.target_first[valid]).float().mean().item()
     type_pred = outputs["type_logits"].argmax(dim=-1)
     type_acc = (type_pred[valid] == batch.target_type[valid]).float().mean().item()
-    return {"top1": float(top1), "type_acc": float(type_acc), "n": float(valid.sum().item())}
+    count_target = batch.target_multi.float().sum(dim=-1).long().clamp(0, MAX_SELECT_COUNT)
+    count_pred = outputs["count_logits"].argmax(dim=-1)
+    count_acc = (count_pred[valid] == count_target[valid]).float().mean().item()
+    count_mae = (count_pred[valid].float() - count_target[valid].float()).abs().mean().item()
+
+    opt_mask = batch.option_mask.float()
+    logits = outputs["action_logits"].masked_fill(opt_mask <= 0, NEG_INF)
+    max_k = min(MAX_SELECT_COUNT, logits.shape[-1])
+    if max_k > 0:
+        top_idx = logits.topk(k=max_k, dim=-1).indices
+        pred_k = torch.minimum(
+            torch.maximum(count_pred, batch.min_count.long()),
+            torch.minimum(batch.max_count.long(), opt_mask.sum(dim=-1).long()).clamp(max=MAX_SELECT_COUNT),
+        ).clamp(min=0, max=max_k)
+        rank = torch.arange(max_k, device=logits.device).view(1, 1, max_k)
+        pred_multi = torch.zeros_like(batch.target_multi.float())
+        pred_multi.scatter_(-1, top_idx, (rank < pred_k.unsqueeze(-1)).float())
+        pred_multi = pred_multi * opt_mask
+        target_multi = batch.target_multi.float() * opt_mask
+        tp = (pred_multi * target_multi).sum(dim=-1)
+        pp = pred_multi.sum(dim=-1)
+        gp = target_multi.sum(dim=-1)
+        precision = (tp[valid] / pp[valid].clamp(min=1.0)).mean().item()
+        recall = (tp[valid] / gp[valid].clamp(min=1.0)).mean().item()
+        f1 = (2.0 * tp[valid] / (pp[valid] + gp[valid]).clamp(min=1.0)).mean().item()
+    else:
+        precision = recall = f1 = 0.0
+
+    order_logits = outputs.get("order_logits")
+    order_acc = 0.0
+    order_n = 0.0
+    if order_logits is not None:
+        order_valid = (batch.target_order >= 0) & (batch.step_mask.unsqueeze(-1) > 0)
+        if bool(order_valid.any()):
+            order_pred = order_logits.argmax(dim=-1)
+            order_acc = (order_pred[order_valid] == batch.target_order.long()[order_valid]).float().mean().item()
+            order_n = float(order_valid.sum().item())
+
+    outcome_pred = (torch.sigmoid(outputs["outcome_logits"]) >= 0.5).float()
+    step_valid = batch.step_mask > 0
+    outcome_acc = (outcome_pred[step_valid] == batch.outcome.float()[step_valid]).float().mean().item() if bool(step_valid.any()) else 0.0
+
+    return {
+        "top1": float(top1),
+        "type_acc": float(type_acc),
+        "count_acc": float(count_acc),
+        "count_mae": float(count_mae),
+        "target_k": float(count_target[valid].float().mean().item()),
+        "pred_k": float(count_pred[valid].float().mean().item()),
+        "set_precision": float(precision),
+        "set_recall": float(recall),
+        "set_f1": float(f1),
+        "order_acc": float(order_acc),
+        "order_n": float(order_n),
+        "outcome_acc": float(outcome_acc),
+        "n": float(valid.sum().item()),
+    }
 
 
 def _fit_last_dim(x: torch.Tensor, dim: int) -> torch.Tensor:

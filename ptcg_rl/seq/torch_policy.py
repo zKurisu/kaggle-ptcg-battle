@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from ptcg_rl.encoder import FastEncoder, OPT_FEAT_DIM, STATE_FEAT_DIM, STATE_TOKEN_FEAT_DIM
-from ptcg_rl.seq.constants import FUTURE_PLAN_DIM, LEDGER_FEAT_DIM
+from ptcg_rl.seq.constants import FUTURE_PLAN_DIM, LEDGER_FEAT_DIM, MAX_SELECT_COUNT
 from ptcg_rl.seq.data import SequenceBatch
 from ptcg_rl.seq.features import SequenceLedger
 from ptcg_rl.seq.model import SequencePolicyNet
@@ -33,7 +33,15 @@ class TorchSequencePolicy:
         self.ledger.reset()
         self.buffer.clear()
 
-    def select(self, obs_dict: dict, *, greedy: bool = True, update_history: bool = True) -> list[int]:
+    def select(
+        self,
+        obs_dict: dict,
+        *,
+        greedy: bool = True,
+        temperature: float = 1.0,
+        update_history: bool = True,
+        **_: object,
+    ) -> list[int]:
         encoded = self.encoder.encode(obs_dict)
         row = self._row_from_encoded(encoded)
         rows = (self.buffer + [row])[-self.seq_len:]
@@ -41,6 +49,15 @@ class TorchSequencePolicy:
         with torch.no_grad():
             out = self.model(batch)
             logits = out["action_logits"][0, -1].detach().cpu().numpy()
+            order_logits = out.get("order_logits")
+            order_scores = (
+                order_logits[0, -1].detach().cpu().numpy()
+                if order_logits is not None else None
+            )
+            count_logits = out.get("count_logits")
+            pred_count = 1
+            if count_logits is not None:
+                pred_count = int(count_logits[0, -1].detach().cpu().argmax().item())
         n = len(encoded.opt_type)
         sel = obs_dict.get("select") or {}
         mn = int(sel.get("minCount", encoded.min_count))
@@ -48,13 +65,32 @@ class TorchSequencePolicy:
         if n == 0 or mx <= 0:
             picks: list[int] = []
         elif greedy:
-            order = list(np.argsort(-logits[:n]))
-            k = max(mn, min(mx, 1))
-            picks = order[:k]
+            k = max(mn, min(mx, pred_count))
+            if k <= 0 and mn == 0:
+                k = 0
+            elif k <= 0:
+                k = mn
+            picks = []
+            if order_scores is not None:
+                for pos in range(min(k, order_scores.shape[0])):
+                    for idx in np.argsort(-order_scores[pos, :n]):
+                        idx = int(idx)
+                        if idx not in picks:
+                            picks.append(idx)
+                            break
+            if len(picks) < k:
+                for idx in np.argsort(-logits[:n]):
+                    idx = int(idx)
+                    if idx not in picks:
+                        picks.append(idx)
+                    if len(picks) >= k:
+                        break
         else:
-            probs = np.exp(logits[:n] - np.max(logits[:n]))
+            temp = max(float(temperature), 1e-3)
+            scaled = logits[:n] / temp
+            probs = np.exp(scaled - np.max(scaled))
             probs = probs / max(float(probs.sum()), 1e-9)
-            k = max(mn, min(mx, 1))
+            k = max(mn, min(mx, pred_count))
             picks = list(np.random.choice(np.arange(n), size=k, replace=False, p=probs))
         picks = [int(x) for x in picks if 0 <= int(x) < n]
         picks = list(dict.fromkeys(picks))
@@ -69,6 +105,24 @@ class TorchSequencePolicy:
     def remember_decision(self, obs_dict: dict, picks: list[int]) -> None:
         encoded = self.encoder.encode(obs_dict)
         self.remember_encoded(encoded, picks, self._row_from_encoded(encoded))
+
+    def select_mcts(
+        self,
+        obs_dict: dict,
+        deck: list[int] | None = None,
+        *,
+        sims: int = 48,
+        time_budget: float = 4.0,
+        update_history: bool = True,
+        **kwargs: object,
+    ) -> list[int]:
+        """Compatibility shim for legacy eval/main MCTS switches.
+
+        v14 checkpoints do not train a value head suitable for tree search.
+        If an old script accidentally enables MCTS, using the sequence policy is
+        safer than raising and silently falling back to random/legal actions.
+        """
+        return self.select(obs_dict, greedy=True, update_history=update_history, **kwargs)
 
     def remember_encoded(self, encoded, picks: list[int], row: dict[str, np.ndarray | int | float] | None = None) -> None:
         if row is None:
@@ -148,6 +202,7 @@ class TorchSequencePolicy:
             option_mask[0, i, :n] = 1.0
             step_mask[0, i] = 1.0
         dummy_first = np.full((1, seq_len), -1, dtype=np.int64)
+        dummy_order = np.full((1, seq_len, MAX_SELECT_COUNT), -1, dtype=np.int64)
         dummy_multi = np.zeros((1, seq_len, nopt), dtype=np.float32)
         return SequenceBatch(
             board=torch.from_numpy(board),
@@ -169,6 +224,7 @@ class TorchSequencePolicy:
             opt_feats=torch.from_numpy(opt_feats),
             option_mask=torch.from_numpy(option_mask),
             target_first=torch.from_numpy(dummy_first),
+            target_order=torch.from_numpy(dummy_order),
             target_multi=torch.from_numpy(dummy_multi),
             target_type=torch.zeros((1, seq_len), dtype=torch.int64),
             min_count=torch.zeros((1, seq_len), dtype=torch.int64),

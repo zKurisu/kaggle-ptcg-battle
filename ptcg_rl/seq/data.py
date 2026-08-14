@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 from ptcg_rl.encoder import BOARD_SLOTS, MAX_HAND, OPT_FEAT_DIM, STATE_FEAT_DIM, STATE_TOKEN_FEAT_DIM
-from ptcg_rl.seq.constants import FUTURE_PLAN_DIM, LEDGER_FEAT_DIM, TYPE_END
+from ptcg_rl.seq.constants import FUTURE_PLAN_DIM, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, TYPE_END
 
 _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
@@ -36,6 +36,7 @@ class SequenceBatch:
     opt_feats: torch.Tensor
     option_mask: torch.Tensor
     target_first: torch.Tensor
+    target_order: torch.Tensor
     target_multi: torch.Tensor
     target_type: torch.Tensor
     min_count: torch.Tensor
@@ -250,6 +251,7 @@ class SequenceCorpus:
         opt_feats = np.zeros((*shape_bt, max_options, self.opt_feat_dim), dtype=np.float32)
         option_mask = np.zeros((*shape_bt, max_options), dtype=np.float32)
         target_first = np.full(shape_bt, -1, dtype=np.int64)
+        target_order = np.full((*shape_bt, MAX_SELECT_COUNT), -1, dtype=np.int64)
         target_multi = np.zeros((*shape_bt, max_options), dtype=np.float32)
         target_type = np.zeros(shape_bt, dtype=np.int64)
         min_count = np.zeros(shape_bt, dtype=np.int64)
@@ -301,6 +303,8 @@ class SequenceCorpus:
                 valid = action[(action >= 0) & (action < nopt)]
                 if valid.size:
                     target_first[bi, local_t] = int(valid[0])
+                    upto = min(valid.size, MAX_SELECT_COUNT)
+                    target_order[bi, local_t, :upto] = valid[:upto]
                     target_multi[bi, local_t, valid] = 1.0
                     target_type[bi, local_t] = int(ot[int(valid[0])])
                 else:
@@ -333,6 +337,7 @@ class SequenceCorpus:
             opt_feats=torch.from_numpy(opt_feats),
             option_mask=torch.from_numpy(option_mask),
             target_first=torch.from_numpy(target_first),
+            target_order=torch.from_numpy(target_order),
             target_multi=torch.from_numpy(target_multi),
             target_type=torch.from_numpy(target_type),
             min_count=torch.from_numpy(min_count),

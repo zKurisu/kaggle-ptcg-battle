@@ -92,6 +92,14 @@ def build_cmd(args: argparse.Namespace, job: Job) -> list[str]:
         str(args.draw_weight),
         "--progress-every",
         str(args.progress_every),
+        "--action-weight",
+        str(args.action_weight),
+        "--multi-weight",
+        str(args.multi_weight),
+        "--count-weight",
+        str(args.count_weight),
+        "--plan-weight",
+        str(args.plan_weight),
         "--device",
         "cuda" if job.gpu else args.device,
         "--out",
@@ -112,6 +120,24 @@ def build_cmd(args: argparse.Namespace, job: Job) -> list[str]:
     if job.team_name:
         cmd += ["--team-name", job.team_name]
     return cmd
+
+
+def _last_progress_line(path: str) -> str:
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - 20000), os.SEEK_SET)
+            text = f.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        if "batch=" in line or line.startswith("done epoch") or line.startswith("Training complete"):
+            return line[-500:]
+    return ""
 
 
 def main() -> None:
@@ -139,6 +165,10 @@ def main() -> None:
     p.add_argument("--win-weight", type=float, default=1.5)
     p.add_argument("--loss-weight", type=float, default=0.5)
     p.add_argument("--draw-weight", type=float, default=0.8)
+    p.add_argument("--action-weight", type=float, default=1.0)
+    p.add_argument("--multi-weight", type=float, default=0.15)
+    p.add_argument("--count-weight", type=float, default=0.20)
+    p.add_argument("--plan-weight", type=float, default=0.35)
     p.add_argument("--winner-only", action="store_true")
     p.add_argument("--min-score", type=float, default=0.0)
     p.add_argument("--amp", action="store_true")
@@ -199,7 +229,9 @@ def main() -> None:
         running = still
         print(f"Status: pending={len(pending)} running={len(running)} done={len(done)} failed={len(failed)}", flush=True)
         for job in running:
-            print(f"  gpu={job.gpu or '-'} {job.name} {(time.time()-job.start_time)/60:.1f}m log={job.log_path}", flush=True)
+            tail = _last_progress_line(job.log_path)
+            suffix = f" | {tail}" if tail else ""
+            print(f"  gpu={job.gpu or '-'} {job.name} {(time.time()-job.start_time)/60:.1f}m log={job.log_path}{suffix}", flush=True)
         if pending or running:
             time.sleep(args.poll)
     if failed:

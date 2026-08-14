@@ -38,6 +38,10 @@ def main() -> None:
     p.add_argument("--date-to", default="")
     p.add_argument("--deck-sig", action="append", default=[])
     p.add_argument("--team-name", action="append", default=[])
+    p.add_argument("--max-rows", type=int, default=0,
+                   help="maximum kept rows to scan after filters; 0 scans all")
+    p.add_argument("--progress-every", type=int, default=0,
+                   help="print progress every N kept rows; 0 disables")
     p.add_argument("--out-csv", default="")
     args = p.parse_args()
 
@@ -50,9 +54,10 @@ def main() -> None:
         date_from=args.date_from,
         date_to=args.date_to,
     )
-    print(f"paths={len(paths)} archetype={args.archetype}")
+    print(f"paths={len(paths)} archetype={args.archetype}", flush=True)
     rows_out: list[dict[str, object]] = []
     type_counts: Counter[int] = Counter()
+    count_counts: Counter[int] = Counter()
     future_sums = np.zeros(FUTURE_PLAN_DIM, dtype=np.float64)
     future_n = 0
     games: dict[str, list[tuple[int, int, int, float, str, str]]] = defaultdict(list)
@@ -61,10 +66,16 @@ def main() -> None:
     opp_arch: Counter[str] = Counter()
     deck_counter: Counter[str] = Counter()
 
+    stop = False
     for path in paths:
+        if stop:
+            break
         with np.load(path, allow_pickle=True) as z:
             n = len(z["board"])
             for i in range(n):
+                if args.max_rows and total >= args.max_rows:
+                    stop = True
+                    break
                 deck_sig = str(z["deck_sig"][i]) if "deck_sig" in z else ""
                 team = str(z["team_name"][i]) if "team_name" in z else ""
                 if deck_sigs and deck_sig not in deck_sigs:
@@ -73,12 +84,14 @@ def main() -> None:
                     continue
                 game_key = str(z["game_key"][i]) if "game_key" in z else f"{z['episode_id'][i]}:{z['player_index'][i]}"
                 typ = int(z["act_type"][i]) if "act_type" in z else -1
+                action_count = len(np.asarray(z["action"][i], dtype=np.int64).reshape(-1))
                 dec = int(z["decision_index"][i]) if "decision_index" in z else i
                 won = int(z["won"][i]) if "won" in z else 0
                 score = float(z["score"][i]) if "score" in z else 0.0
                 opp = str(z["opponent_archetype"][i]) if "opponent_archetype" in z else ""
                 games[game_key].append((dec, typ, won, score, deck_sig, opp))
                 type_counts[typ] += 1
+                count_counts[action_count] += 1
                 total += 1
                 wins += won
                 draws += int(z["draw"][i]) if "draw" in z else 0
@@ -88,6 +101,8 @@ def main() -> None:
                 if "future_plan" in z:
                     future_sums += np.asarray(z["future_plan"][i], dtype=np.float64)[:FUTURE_PLAN_DIM]
                     future_n += 1
+                if args.progress_every and total % args.progress_every == 0:
+                    print(f"  scanned rows={total} games={len(games)} path={path}", flush=True)
 
     game_lengths = [len(v) for v in games.values()]
     print(json.dumps({
@@ -101,25 +116,29 @@ def main() -> None:
         "game_len_mean": float(np.mean(game_lengths)) if game_lengths else 0.0,
         "game_len_p50": float(np.percentile(game_lengths, 50)) if game_lengths else 0.0,
         "game_len_p90": float(np.percentile(game_lengths, 90)) if game_lengths else 0.0,
-    }, ensure_ascii=False, sort_keys=True))
+    }, ensure_ascii=False, sort_keys=True), flush=True)
 
-    print("action_types")
+    print("action_types", flush=True)
     for typ, count in type_counts.most_common():
-        print(f"  {type_id_name(typ):<18} {count:>8} {count / max(total, 1):.3f}")
+        print(f"  {type_id_name(typ):<18} {count:>8} {count / max(total, 1):.3f}", flush=True)
 
-    print("top_opponent_archetypes")
+    print("selection_counts", flush=True)
+    for count_value, count in sorted(count_counts.items()):
+        print(f"  k={count_value:<2} {count:>8} {count / max(total, 1):.3f}", flush=True)
+
+    print("top_opponent_archetypes", flush=True)
     for name, count in opp_arch.most_common(20):
-        print(f"  {name:<24} {count:>8} {count / max(total, 1):.3f}")
+        print(f"  {name:<24} {count:>8} {count / max(total, 1):.3f}", flush=True)
 
-    print("top_deck_sigs")
+    print("top_deck_sigs", flush=True)
     for sig, count in deck_counter.most_common(20):
-        print(f"  {sig:<16} {count:>8} {count / max(total, 1):.3f}")
+        print(f"  {sig:<16} {count:>8} {count / max(total, 1):.3f}", flush=True)
 
     if future_n:
         means = future_sums / future_n
-        print("future_plan_mean")
+        print("future_plan_mean", flush=True)
         for i, value in enumerate(means):
-            print(f"  f{i:02d} {value:.4f}")
+            print(f"  f{i:02d} {value:.4f}", flush=True)
 
     if args.out_csv:
         with open(args.out_csv, "w", newline="") as f:
@@ -144,7 +163,7 @@ def main() -> None:
                     "evolve_before_attack": _before_type(types, "EVOLVE", "ATTACK"),
                     "ability_before_evolve": _before_type(types, "ABILITY", "EVOLVE"),
                 })
-        print(f"wrote {args.out_csv}")
+        print(f"wrote {args.out_csv}", flush=True)
 
 
 def _before_type(types: list[int], a_name: str, b_name: str) -> int:

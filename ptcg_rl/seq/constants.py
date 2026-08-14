@@ -7,6 +7,7 @@ DEFAULT_FUTURE_HORIZON = 12
 
 LEDGER_FEAT_DIM = 64
 FUTURE_PLAN_DIM = 24
+MAX_SELECT_COUNT = 10
 
 # Option type ids used by the game engine and the existing encoder.
 TYPE_NUMBER = 0

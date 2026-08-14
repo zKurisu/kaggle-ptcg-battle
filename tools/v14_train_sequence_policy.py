@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import json
 import os
 import random
@@ -55,6 +56,20 @@ def _iter_batches(ids: list[int], batch_size: int, *, shuffle: bool, seed: int, 
         batches += 1
 
 
+def _total_batches(n_items: int, batch_size: int, max_batches: int = 0) -> int:
+    total = max(1, int(math.ceil(max(n_items, 1) / max(batch_size, 1))))
+    return min(total, int(max_batches)) if max_batches else total
+
+
+def _cuda_mem(device: torch.device) -> str:
+    if device.type != "cuda":
+        return ""
+    idx = device.index if device.index is not None else torch.cuda.current_device()
+    alloc = torch.cuda.memory_allocated(idx) / 1024**3
+    reserved = torch.cuda.memory_reserved(idx) / 1024**3
+    return f" mem={alloc:.1f}/{reserved:.1f}G"
+
+
 def run_epoch(
     *,
     model: SequencePolicyNet,
@@ -76,10 +91,14 @@ def run_epoch(
     loss_parts: list[dict[str, float]] = []
     acc_parts: list[dict[str, float]] = []
     t0 = time.time()
+    total_batches = _total_batches(len(ids), batch_size, max_batches)
+    target_seen = min(len(ids), total_batches * max(batch_size, 1))
+    seen = 0
     for bi, sample_ids in enumerate(
         _iter_batches(ids, batch_size, shuffle=train, seed=epoch * 100003 + 17, max_batches=max_batches),
         1,
     ):
+        seen += len(sample_ids)
         batch = corpus.collate(sample_ids).to(device)
         with torch.set_grad_enabled(train):
             with torch.cuda.amp.autocast(enabled=amp):
@@ -95,17 +114,25 @@ def run_epoch(
                 scaler.update()
         loss_parts.append(parts)
         acc_parts.append(sequence_accuracy(outputs, batch))
-        if progress_every and (bi == 1 or bi % progress_every == 0):
+        if progress_every and (bi == 1 or bi % progress_every == 0 or bi == total_batches):
             elapsed = time.time() - t0
-            rate = bi * batch_size / max(elapsed, 1e-9)
+            rate = seen / max(elapsed, 1e-9)
+            eta = max(total_batches - bi, 0) * max(batch_size, 1) / max(rate, 1e-9)
             mp = _mean_parts(loss_parts[-max(progress_every, 1):])
             ma = _mean_parts(acc_parts[-max(progress_every, 1):])
             mode = "train" if train else "val"
             print(
-                f"  {mode} epoch={epoch} batch={bi} loss={mp.get('loss', 0):.4f} "
-                f"act={mp.get('action', 0):.4f} plan={mp.get('plan', 0):.4f} "
+                f"  {mode} epoch={epoch} batch={bi}/{total_batches} "
+                f"seen={seen}/{target_seen} loss={mp.get('loss', 0):.4f} "
+                f"act={mp.get('action', 0):.4f} ord={mp.get('order', 0):.4f} "
+                f"cnt_loss={mp.get('count', 0):.4f} multi={mp.get('multi', 0):.4f} "
+                f"plan={mp.get('plan', 0):.4f} out={mp.get('outcome', 0):.4f} "
                 f"top1={ma.get('top1', 0):.3f} type={ma.get('type_acc', 0):.3f} "
-                f"{rate:.0f} samples/s",
+                f"cnt={ma.get('count_acc', 0):.3f}/{ma.get('count_mae', 0):.2f} "
+                f"k={ma.get('pred_k', 0):.2f}/{ma.get('target_k', 0):.2f} "
+                f"setF1={ma.get('set_f1', 0):.3f} ordAcc={ma.get('order_acc', 0):.3f} "
+                f"outAcc={ma.get('outcome_acc', 0):.3f} "
+                f"{rate:.0f} samples/s eta={eta:.0f}s{_cuda_mem(device)}",
                 flush=True,
             )
     return _mean_parts(loss_parts), _mean_parts(acc_parts)
@@ -173,6 +200,7 @@ def main() -> None:
     p.add_argument("--progress-every", type=int, default=50)
     p.add_argument("--action-weight", type=float, default=1.0)
     p.add_argument("--multi-weight", type=float, default=0.15)
+    p.add_argument("--count-weight", type=float, default=0.20)
     p.add_argument("--plan-weight", type=float, default=0.35)
     p.add_argument("--out", required=True)
     args = p.parse_args()
@@ -233,6 +261,7 @@ def main() -> None:
     loss_cfg = SequenceLossConfig(
         action_weight=args.action_weight,
         multi_weight=args.multi_weight,
+        count_weight=args.count_weight,
         plan_weight=args.plan_weight,
         outcome_weight=0.10,
         type_weight=0.10,
@@ -275,7 +304,11 @@ def main() -> None:
             f"done epoch {epoch}/{args.epochs} "
             f"train={train_loss.get('loss', 0):.4f} val={val:.4f} "
             f"train_top1={train_acc.get('top1', 0):.3f} val_top1={val_acc.get('top1', 0):.3f} "
-            f"val_plan={val_loss.get('plan', 0):.4f} val_type={val_acc.get('type_acc', 0):.3f}",
+            f"val_plan={val_loss.get('plan', 0):.4f} val_type={val_acc.get('type_acc', 0):.3f} "
+            f"val_count={val_acc.get('count_acc', 0):.3f} "
+            f"val_setF1={val_acc.get('set_f1', 0):.3f} val_order={val_acc.get('order_acc', 0):.3f} "
+            f"val_k={val_acc.get('pred_k', 0):.2f}/{val_acc.get('target_k', 0):.2f} "
+            f"val_outAcc={val_acc.get('outcome_acc', 0):.3f}",
             flush=True,
         )
         save_checkpoint(last_path, model=model, args=args, corpus=corpus, epoch=epoch, val_loss=val)

@@ -4,6 +4,57 @@ Last updated: 2026-08-14 11:29 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
+## Update: RR Long-Tail Coverage 2026-08-14
+
+The user pointed out a concrete local-RR blind spot: a high-score Alakazam
+submission lost early Kaggle climb games to Archaludon, but previous filtered RR
+pools often excluded Archaludon and other low-frequency archetypes. Do not rank
+future candidates solely on high-quality/high-random RR pools that omit tail
+decks.
+
+New tool:
+
+```bash
+python3 tools/build_coverage_rr_manifest.py \
+  --policy-manifest <candidate_or_shadow_manifest.csv> \
+  --random-audit <eval_manifest_random.csv> \
+  --ladder-manifest <latest_ladder_pool>/pool_manifest.csv \
+  --policy-per-archetype 2 \
+  --random-tail-per-archetype 1 \
+  --include-other \
+  --out logs/<run>/coverage_rr_manifest.csv
+```
+
+This emits an eval-compatible manifest with two kinds of opponent rows:
+
+- `source_kind=policy`: usable trained shadow/pop entries, filtered by random
+  audit quality.
+- `source_kind=random_tail`: live ladder deck entries played by legal-random.
+  These are not strong shadows, but they force low-frequency archetypes such as
+  Archaludon/Hop Trevenant/Iono/N's Zoroark/Raging Bolt into coverage RR so
+  early-climb risks are visible instead of silently dropped.
+
+Use the coverage manifest with:
+
+```bash
+python3 tools/eval_round_robin.py \
+  --manifest logs/<run>/coverage_rr_manifest.csv \
+  --games 80 \
+  --workers 32 \
+  --max-turns 700 \
+  --progress-every 20 \
+  --out-csv logs/<run>/coverage_rr_g80.csv
+```
+
+Then summarize by archetype and climb weights. Treat `random_tail` rows as risk
+coverage, not as proof that a candidate beats a strong opponent model. If an
+archetype repeatedly matters in Kaggle replay, train a real shadow/pop model for
+that deck signature next.
+
+Default population/shadow archetype lists were also expanded to match the
+current extractor coverage by adding `Iono Bellibolt`, `N's Zoroark`, and
+`Raging Bolt`.
+
 ## Workspaces
 
 - Local repo: `/home/jie/Do/0_PTCG/bak/ptcg_rl_git`

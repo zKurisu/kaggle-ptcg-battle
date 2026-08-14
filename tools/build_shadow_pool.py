@@ -42,6 +42,9 @@ DEFAULT_ARCHETYPES = [
     "Mega Starmie",
     "Archaludon",
     "Hop Trevenant",
+    "Iono Bellibolt",
+    "N's Zoroark",
+    "Raging Bolt",
 ]
 
 FIELDS = [

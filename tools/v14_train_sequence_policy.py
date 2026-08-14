@@ -196,12 +196,32 @@ def _current_logit_compare(
     ab_lp = torch.log_softmax(ab_logits, dim=-1)
     full_p = full_lp.exp()
     kl = (full_p * (full_lp - ab_lp)).sum(dim=-1).mean().item()
-    return {
+    out = {
         f"{name}_top1": float(ab_acc.get("cur_top1", 0.0)),
         f"{name}_delta": float(ab_acc.get("cur_top1", 0.0) - full_acc.get("cur_top1", 0.0)),
         f"{name}_agree": float((full_pred == ab_pred).float().mean().item()),
         f"{name}_kl": float(kl),
+        f"{name}_seq_top1": float(ab_acc.get("top1", 0.0)),
+        f"{name}_seq_delta": float(ab_acc.get("top1", 0.0) - full_acc.get("top1", 0.0)),
+        f"{name}_next_acc": float(ab_acc.get("next_type_acc", 0.0)),
+        f"{name}_next_delta": float(ab_acc.get("next_type_acc", 0.0) - full_acc.get("next_type_acc", 0.0)),
+        f"{name}_plan_f1": float(ab_acc.get("plan_f1", 0.0)),
+        f"{name}_plan_delta": float(ab_acc.get("plan_f1", 0.0) - full_acc.get("plan_f1", 0.0)),
+        f"{name}_dplan_f1": float(ab_acc.get("dca_plan_spread_f1", 0.0)),
+        f"{name}_dplan_delta": float(ab_acc.get("dca_plan_spread_f1", 0.0) - full_acc.get("dca_plan_spread_f1", 0.0)),
     }
+    if "plan_logits" in full_outputs and "plan_logits" in ab_outputs:
+        full_plan = torch.sigmoid(full_outputs["plan_logits"][mask])
+        ab_plan = torch.sigmoid(ab_outputs["plan_logits"][mask])
+        out[f"{name}_plan_l1"] = float((full_plan - ab_plan).abs().mean().item())
+    if "next_type_logits" in full_outputs and "next_type_logits" in ab_outputs:
+        full_next = full_outputs["next_type_logits"][mask][:, 0, :]
+        ab_next = ab_outputs["next_type_logits"][mask][:, 0, :]
+        full_next_lp = torch.log_softmax(full_next, dim=-1)
+        ab_next_lp = torch.log_softmax(ab_next, dim=-1)
+        full_next_p = full_next_lp.exp()
+        out[f"{name}_next_kl"] = float((full_next_p * (full_next_lp - ab_next_lp)).sum(dim=-1).mean().item())
+    return out
 
 
 @torch.no_grad()
@@ -261,8 +281,16 @@ def _signal_warnings(
         warnings.append("action_ledger_not_affecting_current")
     if val_acc.get("revhist_agree", 0.0) > 0.92 and abs(val_acc.get("revhist_delta", 0.0)) < 0.02:
         warnings.append("history_order_not_affecting_current")
+    if (
+        val_acc.get("next_type_n", 0.0) > 50
+        and abs(val_acc.get("revhist_next_delta", 0.0)) < 0.02
+        and val_acc.get("revhist_next_kl", 0.0) < 0.02
+    ):
+        warnings.append("history_order_not_affecting_future")
     if val_acc.get("plan_pos_rate", 0.0) > 0.10 and val_acc.get("plan_f1", 0.0) < 0.20:
         warnings.append("future_plan_weak")
+    if val_acc.get("next_type_n", 0.0) > 50 and val_acc.get("next_type_acc", 0.0) < 0.45:
+        warnings.append(f"next_type_weak={val_acc.get('next_type_acc', 0.0):.3f}")
     if val_acc.get("ambig_type_rate", 0.0) > 0.10 and val_acc.get("ambig_type_top1", 0.0) + 0.05 < val_acc.get("top1", 0.0):
         warnings.append("ambiguous_options_weak")
     for name in ("attach", "evolve", "attack"):
@@ -276,6 +304,13 @@ def _signal_warnings(
             warnings.append(f"dca_overfit_gap={dca_gap:.3f}")
         if val_acc.get("dca_spread_rate", 0.0) < 0.15:
             warnings.append("dca_labels_focus_dominated")
+        if val_acc.get("dca_plan_spread_rate", 0.0) > 0.10 and val_acc.get("dca_plan_spread_f1", 0.0) < 0.30:
+            warnings.append("dca_block_plan_weak")
+        if (
+            val_acc.get("dca_plan_spread_rate", 0.0) > 0.10
+            and val_acc.get("dca_plan_pred_spread_rate", 0.0) < val_acc.get("dca_plan_spread_rate", 0.0) * 0.50
+        ):
+            warnings.append("dca_spread_head_collapsed")
         if args.damage_counter_weight > 1.0 and val_loss.get("dca_weight_share", 0.0) < max(0.05, val_acc.get("dca_rate", 0.0)):
             warnings.append("dca_underweighted")
         if val_acc.get("dca_late_top1", 0.0) + 0.05 < val_acc.get("dca_first_top1", 0.0):
@@ -348,9 +383,8 @@ def run_epoch(
                         raise RuntimeError("nonfinite sequence policy gradient")
                 scaler.step(optimizer)
                 scaler.update()
-                if progress_every and (bi == 1 or bi % progress_every == 0 or bi == total_batches):
-                    parts = dict(parts)
-                    parts["grad_norm"] = grad_norm
+                parts = dict(parts)
+                parts["grad_norm"] = grad_norm
         loss_parts.append(parts)
         acc = sequence_accuracy(outputs, batch)
         if diagnostic_ablation and not train:
@@ -379,6 +413,8 @@ def run_epoch(
                 f"atype={ma.get('action_type_acc', 0):.3f} "
                 f"pln={ma.get('plan_f1', 0):.3f}/{ma.get('plan_mae', 0):.3f}/"
                 f"{ma.get('plan_pos_rate', 0):.2f}->{ma.get('plan_pred_pos_rate', 0):.2f} "
+                f"nxt={ma.get('next_type_acc', 0):.3f}/{ma.get('next1_acc', 0):.3f}/"
+                f"{ma.get('next2_acc', 0):.3f}/{ma.get('next3_acc', 0):.3f} "
                 f"opt={ma.get('option_n', 0):.1f}/{ma.get('ambig_type_rate', 0):.2f}/"
                 f"{ma.get('ambig_type_top1', 0):.3f} "
                 f"m2n={ma.get('multi2_n', 0):.0f} m2r={ma.get('multi2_rate', 0):.3f} "
@@ -392,8 +428,12 @@ def run_epoch(
                 f"{ma.get('dca_prior_unique_mean', 0):.2f} "
                 f"dcaSplit={ma.get('dca_first_top1', 0):.3f}/{ma.get('dca_late_top1', 0):.3f}/"
                 f"{ma.get('dca_spread_top1', 0):.3f} "
+                f"dplan={ma.get('dca_plan_spread_f1', 0):.3f}/{ma.get('dca_plan_unique_acc', 0):.3f}/"
+                f"{ma.get('dca_plan_focus_mae', 0):.3f}/"
+                f"{ma.get('dca_plan_spread_rate', 0):.2f}->{ma.get('dca_plan_pred_spread_rate', 0):.2f} "
                 f"boost={mp.get('weight_boost', 0):.2f} dcaW={mp.get('dca_weight_share', 0):.2f} "
-                f"m2W={mp.get('multi_weight_share', 0):.2f} "
+                f"m2W={mp.get('multi_weight_share', 0):.2f} nxtL={mp.get('next_type', 0):.3f} "
+                f"dplanL={mp.get('dca_plan', 0):.3f} dposW={mp.get('dca_spread_pos_weight', 0):.1f} "
                 f"curA={mp.get('current_action', 0):.3f}/{mp.get('prefix_action', 0):.3f} "
                 f"curHead={mp.get('action_current_head', 0):.3f}/{mp.get('action_prefix_head', 0):.3f} "
                 f"dcaA={mp.get('dca_action', 0):.3f}/{mp.get('non_dca_action', 0):.3f} "
@@ -481,6 +521,10 @@ def main() -> None:
     p.add_argument("--multi-weight", type=float, default=0.15)
     p.add_argument("--count-weight", type=float, default=0.20)
     p.add_argument("--plan-weight", type=float, default=0.35)
+    p.add_argument("--next-type-weight", type=float, default=0.25,
+                   help="predict future action-type sequence from each prefix state")
+    p.add_argument("--dca-plan-weight", type=float, default=0.25,
+                   help="predict block-level DamageCounterAny spread/unique/focus labels")
     p.add_argument("--multi-target-weight", type=float, default=1.0,
                    help="boost decision losses on target_k>1 rows; default keeps historical weighting")
     p.add_argument("--damage-counter-weight", type=float, default=1.0,
@@ -550,6 +594,8 @@ def main() -> None:
         multi_weight=args.multi_weight,
         count_weight=args.count_weight,
         plan_weight=args.plan_weight,
+        next_type_weight=args.next_type_weight,
+        dca_plan_weight=args.dca_plan_weight,
         outcome_weight=0.10,
         type_weight=0.10,
         multi_target_weight=args.multi_target_weight,
@@ -609,6 +655,9 @@ def main() -> None:
             f"val_plan={val_loss.get('plan', 0):.4f} val_type={val_acc.get('type_acc', 0):.3f} "
             f"val_planSig={val_acc.get('plan_f1', 0):.3f}/{val_acc.get('plan_mae', 0):.3f}/"
             f"{val_acc.get('plan_pos_rate', 0):.2f}->{val_acc.get('plan_pred_pos_rate', 0):.2f} "
+            f"val_next={val_acc.get('next_type_acc', 0):.3f}/{val_acc.get('next1_acc', 0):.3f}/"
+            f"{val_acc.get('next2_acc', 0):.3f}/{val_acc.get('next3_acc', 0):.3f}/"
+            f"{val_acc.get('next4_acc', 0):.3f} "
             f"val_atype={val_acc.get('action_type_acc', 0):.3f} "
             f"val_count={val_acc.get('count_acc', 0):.3f} "
             f"val_setF1={val_acc.get('set_f1', 0):.3f} val_order={val_acc.get('order_acc', 0):.3f} "
@@ -626,8 +675,14 @@ def main() -> None:
             f"{val_acc.get('dca_prior_unique_mean', 0):.2f} "
             f"val_dcaSplit={val_acc.get('dca_first_top1', 0):.3f}/{val_acc.get('dca_late_top1', 0):.3f}/"
             f"{val_acc.get('dca_spread_top1', 0):.3f} "
+            f"val_dplan={val_acc.get('dca_plan_spread_f1', 0):.3f}/"
+            f"{val_acc.get('dca_plan_unique_acc', 0):.3f}/"
+            f"{val_acc.get('dca_plan_focus_mae', 0):.3f}/"
+            f"{val_acc.get('dca_plan_spread_rate', 0):.2f}->{val_acc.get('dca_plan_pred_spread_rate', 0):.2f} "
             f"val_boost={val_loss.get('weight_boost', 0):.2f} "
             f"val_dcaW={val_loss.get('dca_weight_share', 0):.2f} val_m2W={val_loss.get('multi_weight_share', 0):.2f} "
+            f"val_nextL={val_loss.get('next_type', 0):.3f} val_dplanL={val_loss.get('dca_plan', 0):.3f} "
+            f"val_dposW={val_loss.get('dca_spread_pos_weight', 0):.1f} "
             f"val_curA={val_loss.get('current_action', 0):.3f}/{val_loss.get('prefix_action', 0):.3f} "
             f"val_curHead={val_loss.get('action_current_head', 0):.3f}/{val_loss.get('action_prefix_head', 0):.3f} "
             f"val_dcaA={val_loss.get('dca_action', 0):.3f}/{val_loss.get('non_dca_action', 0):.3f} "
@@ -657,7 +712,15 @@ def main() -> None:
             f"noact_agree={val_acc.get('noact_agree', 0):.3f} "
             f"revhist_delta={val_acc.get('revhist_delta', 0):+.3f} "
             f"revhist_agree={val_acc.get('revhist_agree', 0):.3f} "
+            f"noact_nextD={val_acc.get('noact_next_delta', 0):+.3f} "
+            f"revhist_nextD={val_acc.get('revhist_next_delta', 0):+.3f} "
+            f"revhist_nextKL={val_acc.get('revhist_next_kl', 0):.4f} "
+            f"revhist_planD={val_acc.get('revhist_plan_delta', 0):+.3f} "
+            f"revhist_planL1={val_acc.get('revhist_plan_l1', 0):.4f} "
+            f"revhist_dplanD={val_acc.get('revhist_dplan_delta', 0):+.3f} "
             f"plan_f1={val_acc.get('plan_f1', 0):.3f} "
+            f"next_acc={val_acc.get('next_type_acc', 0):.3f} "
+            f"dplan_f1={val_acc.get('dca_plan_spread_f1', 0):.3f} "
             f"ambig_top1={val_acc.get('ambig_type_top1', 0):.3f} "
             f"train_grad={train_loss.get('grad_norm', 0):.2f} "
             f"dca_weight_share={val_loss.get('dca_weight_share', 0):.3f} "

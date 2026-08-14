@@ -44,6 +44,8 @@ class SequenceLossConfig:
     multi_weight: float = 0.15
     count_weight: float = 0.20
     plan_weight: float = 0.35
+    next_type_weight: float = 0.25
+    dca_plan_weight: float = 0.25
     outcome_weight: float = 0.10
     type_weight: float = 0.10
     multi_target_weight: float = 1.0
@@ -72,6 +74,7 @@ class SequencePolicyNet(nn.Module):
         ledger_feat_dim: int = LEDGER_FEAT_DIM,
         future_plan_dim: int = FUTURE_PLAN_DIM,
         max_seq_len: int = 64,
+        next_type_horizon: int = 4,
     ):
         super().__init__()
         width = int(width)
@@ -86,6 +89,7 @@ class SequencePolicyNet(nn.Module):
         self.ledger_feat_dim = int(ledger_feat_dim)
         self.future_plan_dim = int(future_plan_dim)
         self.max_seq_len = int(max_seq_len)
+        self.next_type_horizon = max(1, int(next_type_horizon))
 
         card_dim = width // 4
         attack_dim = max(16, width // 12)
@@ -181,6 +185,26 @@ class SequencePolicyNet(nn.Module):
             nn.GELU(),
             nn.Linear(width, self.future_plan_dim),
         )
+        self.next_type_head = nn.Sequential(
+            nn.Linear(width, width),
+            nn.GELU(),
+            nn.Linear(width, self.next_type_horizon * (N_OPT_TYPES + 1)),
+        )
+        self.dca_spread_head = nn.Sequential(
+            nn.Linear(width, width // 2),
+            nn.GELU(),
+            nn.Linear(width // 2, 1),
+        )
+        self.dca_unique_head = nn.Sequential(
+            nn.Linear(width, width // 2),
+            nn.GELU(),
+            nn.Linear(width // 2, MAX_SELECT_COUNT + 1),
+        )
+        self.dca_focus_head = nn.Sequential(
+            nn.Linear(width, width // 2),
+            nn.GELU(),
+            nn.Linear(width // 2, 1),
+        )
         self.outcome_head = nn.Sequential(
             nn.Linear(width, width // 2),
             nn.GELU(),
@@ -219,6 +243,7 @@ class SequencePolicyNet(nn.Module):
             "ledger_feat_dim": self.ledger_feat_dim,
             "future_plan_dim": self.future_plan_dim,
             "max_seq_len": self.max_seq_len,
+            "next_type_horizon": self.next_type_horizon,
         }
 
     def forward(self, batch: SequenceBatch) -> dict[str, torch.Tensor]:
@@ -276,6 +301,15 @@ class SequencePolicyNet(nn.Module):
             "action_logits": scores,
             "order_logits": order_scores,
             "plan_logits": self.plan_head(seq),
+            "next_type_logits": self.next_type_head(seq).view(
+                bsz,
+                seq_len,
+                self.next_type_horizon,
+                N_OPT_TYPES + 1,
+            ),
+            "dca_spread_logits": self.dca_spread_head(seq).squeeze(-1),
+            "dca_unique_logits": self.dca_unique_head(seq),
+            "dca_focus_logits": self.dca_focus_head(seq).squeeze(-1),
             "outcome_logits": self.outcome_head(seq).squeeze(-1),
             "type_logits": self.type_head(seq),
             "count_logits": self.count_head(seq),
@@ -433,6 +467,69 @@ def sequence_policy_loss(
     )
     plan_loss = (plan_loss_raw * weights.unsqueeze(-1)).sum() / (weights.sum().clamp(min=1.0) * batch.future_plan.shape[-1])
 
+    next_type_logits = outputs.get("next_type_logits")
+    next_type_loss = outputs["action_logits"].sum() * 0.0
+    next_type_weight_sum = torch.tensor(0.0, device=weights.device)
+    if next_type_logits is not None and float(cfg.next_type_weight) > 0.0:
+        horizon = int(next_type_logits.shape[2])
+        seq_len = int(step_mask.shape[1])
+        losses: list[torch.Tensor] = []
+        loss_weights: list[torch.Tensor] = []
+        for offset in range(1, min(horizon, seq_len - 1) + 1):
+            src = slice(0, seq_len - offset)
+            tgt = slice(offset, seq_len)
+            valid_next = (
+                (step_mask[:, src] > 0)
+                & (step_mask[:, tgt] > 0)
+                & (batch.target_first[:, tgt] >= 0)
+            )
+            if not bool(valid_next.any()):
+                continue
+            ce = F.cross_entropy(
+                next_type_logits[:, src, offset - 1, :].float().reshape(-1, next_type_logits.shape[-1]).clamp(min=-50.0, max=50.0),
+                batch.target_type[:, tgt].long().reshape(-1).clamp(0, next_type_logits.shape[-1] - 1),
+                reduction="none",
+            ).reshape_as(step_mask[:, src])
+            losses.append(ce[valid_next])
+            loss_weights.append(weights[:, src][valid_next])
+        if losses:
+            next_raw = torch.cat(losses)
+            next_w = torch.cat(loss_weights)
+            next_type_weight_sum = next_w.sum()
+            next_type_loss = (next_raw * next_w).sum() / next_w.sum().clamp(min=1.0)
+
+    dca_plan_loss = outputs["action_logits"].sum() * 0.0
+    dca_spread_pos_weight_value = torch.tensor(1.0, device=weights.device)
+    dca_plan_mask = damage_counter & valid_action
+    if bool(dca_plan_mask.any()) and float(cfg.dca_plan_weight) > 0.0:
+        dca_w = decision_weights[dca_plan_mask]
+        spread_target = (batch.dca_group_unique_slots.long()[dca_plan_mask] > 1).float()
+        spread_pos = spread_target.sum()
+        spread_neg = (1.0 - spread_target).sum()
+        if bool(spread_pos > 0):
+            dca_spread_pos_weight_value = (spread_neg / spread_pos.clamp(min=1.0)).clamp(min=1.0, max=8.0)
+        spread_loss = F.binary_cross_entropy_with_logits(
+            outputs["dca_spread_logits"][dca_plan_mask].float().clamp(min=-30.0, max=30.0),
+            spread_target,
+            pos_weight=dca_spread_pos_weight_value,
+            reduction="none",
+        )
+        unique_target = batch.dca_group_unique_slots.long()[dca_plan_mask].clamp(0, MAX_SELECT_COUNT)
+        unique_loss = F.cross_entropy(
+            outputs["dca_unique_logits"][dca_plan_mask].float().clamp(min=-50.0, max=50.0),
+            unique_target,
+            reduction="none",
+        )
+        focus_target = batch.dca_group_focus_frac.float()[dca_plan_mask].clamp(0.0, 1.0)
+        focus_loss = F.mse_loss(
+            torch.sigmoid(outputs["dca_focus_logits"][dca_plan_mask].float()),
+            focus_target,
+            reduction="none",
+        )
+        dca_plan_loss = (
+            (spread_loss + 0.50 * unique_loss + 0.50 * focus_loss) * dca_w
+        ).sum() / dca_w.sum().clamp(min=1.0)
+
     outcome_loss_raw = F.binary_cross_entropy_with_logits(outputs["outcome_logits"], batch.outcome.float(), reduction="none")
     outcome_loss = (outcome_loss_raw * weights).sum() / weights.sum().clamp(min=1.0)
 
@@ -449,6 +546,8 @@ def sequence_policy_loss(
         + cfg.multi_weight * multi_loss
         + cfg.count_weight * count_loss
         + cfg.plan_weight * plan_loss
+        + cfg.next_type_weight * next_type_loss
+        + cfg.dca_plan_weight * dca_plan_loss
         + cfg.outcome_weight * outcome_loss
         + cfg.type_weight * type_loss
     )
@@ -482,6 +581,8 @@ def sequence_policy_loss(
         "multi": float(multi_loss.detach().cpu()),
         "count": float(count_loss.detach().cpu()),
         "plan": float(plan_loss.detach().cpu()),
+        "next_type": float(next_type_loss.detach().cpu()),
+        "dca_plan": float(dca_plan_loss.detach().cpu()),
         "outcome": float(outcome_loss.detach().cpu()),
         "type": float(type_loss.detach().cpu()),
         "multi_target_rate": float((multi_target.float().sum() / step_mask.sum().clamp(min=1.0)).detach().cpu()),
@@ -489,6 +590,9 @@ def sequence_policy_loss(
         "weight_boost": float((decision_weight_sum / valid_weight_sum).detach().cpu()),
         "dca_weight_share": float((decision_weights[damage_counter].sum() / decision_weights[valid_action].sum().clamp(min=1.0)).detach().cpu()) if bool(valid_action.any()) else 0.0,
         "multi_weight_share": float((decision_weights[multi_target].sum() / decision_weights[valid_action].sum().clamp(min=1.0)).detach().cpu()) if bool(valid_action.any()) else 0.0,
+        "next_type_rows": float(next_type_weight_sum.detach().cpu()),
+        "dca_plan_weight_share": float((decision_weights[dca_plan_mask].sum() / decision_weights[valid_action].sum().clamp(min=1.0)).detach().cpu()) if bool(valid_action.any()) else 0.0,
+        "dca_spread_pos_weight": float(dca_spread_pos_weight_value.detach().cpu()),
         "current_row_share": float(raw_current_weight.cpu()),
         "current_weight_share": float(current_objective_share),
         "current_action": weighted_valid_loss(valid_current),
@@ -509,6 +613,7 @@ def sequence_policy_loss(
 @torch.no_grad()
 def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) -> dict[str, float]:
     valid = (batch.target_first >= 0) & (batch.step_mask > 0)
+    step_mask = batch.step_mask.float()
     if not bool(valid.any()):
         return {
             "top1": 0.0,
@@ -548,6 +653,20 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
             "plan_f1": 0.0,
             "plan_pos_rate": 0.0,
             "plan_pred_pos_rate": 0.0,
+            "next_type_n": 0.0,
+            "next_type_acc": 0.0,
+            "next1_acc": 0.0,
+            "next2_acc": 0.0,
+            "next3_acc": 0.0,
+            "next4_acc": 0.0,
+            "dca_plan_n": 0.0,
+            "dca_plan_spread_acc": 0.0,
+            "dca_plan_spread_f1": 0.0,
+            "dca_plan_unique_acc": 0.0,
+            "dca_plan_unique_mae": 0.0,
+            "dca_plan_focus_mae": 0.0,
+            "dca_plan_spread_rate": 0.0,
+            "dca_plan_pred_spread_rate": 0.0,
             "action_type_acc": 0.0,
             "option_n": 0.0,
             "bigopt_rate": 0.0,
@@ -700,6 +819,59 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
     plan_f1 = float((2.0 * plan_tp / (plan_pp + plan_gp).clamp(min=1.0)).item())
     plan_pos_rate = float((plan_gp / plan_mask.float().sum().clamp(min=1.0)).item())
     plan_pred_pos_rate = float((plan_pp / plan_mask.float().sum().clamp(min=1.0)).item())
+    next_type_logits = outputs.get("next_type_logits")
+    next_type_n = next_type_acc = 0.0
+    next_acc_by_offset = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
+    if next_type_logits is not None:
+        horizon = int(next_type_logits.shape[2])
+        seq_len = int(step_mask.shape[1])
+        total_correct = 0.0
+        total_n = 0.0
+        for offset in range(1, min(horizon, seq_len - 1) + 1):
+            src = slice(0, seq_len - offset)
+            tgt = slice(offset, seq_len)
+            valid_next = (
+                (batch.step_mask[:, src] > 0)
+                & (batch.step_mask[:, tgt] > 0)
+                & (batch.target_first[:, tgt] >= 0)
+            )
+            n_next = float(valid_next.sum().item())
+            if n_next <= 0:
+                continue
+            pred_next = next_type_logits[:, src, offset - 1, :].argmax(dim=-1)
+            correct = (
+                pred_next[valid_next]
+                == batch.target_type[:, tgt].long()[valid_next].clamp(0, next_type_logits.shape[-1] - 1)
+            ).float().sum().item()
+            acc_next = float(correct / max(n_next, 1.0))
+            if offset in next_acc_by_offset:
+                next_acc_by_offset[offset] = acc_next
+            total_correct += correct
+            total_n += n_next
+        next_type_n = total_n
+        next_type_acc = float(total_correct / max(total_n, 1.0))
+
+    dca_plan_n = dca_plan_spread_acc = dca_plan_spread_f1 = 0.0
+    dca_plan_unique_acc = dca_plan_unique_mae = dca_plan_focus_mae = 0.0
+    dca_plan_spread_rate = dca_plan_pred_spread_rate = 0.0
+    if bool(dca.any()) and "dca_spread_logits" in outputs:
+        spread_target = (batch.dca_group_unique_slots.long()[dca] > 1).float()
+        spread_pred = (torch.sigmoid(outputs["dca_spread_logits"][dca]) >= 0.5).float()
+        dca_plan_n = float(spread_target.numel())
+        dca_plan_spread_acc = float((spread_pred == spread_target).float().mean().item())
+        sp_tp = (spread_pred * spread_target).sum()
+        sp_pp = spread_pred.sum()
+        sp_gp = spread_target.sum()
+        dca_plan_spread_f1 = float((2.0 * sp_tp / (sp_pp + sp_gp).clamp(min=1.0)).item())
+        unique_target = batch.dca_group_unique_slots.long()[dca].clamp(0, MAX_SELECT_COUNT)
+        unique_pred = outputs["dca_unique_logits"][dca].argmax(dim=-1)
+        dca_plan_unique_acc = float((unique_pred == unique_target).float().mean().item())
+        dca_plan_unique_mae = float((unique_pred.float() - unique_target.float()).abs().mean().item())
+        focus_target = batch.dca_group_focus_frac.float()[dca].clamp(0.0, 1.0)
+        focus_pred = torch.sigmoid(outputs["dca_focus_logits"][dca])
+        dca_plan_focus_mae = float((focus_pred - focus_target).abs().mean().item())
+        dca_plan_spread_rate = float(spread_target.mean().item())
+        dca_plan_pred_spread_rate = float(spread_pred.mean().item())
     dca_rows = dca.float().sum().clamp(min=1.0)
     dca_focus_mean = ((batch.dca_group_focus_frac.float() * dca.float()).sum() / dca_rows).item()
     dca_spread_rate = (dca_spread.float().sum() / dca_rows).item()
@@ -787,6 +959,20 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
         "plan_f1": float(plan_f1),
         "plan_pos_rate": float(plan_pos_rate),
         "plan_pred_pos_rate": float(plan_pred_pos_rate),
+        "next_type_n": float(next_type_n),
+        "next_type_acc": float(next_type_acc),
+        "next1_acc": float(next_acc_by_offset[1]),
+        "next2_acc": float(next_acc_by_offset[2]),
+        "next3_acc": float(next_acc_by_offset[3]),
+        "next4_acc": float(next_acc_by_offset[4]),
+        "dca_plan_n": float(dca_plan_n),
+        "dca_plan_spread_acc": float(dca_plan_spread_acc),
+        "dca_plan_spread_f1": float(dca_plan_spread_f1),
+        "dca_plan_unique_acc": float(dca_plan_unique_acc),
+        "dca_plan_unique_mae": float(dca_plan_unique_mae),
+        "dca_plan_focus_mae": float(dca_plan_focus_mae),
+        "dca_plan_spread_rate": float(dca_plan_spread_rate),
+        "dca_plan_pred_spread_rate": float(dca_plan_pred_spread_rate),
         "action_type_acc": float(action_type_acc),
         "option_n": float(opt_n[valid].float().mean().item()),
         "bigopt_rate": float(bigopt.float().sum().item() / max(valid_n, 1.0)),

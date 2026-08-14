@@ -206,7 +206,7 @@ def main() -> None:
 
     ckpt = torch.load(args.checkpoint, map_location="cpu")
     model = SequencePolicyNet(**ckpt["model_config"])
-    model.load_state_dict(ckpt["model_state"])
+    model.load_state_dict(ckpt["model_state"], strict=False)
     model.to(args.device).eval()
     loss_cfg = SequenceLossConfig()
 

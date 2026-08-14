@@ -11184,3 +11184,70 @@ Update 2026-08-14 16:55 CST:
     `v14dca_dragapult_cc2e_w512_dca6`, `v14dca_dragapult_140f_w512_dca6`,
     `v14dca_alakazam_7f9a_w384_ctx`.
   - random eval command was corrected to the positional checkpoint CLI.
+
+Update 2026-08-15 00:10 CST:
+
+- User explicitly requested: do not continue fixing remaining signal/architecture
+  issues overnight. First run stable long training and automated tests; resume
+  signal fixes tomorrow.
+- Current branch: `sequence-decision-pipeline-v14`. Remote workspace:
+  `ks:/data/jie/ptcg_rl_git_v7_baseline_20260804` (not a git repo).
+- Local code changes after commit `de514c8`:
+  - `ptcg_rl/seq/model.py`: added training-only future action-type head and
+    DCA block-plan heads; loss now includes `next_type_weight` and
+    `dca_plan_weight`. DCA spread BCE now uses dynamic positive weighting
+    capped at 8 because spread labels are minority.
+  - `tools/v14_train_sequence_policy.py`: training logs now show next-type,
+    DCA-plan, no-action/reversed-history future deltas, DCA positive weight,
+    and corrected `grad_norm` moving averages. The latest `grad_norm` fix was
+    synced to ks before starting the long runner.
+  - `ptcg_rl/seq/torch_policy.py` and `tools/v14_probe_sequence_policy.py` load
+    checkpoints with `strict=False` so new training-only heads do not break old
+    v14 inference.
+- Smoke result:
+  - `batch-size=512` in `logs/v14_seqplan_smoke3_20260814/` OOMed near 80GB.
+    Do not use this for overnight runs.
+  - `batch-size=256` in `logs/v14_seqplan_smoke4_20260814/` completed for
+    Dragapult `cc2e`, Alakazam `7f9`, Mega Lopunny `f144`, and Marnie `b8f`.
+    GPU memory was about 30-37GB. This is the safe nightly setting.
+  - smoke4 showed future-type history sensitivity is visible
+    (`revhist_nextD` around -0.07 to -0.15), but current-action logits still
+    barely use history order (`revhist_delta` near 0 and high agreement). This
+    is the main signal fix to revisit tomorrow.
+  - Dragapult DCA plan no longer fully collapses after positive weighting:
+    smoke4 `cc2e` val `dplan_f1=0.334`, `spread_rate=0.16`,
+    `pred_spread_rate=0.32`; still weak and needs structural work later.
+- Nightly long runner started on ks:
+  - script: `/tmp/run_v14_seqplan_nightly_20260814.sh`
+  - runner pid printed by ssh: `2505620`
+  - log directory: `logs/v14_seqplan_nightly_20260814/`
+  - checkpoint directory: `checkpoints/v14_seqplan_nightly_20260814/`
+  - corpus: `data/seq_corpus_v14_0801_0813_hq`
+  - training is four parallel specialist-from-scratch jobs, all `seq_len=48`,
+    `width=384`, `layers=4`, `heads=6`, `batch=256`, no AMP, all score bands
+    600+ through 1200+:
+    - GPU0 Dragapult `cc2e995b5ad0`, 8 epochs, `damage_counter_weight=6`,
+      deck `logs/ladder_pool_0812_all_v13_20260813/decks/cc2e995b5ad0_dragapult_kh0a.csv`
+    - GPU1 Dragapult `7b80ccf70f9f`, 16 epochs, `damage_counter_weight=6`,
+      deck `logs/ladder_pool_0812_all_v13_20260813/decks/7b80ccf70f9f_dragapult_sixth_sense.csv`
+    - GPU2 Alakazam `7f9a538936e3`, 6 epochs,
+      deck `logs/ladder_pool_0812_all_v13_20260813/decks/7f9a538936e3_alakazam_yushin_ito.csv`
+    - GPU3 Alakazam `589269aab27e`, 14 epochs,
+      deck `logs/ladder_pool_0812_all_v13_20260813/decks/589269aab27e_alakazam_bart_edwyn.csv`
+  - After each training job, the runner automatically runs:
+    - `tools/eval_bc.py ... --games 500 --workers 16`
+    - candidate-only RR vs
+      `logs/v14_sequence_0808_0812/rr_v14_pop_filtered_random96_20260814/manifest.csv`
+      with `--games 80 --workers 16`
+  - Final summary will be written to
+    `logs/v14_seqplan_nightly_20260814/summary.txt`, and completion marker to
+    `logs/v14_seqplan_nightly_20260814/runner.done`.
+- Morning TODO:
+  - First inspect `logs/v14_seqplan_nightly_20260814/summary.txt`, train logs,
+    and RR CSVs. Pull key logs/checkpoints back to local before risky changes.
+  - Do not judge only by random/RR. Inspect training-time signal health:
+    `revhist_delta`, `revhist_nextD`, `noact_nextD`, `dplan_f1`,
+    `dca_plan_pred_spread_rate`, `attach/evolve/attack` top1, ambiguous option
+    top1, and current-vs-prefix loss.
+  - Then continue structural signal fixes: current action must actually depend
+    on useful history/order, not only future auxiliary heads.

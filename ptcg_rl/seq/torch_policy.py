@@ -45,7 +45,10 @@ class TorchSequencePolicy:
             ckpt = torch.load(path, map_location="cpu")
         model_config = dict(ckpt["model_config"])
         model = SequencePolicyNet(**model_config)
-        model.load_state_dict(ckpt["model_state"])
+        # Training-only diagnostic heads may be added over time. They do not
+        # participate in live action selection, so older checkpoints should
+        # remain usable after such changes.
+        model.load_state_dict(ckpt["model_state"], strict=False)
         seq_len = int(model_config.get("max_seq_len", 32))
         return cls(model, device=device, seq_len=seq_len, model_config=model_config)
 

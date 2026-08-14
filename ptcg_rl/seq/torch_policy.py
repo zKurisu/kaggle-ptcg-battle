@@ -1,0 +1,203 @@
+from __future__ import annotations
+
+import numpy as np
+import torch
+
+from ptcg_rl.encoder import FastEncoder, OPT_FEAT_DIM, STATE_FEAT_DIM, STATE_TOKEN_FEAT_DIM
+from ptcg_rl.seq.constants import FUTURE_PLAN_DIM, LEDGER_FEAT_DIM
+from ptcg_rl.seq.data import SequenceBatch
+from ptcg_rl.seq.features import SequenceLedger
+from ptcg_rl.seq.model import SequencePolicyNet
+
+
+class TorchSequencePolicy:
+    """Live/local inference wrapper for v14 sequence checkpoints."""
+
+    def __init__(self, model: SequencePolicyNet, *, device: str = "cpu", seq_len: int = 32):
+        self.model = model.to(device).eval()
+        self.device = torch.device(device)
+        self.seq_len = int(seq_len)
+        self.encoder = FastEncoder()
+        self.ledger = SequenceLedger()
+        self.buffer: list[dict[str, np.ndarray | int | float]] = []
+
+    @classmethod
+    def load(cls, path: str, *, device: str = "cpu") -> "TorchSequencePolicy":
+        ckpt = torch.load(path, map_location="cpu")
+        model = SequencePolicyNet(**ckpt["model_config"])
+        model.load_state_dict(ckpt["model_state"])
+        seq_len = int(ckpt.get("model_config", {}).get("max_seq_len", 32))
+        return cls(model, device=device, seq_len=seq_len)
+
+    def reset_history(self) -> None:
+        self.ledger.reset()
+        self.buffer.clear()
+
+    def select(self, obs_dict: dict, *, greedy: bool = True, update_history: bool = True) -> list[int]:
+        encoded = self.encoder.encode(obs_dict)
+        row = self._row_from_encoded(encoded)
+        rows = (self.buffer + [row])[-self.seq_len:]
+        batch = self._batch_from_rows(rows).to(self.device)
+        with torch.no_grad():
+            out = self.model(batch)
+            logits = out["action_logits"][0, -1].detach().cpu().numpy()
+        n = len(encoded.opt_type)
+        sel = obs_dict.get("select") or {}
+        mn = int(sel.get("minCount", encoded.min_count))
+        mx = int(sel.get("maxCount", encoded.max_count))
+        if n == 0 or mx <= 0:
+            picks: list[int] = []
+        elif greedy:
+            order = list(np.argsort(-logits[:n]))
+            k = max(mn, min(mx, 1))
+            picks = order[:k]
+        else:
+            probs = np.exp(logits[:n] - np.max(logits[:n]))
+            probs = probs / max(float(probs.sum()), 1e-9)
+            k = max(mn, min(mx, 1))
+            picks = list(np.random.choice(np.arange(n), size=k, replace=False, p=probs))
+        picks = [int(x) for x in picks if 0 <= int(x) < n]
+        picks = list(dict.fromkeys(picks))
+        if len(picks) < mn:
+            missing = [i for i in range(n) if i not in picks]
+            picks.extend(missing[: mn - len(picks)])
+        picks = picks[:mx]
+        if update_history:
+            self.remember_encoded(encoded, picks, row)
+        return picks
+
+    def remember_decision(self, obs_dict: dict, picks: list[int]) -> None:
+        encoded = self.encoder.encode(obs_dict)
+        self.remember_encoded(encoded, picks, self._row_from_encoded(encoded))
+
+    def remember_encoded(self, encoded, picks: list[int], row: dict[str, np.ndarray | int | float] | None = None) -> None:
+        if row is None:
+            row = self._row_from_encoded(encoded)
+        self.ledger.update(encoded, picks)
+        self.buffer.append(row)
+        if len(self.buffer) > self.seq_len - 1:
+            del self.buffer[: len(self.buffer) - (self.seq_len - 1)]
+
+    def _row_from_encoded(self, encoded) -> dict[str, np.ndarray | int | float]:
+        prev = self.ledger.last_event or {}
+        return {
+            "board": np.asarray(encoded.board_cards, dtype=np.int64),
+            "hand": np.asarray(encoded.hand_cards, dtype=np.int64),
+            "feats": np.asarray(encoded.state_feats, dtype=np.float32),
+            "state_token_feats": np.asarray(encoded.state_token_feats, dtype=np.float32),
+            "ledger_feats": self.ledger.features(encoded),
+            "prev_type": int(prev.get("type", 0) or 0),
+            "prev_card": int(prev.get("card", 0) or 0),
+            "prev_card2": int(prev.get("card2", 0) or 0),
+            "prev_attack": int(prev.get("attack", 0) or 0),
+            "prev_context": int(prev.get("context", 0) or 0),
+            "prev_select_type": int(prev.get("select_type", 0) or 0),
+            "prev_count": float(prev.get("count", 0.0) or 0.0),
+            "opt_type": np.asarray(encoded.opt_type, dtype=np.int64),
+            "opt_card": np.asarray(encoded.opt_card, dtype=np.int64),
+            "opt_card2": np.asarray(encoded.opt_card2, dtype=np.int64),
+            "opt_attack": np.asarray(encoded.opt_attack, dtype=np.int64),
+            "opt_feats": np.asarray(encoded.opt_feats, dtype=np.float32),
+            "min_count": int(encoded.min_count),
+            "max_count": int(encoded.max_count),
+        }
+
+    def _batch_from_rows(self, rows: list[dict[str, np.ndarray | int | float]]) -> SequenceBatch:
+        seq_len = self.seq_len
+        nopt = max(1, max(len(np.asarray(r["opt_type"]).reshape(-1)) for r in rows))
+        offset = seq_len - len(rows)
+        board = np.zeros((1, seq_len, 12), dtype=np.int64)
+        hand = np.zeros((1, seq_len, 25), dtype=np.int64)
+        feats = np.zeros((1, seq_len, STATE_FEAT_DIM), dtype=np.float32)
+        stf = np.zeros((1, seq_len, 37, STATE_TOKEN_FEAT_DIM), dtype=np.float32)
+        ledger = np.zeros((1, seq_len, LEDGER_FEAT_DIM), dtype=np.float32)
+        prev_type = np.zeros((1, seq_len), dtype=np.int64)
+        prev_card = np.zeros((1, seq_len), dtype=np.int64)
+        prev_card2 = np.zeros((1, seq_len), dtype=np.int64)
+        prev_attack = np.zeros((1, seq_len), dtype=np.int64)
+        prev_context = np.zeros((1, seq_len), dtype=np.int64)
+        prev_select_type = np.zeros((1, seq_len), dtype=np.int64)
+        prev_count = np.zeros((1, seq_len), dtype=np.float32)
+        opt_type = np.zeros((1, seq_len, nopt), dtype=np.int64)
+        opt_card = np.zeros((1, seq_len, nopt), dtype=np.int64)
+        opt_card2 = np.zeros((1, seq_len, nopt), dtype=np.int64)
+        opt_attack = np.zeros((1, seq_len, nopt), dtype=np.int64)
+        opt_feats = np.zeros((1, seq_len, nopt, OPT_FEAT_DIM), dtype=np.float32)
+        option_mask = np.zeros((1, seq_len, nopt), dtype=np.float32)
+        step_mask = np.zeros((1, seq_len), dtype=np.float32)
+        for i, row in enumerate(rows, offset):
+            board[0, i] = _fit_1d(row["board"], 12, np.int64)
+            hand[0, i] = _fit_1d(row["hand"], 25, np.int64)
+            feats[0, i] = _fit_1d(row["feats"], STATE_FEAT_DIM, np.float32)
+            stf[0, i] = _fit_2d(row["state_token_feats"], 37, STATE_TOKEN_FEAT_DIM)
+            ledger[0, i] = _fit_1d(row["ledger_feats"], LEDGER_FEAT_DIM, np.float32)
+            prev_type[0, i] = int(row["prev_type"])
+            prev_card[0, i] = int(row["prev_card"])
+            prev_card2[0, i] = int(row["prev_card2"])
+            prev_attack[0, i] = int(row["prev_attack"])
+            prev_context[0, i] = int(row["prev_context"])
+            prev_select_type[0, i] = int(row["prev_select_type"])
+            prev_count[0, i] = float(row["prev_count"])
+            ot = np.asarray(row["opt_type"], dtype=np.int64).reshape(-1)
+            n = len(ot)
+            opt_type[0, i, :n] = ot
+            opt_card[0, i, :n] = _fit_1d(row["opt_card"], n, np.int64)
+            opt_card2[0, i, :n] = _fit_1d(row["opt_card2"], n, np.int64)
+            opt_attack[0, i, :n] = _fit_1d(row["opt_attack"], n, np.int64)
+            opt_feats[0, i, :n] = _fit_2d(row["opt_feats"], n, OPT_FEAT_DIM)
+            option_mask[0, i, :n] = 1.0
+            step_mask[0, i] = 1.0
+        dummy_first = np.full((1, seq_len), -1, dtype=np.int64)
+        dummy_multi = np.zeros((1, seq_len, nopt), dtype=np.float32)
+        return SequenceBatch(
+            board=torch.from_numpy(board),
+            hand=torch.from_numpy(hand),
+            feats=torch.from_numpy(feats),
+            state_token_feats=torch.from_numpy(stf),
+            ledger_feats=torch.from_numpy(ledger),
+            prev_type=torch.from_numpy(prev_type),
+            prev_card=torch.from_numpy(prev_card),
+            prev_card2=torch.from_numpy(prev_card2),
+            prev_attack=torch.from_numpy(prev_attack),
+            prev_context=torch.from_numpy(prev_context),
+            prev_select_type=torch.from_numpy(prev_select_type),
+            prev_count=torch.from_numpy(prev_count),
+            opt_type=torch.from_numpy(opt_type),
+            opt_card=torch.from_numpy(opt_card),
+            opt_card2=torch.from_numpy(opt_card2),
+            opt_attack=torch.from_numpy(opt_attack),
+            opt_feats=torch.from_numpy(opt_feats),
+            option_mask=torch.from_numpy(option_mask),
+            target_first=torch.from_numpy(dummy_first),
+            target_multi=torch.from_numpy(dummy_multi),
+            target_type=torch.zeros((1, seq_len), dtype=torch.int64),
+            min_count=torch.zeros((1, seq_len), dtype=torch.int64),
+            max_count=torch.ones((1, seq_len), dtype=torch.int64),
+            step_mask=torch.from_numpy(step_mask),
+            sample_weight=torch.ones((1, seq_len), dtype=torch.float32),
+            future_plan=torch.zeros((1, seq_len, FUTURE_PLAN_DIM), dtype=torch.float32),
+            outcome=torch.zeros((1, seq_len), dtype=torch.float32),
+            game_keys=["live"],
+            row_refs=[[]],
+        )
+
+
+def _fit_1d(value, dim: int, dtype) -> np.ndarray:
+    out = np.zeros(dim, dtype=dtype)
+    arr = np.asarray(value, dtype=dtype).reshape(-1)
+    n = min(dim, arr.size)
+    if n:
+        out[:n] = arr[:n]
+    return out
+
+
+def _fit_2d(value, rows: int, cols: int) -> np.ndarray:
+    out = np.zeros((rows, cols), dtype=np.float32)
+    arr = np.asarray(value, dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    if arr.ndim == 2:
+        r = min(rows, arr.shape[0])
+        c = min(cols, arr.shape[1])
+        out[:r, :c] = arr[:r, :c]
+    return out

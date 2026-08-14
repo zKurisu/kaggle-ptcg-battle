@@ -9,13 +9,21 @@ for p in [HERE, os.path.dirname(HERE)]:  # repo root + workspace root
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from ptcg_rl.numpy_policy import NumpyPolicy
+from ptcg_rl.policy_loader import load_policy
 from ptcg_rl.resource_planner import apply_rule_decision, make_rule_planner
 
 with open(os.path.join(HERE, "deck.csv")) as f:
     MY_DECK = [int(l.strip()) for l in f if l.strip()]
 
-policy = NumpyPolicy.load(os.path.join(HERE, "policy.npz"))
+_POLICY_FILE = os.environ.get("PTCG_POLICY_FILE", "").strip()
+if not _POLICY_FILE:
+    for _name in ("policy.pt", "policy.pth", "policy.npz"):
+        if os.path.exists(os.path.join(HERE, _name)):
+            _POLICY_FILE = _name
+            break
+if not _POLICY_FILE:
+    _POLICY_FILE = "policy.npz"
+policy = load_policy(os.path.join(HERE, _POLICY_FILE), device="cpu")
 
 
 def _load_rule_mode() -> str:

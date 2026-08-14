@@ -20,7 +20,7 @@ for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUME
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from ptcg_rl.numpy_policy import NumpyPolicy
+from ptcg_rl.policy_loader import load_policy
 from ptcg_rl.deck_registry import registry_deck_for_policy
 from ptcg_rl.resource_planner import apply_rule_decision, make_rule_planner
 from ptcg_rl.rule_overlay import RULE_MODES
@@ -38,7 +38,7 @@ class Entry:
     name: str
     policy_path: str
     deck_path: str
-    policy: NumpyPolicy | None
+    policy: object | None
     deck: list[int]
     rules: str = ""
     mcts: bool = False
@@ -170,7 +170,7 @@ def load_entries(specs: list[str], default_deck: str, include_random: bool,
         seen.add(name)
         try:
             deck = read_deck(deck_path)
-            policy = None if policy_path == "random" else NumpyPolicy.load(policy_path)
+            policy = None if policy_path == "random" else load_policy(policy_path, device="cpu")
         except Exception as exc:
             if skip_bad_entries:
                 print(f"Skipping bad entry {name}: {exc}", flush=True)

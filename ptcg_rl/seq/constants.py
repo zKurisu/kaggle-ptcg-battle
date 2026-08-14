@@ -1,0 +1,54 @@
+from __future__ import annotations
+
+FEATURE_VERSION = "v14_sequence_decision_v1"
+
+DEFAULT_SEQ_LEN = 32
+DEFAULT_FUTURE_HORIZON = 12
+
+LEDGER_FEAT_DIM = 64
+FUTURE_PLAN_DIM = 24
+
+# Option type ids used by the game engine and the existing encoder.
+TYPE_NUMBER = 0
+TYPE_YES = 1
+TYPE_NO = 2
+TYPE_CARD = 3
+TYPE_TOOL_CARD = 4
+TYPE_ENERGY_CARD = 5
+TYPE_ENERGY = 6
+TYPE_PLAY = 7
+TYPE_ATTACH = 8
+TYPE_EVOLVE = 9
+TYPE_ABILITY = 10
+TYPE_DISCARD = 11
+TYPE_RETREAT = 12
+TYPE_ATTACK = 13
+TYPE_END = 14
+TYPE_SKILL = 15
+TYPE_SPECIAL_CONDITION = 16
+
+N_ACTION_TYPES = 18  # 17 engine types + padding/unknown bucket.
+
+ACTION_TYPE_NAMES = {
+    TYPE_NUMBER: "NUMBER",
+    TYPE_YES: "YES",
+    TYPE_NO: "NO",
+    TYPE_CARD: "CARD",
+    TYPE_TOOL_CARD: "TOOL_CARD",
+    TYPE_ENERGY_CARD: "ENERGY_CARD",
+    TYPE_ENERGY: "ENERGY",
+    TYPE_PLAY: "PLAY",
+    TYPE_ATTACH: "ATTACH",
+    TYPE_EVOLVE: "EVOLVE",
+    TYPE_ABILITY: "ABILITY",
+    TYPE_DISCARD: "DISCARD",
+    TYPE_RETREAT: "RETREAT",
+    TYPE_ATTACK: "ATTACK",
+    TYPE_END: "END",
+    TYPE_SKILL: "SKILL",
+    TYPE_SPECIAL_CONDITION: "SPECIAL_CONDITION",
+}
+
+
+def type_id_name(type_id: int) -> str:
+    return ACTION_TYPE_NAMES.get(int(type_id), f"TYPE_{int(type_id)}")

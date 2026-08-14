@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import csv
+import os
+import shlex
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass
+class Job:
+    name: str
+    archetype: str
+    deck_sig: str
+    team_name: str
+    score_bands: str
+    out: str
+    gpu: str = ""
+    proc: subprocess.Popen | None = None
+    log_path: str = ""
+    start_time: float = 0.0
+    status: str = "pending"
+
+
+def clean_name(value: str) -> str:
+    return "".join(ch.lower() if ch.isalnum() else "_" for ch in value).strip("_")
+
+
+def read_jobs(path: str, *, default_out_dir: str, default_score_bands: str) -> list[Job]:
+    jobs: list[Job] = []
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            arch = (row.get("archetype") or row.get("arch") or "").strip()
+            if not arch:
+                continue
+            deck_sig = (row.get("deck_sig") or "").strip()
+            team = (row.get("team_name") or "").strip()
+            name = (row.get("name") or row.get("job") or "").strip()
+            if not name:
+                parts = [clean_name(arch), deck_sig[:8] if deck_sig else "", clean_name(team)[:24] if team else ""]
+                name = "_".join(x for x in parts if x)
+            out = (row.get("out") or "").strip()
+            if not out:
+                out = str(Path(default_out_dir) / f"{name}.pt")
+            bands = (row.get("score_bands") or default_score_bands).strip()
+            jobs.append(Job(name=name, archetype=arch, deck_sig=deck_sig, team_name=team, score_bands=bands, out=out))
+    if not jobs:
+        raise ValueError(f"manifest has no jobs: {path}")
+    return jobs
+
+
+def build_cmd(args: argparse.Namespace, job: Job) -> list[str]:
+    cmd = [
+        sys.executable,
+        "tools/v14_train_sequence_policy.py",
+        "--corpus",
+        args.corpus,
+        "--archetype",
+        job.archetype,
+        "--score-bands",
+        *job.score_bands.split(),
+        "--seq-len",
+        str(args.seq_len),
+        "--stride",
+        str(args.stride),
+        "--width",
+        str(args.width),
+        "--layers",
+        str(args.layers),
+        "--heads",
+        str(args.heads),
+        "--dropout",
+        str(args.dropout),
+        "--batch-size",
+        str(args.batch_size),
+        "--epochs",
+        str(args.epochs),
+        "--lr",
+        str(args.lr),
+        "--weight-decay",
+        str(args.weight_decay),
+        "--win-weight",
+        str(args.win_weight),
+        "--loss-weight",
+        str(args.loss_weight),
+        "--draw-weight",
+        str(args.draw_weight),
+        "--progress-every",
+        str(args.progress_every),
+        "--device",
+        "cuda" if job.gpu else args.device,
+        "--out",
+        job.out,
+    ]
+    if args.date_from:
+        cmd += ["--date-from", args.date_from]
+    if args.date_to:
+        cmd += ["--date-to", args.date_to]
+    if args.amp:
+        cmd.append("--amp")
+    if args.winner_only:
+        cmd.append("--winner-only")
+    if args.min_score:
+        cmd += ["--min-score", str(args.min_score)]
+    if job.deck_sig:
+        cmd += ["--deck-sig", job.deck_sig]
+    if job.team_name:
+        cmd += ["--team-name", job.team_name]
+    return cmd
+
+
+def main() -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument("--manifest", required=True,
+                   help="CSV with archetype, optional deck_sig/team_name/name/out/score_bands")
+    p.add_argument("--corpus", required=True)
+    p.add_argument("--out-dir", default="checkpoints/v14_sequence_population")
+    p.add_argument("--log-dir", default="logs/v14_sequence_population")
+    p.add_argument("--gpus", default="0,1,2,3")
+    p.add_argument("--jobs-per-gpu", type=int, default=1)
+    p.add_argument("--score-bands", default="900-999 1000-1099 1100-1199 1200+")
+    p.add_argument("--date-from", default="")
+    p.add_argument("--date-to", default="")
+    p.add_argument("--seq-len", type=int, default=32)
+    p.add_argument("--stride", type=int, default=1)
+    p.add_argument("--width", type=int, default=384)
+    p.add_argument("--layers", type=int, default=4)
+    p.add_argument("--heads", type=int, default=6)
+    p.add_argument("--dropout", type=float, default=0.10)
+    p.add_argument("--batch-size", type=int, default=128)
+    p.add_argument("--epochs", type=int, default=8)
+    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--weight-decay", type=float, default=1e-4)
+    p.add_argument("--win-weight", type=float, default=1.5)
+    p.add_argument("--loss-weight", type=float, default=0.5)
+    p.add_argument("--draw-weight", type=float, default=0.8)
+    p.add_argument("--winner-only", action="store_true")
+    p.add_argument("--min-score", type=float, default=0.0)
+    p.add_argument("--amp", action="store_true")
+    p.add_argument("--device", default="cpu")
+    p.add_argument("--progress-every", type=int, default=50)
+    p.add_argument("--poll", type=float, default=30.0)
+    args = p.parse_args()
+
+    Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+    Path(args.log_dir).mkdir(parents=True, exist_ok=True)
+    jobs = read_jobs(args.manifest, default_out_dir=args.out_dir, default_score_bands=args.score_bands)
+    gpu_slots: list[str] = []
+    for gpu in [x.strip() for x in args.gpus.split(",") if x.strip()]:
+        gpu_slots.extend([gpu] * max(1, args.jobs_per_gpu))
+    if not gpu_slots:
+        gpu_slots = [""]
+
+    pending = list(jobs)
+    running: list[Job] = []
+    done: list[Job] = []
+    failed: list[Job] = []
+    print(f"v14 population jobs={len(jobs)} slots={gpu_slots}", flush=True)
+    while pending or running:
+        free = list(gpu_slots)
+        for job in running:
+            if job.gpu in free:
+                free.remove(job.gpu)
+        while pending and free:
+            job = pending.pop(0)
+            job.gpu = free.pop(0)
+            job.log_path = str(Path(args.log_dir) / f"{job.name}.log")
+            cmd = build_cmd(args, job)
+            env = os.environ.copy()
+            if job.gpu:
+                env["CUDA_VISIBLE_DEVICES"] = job.gpu
+            with open(job.log_path, "w") as log:
+                log.write(" ".join(shlex.quote(x) for x in cmd) + "\n")
+                log.flush()
+                job.proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=env)
+            job.start_time = time.time()
+            job.status = "running"
+            running.append(job)
+            print(f"start gpu={job.gpu or '-'} {job.name} log={job.log_path}", flush=True)
+
+        still: list[Job] = []
+        for job in running:
+            rc = job.proc.poll() if job.proc else 1
+            if rc is None:
+                still.append(job)
+            elif rc == 0:
+                job.status = "done"
+                done.append(job)
+                print(f"done {job.name} {((time.time()-job.start_time)/60):.1f}m", flush=True)
+            else:
+                job.status = "failed"
+                failed.append(job)
+                print(f"failed rc={rc} {job.name} log={job.log_path}", flush=True)
+        running = still
+        print(f"Status: pending={len(pending)} running={len(running)} done={len(done)} failed={len(failed)}", flush=True)
+        for job in running:
+            print(f"  gpu={job.gpu or '-'} {job.name} {(time.time()-job.start_time)/60:.1f}m log={job.log_path}", flush=True)
+        if pending or running:
+            time.sleep(args.poll)
+    if failed:
+        raise SystemExit("Failed jobs: " + ", ".join(job.name for job in failed))
+
+
+if __name__ == "__main__":
+    main()

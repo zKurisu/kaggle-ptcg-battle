@@ -9,7 +9,7 @@ for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUME
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from ptcg_rl.numpy_policy import NumpyPolicy
+from ptcg_rl.policy_loader import load_policy
 from ptcg_rl.deck_registry import registry_deck_for_policy
 from ptcg_rl.resource_planner import apply_rule_decision, make_rule_planner
 from ptcg_rl.rule_overlay import RULE_MODES
@@ -110,7 +110,7 @@ def _play_one_game(policy, deck, game_index, use_mcts=False, sims=48,
 
 def _init_worker(policy_path, deck, use_mcts, sims, time_budget, max_turns, rules):
     global _WORKER_POLICY, _WORKER_DECK, _WORKER_USE_MCTS, _WORKER_SIMS, _WORKER_TIME_BUDGET, _WORKER_MAX_TURNS, _WORKER_RULES
-    _WORKER_POLICY = NumpyPolicy.load(policy_path)
+    _WORKER_POLICY = load_policy(policy_path, device="cpu")
     _WORKER_DECK = deck
     _WORKER_USE_MCTS = use_mcts
     _WORKER_SIMS = sims
@@ -204,7 +204,7 @@ def main():
         if args.auto_deck:
             raise FileNotFoundError(f"no registry deck found for policy: {args.policy}")
 
-    policy = NumpyPolicy.load(args.policy)
+    policy = load_policy(args.policy, device="cpu")
     deck = load_deck(args.deck)
     
     print(f"Policy: {args.policy}")

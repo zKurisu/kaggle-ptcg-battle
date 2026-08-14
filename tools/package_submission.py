@@ -31,7 +31,7 @@ def _default_cg_dir(repo: Path) -> Path | None:
 def main():
     repo = Path(__file__).resolve().parent.parent
     p = argparse.ArgumentParser()
-    p.add_argument("--policy", required=True, help="trained .npz checkpoint")
+    p.add_argument("--policy", required=True, help="trained .npz or v14 .pt checkpoint")
     p.add_argument("--deck", default="")
     p.add_argument("--registry", default="",
                    help="CSV mapping policy_path to deck_path; used when --deck is omitted")
@@ -73,7 +73,8 @@ def main():
         print("  copying main.py/deck/policy", flush=True)
         shutil.copy2(repo / "main.py", root / "main.py")
         shutil.copy2(deck, root / "deck.csv")
-        shutil.copy2(policy, root / "policy.npz")
+        policy_name = "policy.pt" if policy.suffix.lower() in {".pt", ".pth"} else "policy.npz"
+        shutil.copy2(policy, root / policy_name)
         if args.rules:
             (root / "rules.txt").write_text(args.rules + "\n")
             print(f"  rules:  {args.rules}", flush=True)

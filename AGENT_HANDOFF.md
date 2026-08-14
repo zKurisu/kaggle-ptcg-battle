@@ -1,13 +1,16 @@
 # Agent Handoff
 
-Last updated: 2026-08-13 21:18 Asia/Shanghai.
+Last updated: 2026-08-14 09:55 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
 ## Workspaces
 
 - Local repo: `/home/jie/Do/0_PTCG/bak/ptcg_rl_git`
-- Local branch currently checked out in `/home/jie/Do/0_PTCG/bak/ptcg_rl_git`: `dragapult-pipeline-v13`.
+- Local branch currently checked out in `/home/jie/Do/0_PTCG/bak/ptcg_rl_git`:
+  `sequence-decision-pipeline-v14`.
+  This branch intentionally starts a separate sequence-first pipeline instead
+  of continuing to patch the old single-step BC stack.
   Older handoff entries and the remote workspace name still refer to
   `v7-baseline-20260804`; do not switch or rewrite branches unless the user
   explicitly asks.
@@ -258,6 +261,138 @@ early climb matters. A package that can sit near 950 can still fail early when
 matched into another strong fresh submission climbing from 600. A single mean
 RR score is therefore not sufficient; validation must estimate low-tail climb
 risk.
+
+## v14 Sequence-First Pipeline 2026-08-14
+
+User explicitly requested a new branch and aggressive redesign because the old
+BC pipeline is too focused on single next-step decisions. The new v14 branch is
+not a micro-tweak of `bc2_train.py`.
+
+New files:
+
+- `ptcg_rl/seq/constants.py`
+- `ptcg_rl/seq/features.py`
+- `ptcg_rl/seq/data.py`
+- `ptcg_rl/seq/model.py`
+- `ptcg_rl/seq/torch_policy.py`
+- `ptcg_rl/policy_loader.py`
+- `tools/v14_extract_sequences.py`
+- `tools/v14_train_sequence_policy.py`
+- `tools/v14_train_population.py`
+- `tools/v14_audit_sequence_corpus.py`
+- `tools/v14_probe_sequence_policy.py`
+- `tools/v14_eval_random.py`
+- `tools/v14_build_train_manifest.py`
+- `docs/12_sequence_pipeline_v14.md`
+
+Changed existing files:
+
+- `main.py`: can load `policy.pt`/`policy.pth` through `policy_loader`, falling
+  back to `policy.npz`.
+- `tools/package_submission.py`: copies `.pt` checkpoints as `policy.pt`.
+- `tools/eval_bc.py` and `tools/eval_round_robin.py`: load `.npz` legacy or
+  `.pt` v14 policies through `ptcg_rl/policy_loader.py`.
+
+Design:
+
+- Corpus unit is now a game/window, not one independent decision row.
+- Each step stores current board/hand/options, explicit ledger features, previous
+  action event, action label, action type label, outcome, and a future-plan
+  label over the next horizon.
+- Model is `SequencePolicyNet`, a causal Transformer over decision tokens.
+  It trains action, multi-select, action-type, future-plan, and outcome heads.
+- The future-plan/outcome heads are deliberately part of the objective so the
+  representation has pressure to encode long-game behavior.
+
+Important implementation note:
+
+- A first smoke train produced NaN validation loss because left padding plus
+  causal mask plus key-padding mask caused all-masked attention rows. This was
+  fixed by not passing `src_key_padding_mask` to the sequence encoder; padded
+  input/output tokens are explicitly zeroed and loss uses `step_mask`.
+
+Local smoke validation:
+
+- Command used local `PYTHONPATH=/home/jie/Do/0_PTCG/bak/para` because this
+  local repo does not directly contain `cg`.
+- `tools/v14_extract_sequences.py` ran over local raw episodes with
+  `--max-episodes 20 --min-rows 1` and wrote `/tmp/ptcg_v14_seq_smoke`.
+- Smoke extraction result: `52099` rows, `bad=0`, `err=0`.
+- Smoke Marnie CPU train ran one epoch with only 5 train batches and saved
+  `/tmp/ptcg_v14_smoke_marnie.pt`; validation was finite after the mask fix.
+- Smoke probe correctly showed the tiny model had not learned prefix dependence:
+  `last_only`, `last_zero_prefix`, and `last_shuffle_prefix` were nearly equal.
+  This is expected for smoke and proves the probe can detect non-use of sequence.
+
+Required v14 acceptance standard before claiming improvement:
+
+- Run `tools/v14_probe_sequence_policy.py` on real trained checkpoints.
+- Full/base or longer-prefix metrics must beat `last_only`.
+- `last_zero_prefix_zero_ledger` and `last_shuffle_prefix` should be meaningfully
+  worse than full/base for models that truly use sequence.
+- Plan loss should improve with longer prefixes. If it does not, the model is
+  still acting mostly as a single-step classifier.
+
+Canonical remote extraction:
+
+```bash
+python3 -u tools/v14_extract_sequences.py /data/jie/episodes_raw \
+  --out data/seq_corpus_v14_0801_0812 \
+  --lb-csv logs/info_pull_20260813/leaderboard_full/pokemon-tcg-ai-battle-publicleaderboard-2026-08-13T09:36:23.csv \
+  --workers 12 \
+  --future-horizon 12 \
+  --progress-every 500 \
+  2>&1 | tee logs/v14_sequence/extract_v14_0801_0812.log
+```
+
+Canonical single-model train:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 -u tools/v14_train_sequence_policy.py \
+  --corpus data/seq_corpus_v14_0801_0812 \
+  --archetype "Dragapult" \
+  --score-bands 900-999 1000-1099 1100-1199 1200+ \
+  --deck-sig cc2e995b5ad0 \
+  --seq-len 32 \
+  --width 384 \
+  --layers 4 \
+  --heads 6 \
+  --batch-size 256 \
+  --epochs 10 \
+  --amp \
+  --out checkpoints/v14_sequence/bc2_dragapult_cc2e995b_v14seq.pt \
+  2>&1 | tee logs/v14_sequence/train_dragapult_cc2e995b_v14seq.log
+```
+
+Population manifest + runner:
+
+```bash
+python3 tools/v14_build_train_manifest.py \
+  --corpus data/seq_corpus_v14_0801_0812 \
+  --score-bands 900-999 1000-1099 1100-1199 1200+ \
+  --top-per-archetype 2 \
+  --min-rows 5000 \
+  --out logs/v14_sequence/train_manifest_top2.csv
+
+python3 -u tools/v14_train_population.py \
+  --manifest logs/v14_sequence/train_manifest_top2.csv \
+  --corpus data/seq_corpus_v14_0801_0812 \
+  --out-dir checkpoints/v14_sequence/pop_top2 \
+  --log-dir logs/v14_sequence/pop_top2 \
+  --gpus 0,1,2,3 \
+  --jobs-per-gpu 1 \
+  --seq-len 32 \
+  --width 384 \
+  --layers 4 \
+  --heads 6 \
+  --batch-size 256 \
+  --epochs 10 \
+  --amp \
+  2>&1 | tee logs/v14_sequence/pop_top2.runner.log
+```
+
+Do not submit v14 until local random/RR and sequence-probe results justify it.
+The code can package `.pt`, but Kaggle runtime/size has not been validated.
 
 Stable-ish families from `jie` submissions:
 

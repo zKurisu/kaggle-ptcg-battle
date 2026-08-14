@@ -10419,3 +10419,42 @@ Update 2026-08-14 06:20 CST:
 - Important: this does not affect the already-running
   `overnight_strategy_checked_20260813` jobs, because those Python processes
   loaded code before this patch. Use this fix for the next RL/league run.
+
+Update 2026-08-14 08:20 CST:
+
+- Local commits from this repair block:
+  - `08b68c9 Fix live-compatible history strategy pipeline`
+  - `1f213ec Fix RL history state-token compatibility`
+  - `f65deb1 Fix legacy MCTS live feature inputs`
+- The checked overnight training completed all 6 train jobs with `rc=0`.
+  `random_g500.csv`:
+  - Dragapult `drag_plan_full`: `94.4%`
+  - Dragapult `drag_lowloss`: `95.6%`
+  - Dragapult `drag_success_aux`: `94.4%`
+  - Dragapult `drag_teamclean`: `86.2%`
+  - Marnie `marnie_summary`: `99.8%`
+  - Marnie `marnie_rawhist`: `99.8%`
+- Dragapult baseline-delta versus 81 score-labeled 0812 shadows is complete
+  and negative for every new Dragapult candidate:
+  - `drag_plan_full`: avg delta `-0.078`, candidate mean `0.640`,
+    baseline `0.718`, lost `63/81`
+  - `drag_lowloss`: avg delta `-0.104`, candidate mean `0.615`,
+    baseline `0.718`, lost `74/81`
+  - `drag_success_aux`: avg delta `-0.122`, candidate mean `0.596`,
+    baseline `0.718`, lost `72/81`
+  - `drag_teamclean`: avg delta `-0.214`, candidate mean `0.505`,
+    baseline `0.718`, lost `81/81`
+  Do not submit these Dragapult checked strategy candidates. This result
+  suggests the current strategy-success labels/filtering are actively harmful
+  or still too weak/noisy, despite the history bug fix. The next Dragapult step
+  should be a deeper encoder/target redesign or RL exploration, not another
+  small reweighting of these same labels.
+- Marnie baseline-delta was still running at this checkpoint:
+  `logs/overnight_strategy_checked_20260813/eval/marnie_vs_shadow81_g60.log`.
+  It had completed random g500 and was in the baseline phase around opponent
+  `21/81`. Check the final CSV before judging the two Marnie repaired-history
+  candidates.
+- A remote accidental directory exists:
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804/tmp_sync_placeholder`.
+  It only contains duplicate source files from a mistyped `scp` target and is
+  not on the Python execution path. It can be removed after user confirmation.

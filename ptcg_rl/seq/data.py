@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 from ptcg_rl.encoder import BOARD_SLOTS, MAX_HAND, OPT_FEAT_DIM, STATE_FEAT_DIM, STATE_TOKEN_FEAT_DIM
-from ptcg_rl.seq.constants import FUTURE_PLAN_DIM, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, TYPE_END
+from ptcg_rl.seq.constants import DAMAGE_COUNTER_ANY_CONTEXT, FUTURE_PLAN_DIM, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, TYPE_END
 
 _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
@@ -40,6 +40,15 @@ class SequenceBatch:
     target_multi: torch.Tensor
     target_type: torch.Tensor
     target_context: torch.Tensor
+    dca_group_index: torch.Tensor
+    dca_pos: torch.Tensor
+    dca_len: torch.Tensor
+    dca_remaining: torch.Tensor
+    dca_prior_same_slot: torch.Tensor
+    dca_prior_unique_slots: torch.Tensor
+    dca_prior_max_repeat: torch.Tensor
+    dca_group_unique_slots: torch.Tensor
+    dca_group_focus_frac: torch.Tensor
     min_count: torch.Tensor
     max_count: torch.Tensor
     step_mask: torch.Tensor
@@ -145,6 +154,15 @@ class SequenceCorpus:
             "opponent_deck_filtered": 0,
             "winner_filtered": 0,
             "score_filtered": 0,
+            "target_rows": 0,
+            "target_k_sum": 0,
+            "multi_target_rows": 0,
+            "capable_multi_rows": 0,
+            "dca_rows": 0,
+            "dca_groups": 0,
+            "dca_spread_rows": 0,
+            "dca_focus_sum": 0.0,
+            "dca_unique_sum": 0,
         }
 
         for path in paths:
@@ -161,6 +179,7 @@ class SequenceCorpus:
                 key = str(data["game_key"][i]) if "game_key" in data else f"{data['episode_id'][i]}:{data['player_index'][i]}"
                 game_rows.setdefault(key, []).append(i)
                 self.stats["kept_rows"] += 1
+                self._add_signal_stats(data, i)
             self.files.append(data)
             for rows in game_rows.values():
                 rows = sorted(rows, key=lambda r: int(data["decision_index"][r]) if "decision_index" in data else r)
@@ -176,6 +195,7 @@ class SequenceCorpus:
         self.stats["samples"] = len(self.samples)
         if not self.samples:
             raise FileNotFoundError("v14 sequence corpus filters kept no samples")
+        self._finalize_signal_stats()
 
     def _keep(self, data: dict[str, np.ndarray], i: int) -> bool:
         if self.deck_sigs and str(data.get("deck_sig", [""])[i]) not in self.deck_sigs:
@@ -202,6 +222,41 @@ class SequenceCorpus:
                 self.stats["score_filtered"] += 1
                 return False
         return True
+
+    def _add_signal_stats(self, data: dict[str, np.ndarray], i: int) -> None:
+        action = np.asarray(data.get("action", [])[i], dtype=np.int64).reshape(-1)
+        opt_n = len(data.get("ot", [])[i]) if "ot" in data else 0
+        valid = action[(action >= 0) & (action < opt_n)]
+        target_k = int(valid.size)
+        if target_k > 0:
+            self.stats["target_rows"] += 1
+            self.stats["target_k_sum"] += target_k
+            if target_k > 1:
+                self.stats["multi_target_rows"] += 1
+        if int(data.get("max_c", np.zeros(len(data["board"]), dtype=np.int16))[i]) > 1:
+            self.stats["capable_multi_rows"] += 1
+        ctx = int(data.get("act_context", np.zeros(len(data["board"]), dtype=np.int16))[i])
+        if ctx == DAMAGE_COUNTER_ANY_CONTEXT:
+            self.stats["dca_rows"] += 1
+            if int(data.get("dca_pos", np.full(len(data["board"]), -1, dtype=np.int16))[i]) == 0:
+                self.stats["dca_groups"] += 1
+            unique = int(data.get("dca_group_unique_slots", np.zeros(len(data["board"]), dtype=np.int16))[i])
+            if unique > 1:
+                self.stats["dca_spread_rows"] += 1
+            self.stats["dca_unique_sum"] += unique
+            self.stats["dca_focus_sum"] += float(data.get("dca_group_focus_frac", np.zeros(len(data["board"]), dtype=np.float16))[i])
+
+    def _finalize_signal_stats(self) -> None:
+        kept = max(float(self.stats.get("kept_rows", 0)), 1.0)
+        target = max(float(self.stats.get("target_rows", 0)), 1.0)
+        dca = max(float(self.stats.get("dca_rows", 0)), 1.0)
+        self.stats["target_k_mean"] = float(self.stats.get("target_k_sum", 0)) / target
+        self.stats["multi_target_rate"] = float(self.stats.get("multi_target_rows", 0)) / target
+        self.stats["capable_multi_rate"] = float(self.stats.get("capable_multi_rows", 0)) / kept
+        self.stats["dca_rate"] = float(self.stats.get("dca_rows", 0)) / kept
+        self.stats["dca_spread_rate"] = float(self.stats.get("dca_spread_rows", 0)) / dca
+        self.stats["dca_focus_mean"] = float(self.stats.get("dca_focus_sum", 0.0)) / dca
+        self.stats["dca_unique_mean"] = float(self.stats.get("dca_unique_sum", 0)) / dca
 
     def split_samples(self, val_fraction: float = 0.1, seed: int = 7) -> tuple[list[int], list[int]]:
         rng = np.random.default_rng(seed)
@@ -256,6 +311,15 @@ class SequenceCorpus:
         target_multi = np.zeros((*shape_bt, max_options), dtype=np.float32)
         target_type = np.zeros(shape_bt, dtype=np.int64)
         target_context = np.zeros(shape_bt, dtype=np.int64)
+        dca_group_index = np.full(shape_bt, -1, dtype=np.int64)
+        dca_pos = np.full(shape_bt, -1, dtype=np.int64)
+        dca_len = np.zeros(shape_bt, dtype=np.int64)
+        dca_remaining = np.zeros(shape_bt, dtype=np.int64)
+        dca_prior_same_slot = np.zeros(shape_bt, dtype=np.int64)
+        dca_prior_unique_slots = np.zeros(shape_bt, dtype=np.int64)
+        dca_prior_max_repeat = np.zeros(shape_bt, dtype=np.int64)
+        dca_group_unique_slots = np.zeros(shape_bt, dtype=np.int64)
+        dca_group_focus_frac = np.zeros(shape_bt, dtype=np.float32)
         min_count = np.zeros(shape_bt, dtype=np.int64)
         max_count = np.zeros(shape_bt, dtype=np.int64)
         step_mask = np.zeros(shape_bt, dtype=np.float32)
@@ -315,6 +379,15 @@ class SequenceCorpus:
                     target_context[bi, local_t] = int(data["act_context"][ri])
                 else:
                     target_context[bi, local_t] = int(round(float(feats[bi, local_t, 17]) * 64.0)) if feats.shape[-1] > 17 else 0
+                dca_group_index[bi, local_t] = int(_get_row(data, "dca_group_index", ri, -1))
+                dca_pos[bi, local_t] = int(_get_row(data, "dca_pos", ri, -1))
+                dca_len[bi, local_t] = int(_get_row(data, "dca_len", ri, 0))
+                dca_remaining[bi, local_t] = int(_get_row(data, "dca_remaining", ri, 0))
+                dca_prior_same_slot[bi, local_t] = int(_get_row(data, "dca_prior_same_slot", ri, 0))
+                dca_prior_unique_slots[bi, local_t] = int(_get_row(data, "dca_prior_unique_slots", ri, 0))
+                dca_prior_max_repeat[bi, local_t] = int(_get_row(data, "dca_prior_max_repeat", ri, 0))
+                dca_group_unique_slots[bi, local_t] = int(_get_row(data, "dca_group_unique_slots", ri, 0))
+                dca_group_focus_frac[bi, local_t] = float(_get_row(data, "dca_group_focus_frac", ri, 0.0))
                 min_count[bi, local_t] = int(data["min_c"][ri])
                 max_count[bi, local_t] = int(data["max_c"][ri])
                 step_mask[bi, local_t] = 1.0
@@ -347,6 +420,15 @@ class SequenceCorpus:
             target_multi=torch.from_numpy(target_multi),
             target_type=torch.from_numpy(target_type),
             target_context=torch.from_numpy(target_context),
+            dca_group_index=torch.from_numpy(dca_group_index),
+            dca_pos=torch.from_numpy(dca_pos),
+            dca_len=torch.from_numpy(dca_len),
+            dca_remaining=torch.from_numpy(dca_remaining),
+            dca_prior_same_slot=torch.from_numpy(dca_prior_same_slot),
+            dca_prior_unique_slots=torch.from_numpy(dca_prior_unique_slots),
+            dca_prior_max_repeat=torch.from_numpy(dca_prior_max_repeat),
+            dca_group_unique_slots=torch.from_numpy(dca_group_unique_slots),
+            dca_group_focus_frac=torch.from_numpy(dca_group_focus_frac),
             min_count=torch.from_numpy(min_count),
             max_count=torch.from_numpy(max_count),
             step_mask=torch.from_numpy(step_mask),

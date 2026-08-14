@@ -1,8 +1,98 @@
 # Agent Handoff
 
-Last updated: 2026-08-14 19:52 Asia/Shanghai.
+Last updated: 2026-08-14 20:36 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
+
+## Update: Training-Time Signal Diagnostics 2026-08-14
+
+Hard constraint from the user: do not wait for random/RR to discover whether a
+new signal worked. Any new signal and any existing critical signal must be
+visible during training, with enough train/validation metrics to stop a bad run
+early. Treat this as a design requirement for all future training scripts.
+
+The v14 DCA/focus training that was running on ks was paused before launching
+full-data training. The old orchestrator was stopped; the full-date extraction
+was allowed to finish. As of this update there are no active v14 training
+processes on ks.
+
+Completed extraction:
+
+- Remote corpus: `data/seq_corpus_v14_0801_0813_hq`
+- Log: `logs/v14_next_hq_20260814/extract_0801_0813.log`
+- Result: `11,389,640` rows, all `15/15` zips completed. Note that the source
+  directory contained `2026-07-24` and `2026-07-25` in addition to August
+  files, so this corpus is not strictly August-only unless rebuilt through a
+  symlink-filtered episode directory.
+
+Code changes made locally and synced to
+`ks:/data/jie/ptcg_rl_git_v7_baseline_20260804`:
+
+- `ptcg_rl/seq/data.py`
+  now keeps DCA block annotations in `SequenceBatch`: `dca_pos`, `dca_len`,
+  `dca_remaining`, `dca_prior_*`, `dca_group_unique_slots`, and
+  `dca_group_focus_frac`. `Corpus stats` now reports signal coverage before
+  training: `target_k_mean`, `multi_target_rate`, `capable_multi_rate`,
+  `dca_rate`, `dca_groups`, `dca_spread_rate`, `dca_focus_mean`, and
+  `dca_unique_mean`.
+- `ptcg_rl/seq/model.py`
+  now reports signal-specific loss and accuracy metrics, including
+  `weight_boost`, `dca_weight_share`, `multi_weight_share`,
+  `dca_action/non_dca_action`, DCA count accuracy, DCA pred/target k, DCA
+  focus/spread/prior statistics, and DCA first/late/spread top-1 splits.
+- `tools/v14_train_sequence_policy.py`
+  now prints `Signal stats` at startup, signal metrics on progress lines, and a
+  per-epoch `signal_health` line with train/val gaps and warnings such as
+  `single_step_dominated`, `dca_overfit_gap`, `dca_labels_focus_dominated`,
+  `dca_underweighted`, and `dca_late_sequence_weak`.
+- `ptcg_rl/seq/torch_policy.py`
+  was updated so live/eval dummy batches still construct correctly with the new
+  dataclass fields.
+
+Smoke test on ks:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+python3 tools/v14_train_sequence_policy.py \
+  --corpus data/seq_corpus_v14_dca_0808_0813 \
+  --archetype Dragapult \
+  --score-bands 1000-1099 1100-1199 \
+  --deck-sig cc2e995b5ad0 \
+  --min-score 900 \
+  --seq-len 32 \
+  --width 128 \
+  --layers 2 \
+  --heads 4 \
+  --batch-size 64 \
+  --epochs 1 \
+  --max-train-batches 3 \
+  --max-val-batches 2 \
+  --progress-every 1 \
+  --multi-target-weight 3.0 \
+  --damage-counter-weight 4.0 \
+  --amp \
+  --out /tmp/v14_signal_smoke_dragapult.pt
+```
+
+Smoke log: `logs/v14_signal_smoke_20260814/dragapult_cc2e_smoke.log`.
+The smoke correctly surfaced `dca_rate=0.168`,
+`dca_spread_rate=0.245`, `dca_focus_mean=0.926`, per-batch
+`boost/dcaW/dcaA/dcaSplit`, and epoch warning
+`warnings=dca_labels_focus_dominated`.
+
+Interpretation of first DCA attempt:
+
+- DCA code was present but too shallow. First DCA training showed `dca6` and
+  `nomulti` behaved almost identically, so the added weights did not materially
+  change optimization.
+- Most Dragapult DCA labels are still single-slot/focus-heavy. In the smoke,
+  `dca_focus_mean=0.926`; this means a naive "learn DCA" objective can just
+  learn to pile counters on one target, not necessarily learn prize-map
+  planning.
+- Future DCA work should be block-level/strategy-level, not just per-step
+  cross-entropy weighting. If training logs show `single_step_dominated` or
+  `dca_labels_focus_dominated`, stop early and redesign the target or data
+  selection before running full RR.
 
 ## Update: RR Long-Tail Coverage 2026-08-14
 

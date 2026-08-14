@@ -339,14 +339,20 @@ def sequence_policy_loss(
     )
     decision_weights = weights * torch.maximum(multi_boost, damage_boost)
     valid_action = (batch.target_first >= 0) & (step_mask > 0)
+    valid_weight_sum = weights[valid_action].sum().clamp(min=1.0) if bool(valid_action.any()) else weights.sum().clamp(min=1.0)
+    decision_weight_sum = decision_weights[valid_action].sum().clamp(min=1.0) if bool(valid_action.any()) else decision_weights.sum().clamp(min=1.0)
     if bool(valid_action.any()):
         action_loss = F.cross_entropy(
             outputs["action_logits"][valid_action],
             batch.target_first.long()[valid_action],
             reduction="none",
         )
-        action_loss = (action_loss * decision_weights[valid_action]).sum() / decision_weights[valid_action].sum().clamp(min=1.0)
+        valid_decision_weights = decision_weights[valid_action]
+        raw_action_loss = action_loss
+        action_loss = (action_loss * valid_decision_weights).sum() / decision_weight_sum
     else:
+        raw_action_loss = torch.zeros(0, device=outputs["action_logits"].device)
+        valid_decision_weights = torch.zeros(0, device=outputs["action_logits"].device)
         action_loss = outputs["action_logits"].sum() * 0.0
 
     order_logits = outputs.get("order_logits")
@@ -407,6 +413,23 @@ def sequence_policy_loss(
         + cfg.outcome_weight * outcome_loss
         + cfg.type_weight * type_loss
     )
+
+    valid_dca = damage_counter[valid_action] if bool(valid_action.any()) else torch.zeros(0, dtype=torch.bool, device=weights.device)
+    valid_multi = multi_target[valid_action] if bool(valid_action.any()) else torch.zeros(0, dtype=torch.bool, device=weights.device)
+
+    def weighted_valid_loss(mask: torch.Tensor) -> float:
+        if raw_action_loss.numel() == 0 or not bool(mask.any()):
+            return 0.0
+        ww = valid_decision_weights[mask]
+        return float(((raw_action_loss[mask] * ww).sum() / ww.sum().clamp(min=1.0)).detach().cpu())
+
+    dca_rows = damage_counter.float().sum().clamp(min=1.0)
+    dca_focus = batch.dca_group_focus_frac.float()
+    dca_unique = batch.dca_group_unique_slots.float()
+    dca_spread = damage_counter & (batch.dca_group_unique_slots.long() > 1)
+    dca_pos = batch.dca_pos.float()
+    dca_prior_unique = batch.dca_prior_unique_slots.float()
+    dca_prior_same = batch.dca_prior_same_slot.float()
     parts = {
         "loss": float(loss.detach().cpu()),
         "action": float(action_loss.detach().cpu()),
@@ -418,6 +441,18 @@ def sequence_policy_loss(
         "type": float(type_loss.detach().cpu()),
         "multi_target_rate": float((multi_target.float().sum() / step_mask.sum().clamp(min=1.0)).detach().cpu()),
         "damage_counter_rate": float((damage_counter.float().sum() / step_mask.sum().clamp(min=1.0)).detach().cpu()),
+        "weight_boost": float((decision_weight_sum / valid_weight_sum).detach().cpu()),
+        "dca_weight_share": float((decision_weights[damage_counter].sum() / decision_weights[valid_action].sum().clamp(min=1.0)).detach().cpu()) if bool(valid_action.any()) else 0.0,
+        "multi_weight_share": float((decision_weights[multi_target].sum() / decision_weights[valid_action].sum().clamp(min=1.0)).detach().cpu()) if bool(valid_action.any()) else 0.0,
+        "dca_action": weighted_valid_loss(valid_dca),
+        "non_dca_action": weighted_valid_loss(~valid_dca) if raw_action_loss.numel() else 0.0,
+        "multi2_action": weighted_valid_loss(valid_multi),
+        "dca_focus_mean": float(((dca_focus * damage_counter.float()).sum() / dca_rows).detach().cpu()),
+        "dca_spread_rate": float((dca_spread.float().sum() / dca_rows).detach().cpu()),
+        "dca_unique_mean": float(((dca_unique * damage_counter.float()).sum() / dca_rows).detach().cpu()),
+        "dca_pos_mean": float(((dca_pos.clamp(min=0) * damage_counter.float()).sum() / dca_rows).detach().cpu()),
+        "dca_prior_unique_mean": float(((dca_prior_unique * damage_counter.float()).sum() / dca_rows).detach().cpu()),
+        "dca_prior_same_mean": float(((dca_prior_same * damage_counter.float()).sum() / dca_rows).detach().cpu()),
     }
     return loss, parts
 
@@ -437,6 +472,18 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
             "dca_n": 0.0,
             "dca_rate": 0.0,
             "dca_top1": 0.0,
+            "dca_count_acc": 0.0,
+            "dca_count_mae": 0.0,
+            "dca_pred_k": 0.0,
+            "dca_target_k": 0.0,
+            "dca_focus_mean": 0.0,
+            "dca_spread_rate": 0.0,
+            "dca_spread_top1": 0.0,
+            "dca_focus_top1": 0.0,
+            "dca_first_top1": 0.0,
+            "dca_late_top1": 0.0,
+            "dca_prior_same_top1": 0.0,
+            "dca_prior_unique_mean": 0.0,
         }
     pred = outputs["action_logits"].argmax(dim=-1)
     top1 = (pred[valid] == batch.target_first[valid]).float().mean().item()
@@ -448,6 +495,11 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
     count_mae = (count_pred[valid].float() - count_target[valid].float()).abs().mean().item()
     multi2 = valid & (count_target > 1)
     dca = valid & (batch.target_context.long() == DAMAGE_COUNTER_ANY_CONTEXT)
+    dca_spread = dca & (batch.dca_group_unique_slots.long() > 1)
+    dca_focus = dca & (batch.dca_group_unique_slots.long() <= 1)
+    dca_first = dca & (batch.dca_pos.long() == 0)
+    dca_late = dca & (batch.dca_pos.long() > 0)
+    dca_prior_same = dca & (batch.dca_prior_same_slot.long() > 0)
     valid_n = float(valid.sum().item())
     multi2_n = float(multi2.sum().item())
     dca_n = float(dca.sum().item())
@@ -460,6 +512,9 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
     multi2_top1 = multi2_count_acc = multi2_count_mae = 0.0
     dca_precision = dca_recall = dca_f1 = 0.0
     dca_top1 = dca_count_acc = dca_count_mae = 0.0
+    dca_pred_k = dca_target_k = 0.0
+    dca_spread_top1 = dca_focus_top1 = 0.0
+    dca_first_top1 = dca_late_top1 = dca_prior_same_top1 = 0.0
     if max_k > 0:
         top_idx = logits.topk(k=max_k, dim=-1).indices
         pred_k = torch.minimum(
@@ -491,6 +546,18 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
             dca_top1 = (pred[dca] == batch.target_first[dca]).float().mean().item()
             dca_count_acc = (count_pred[dca] == count_target[dca]).float().mean().item()
             dca_count_mae = (count_pred[dca].float() - count_target[dca].float()).abs().mean().item()
+            dca_pred_k = count_pred[dca].float().mean().item()
+            dca_target_k = count_target[dca].float().mean().item()
+            if bool(dca_spread.any()):
+                dca_spread_top1 = (pred[dca_spread] == batch.target_first[dca_spread]).float().mean().item()
+            if bool(dca_focus.any()):
+                dca_focus_top1 = (pred[dca_focus] == batch.target_first[dca_focus]).float().mean().item()
+            if bool(dca_first.any()):
+                dca_first_top1 = (pred[dca_first] == batch.target_first[dca_first]).float().mean().item()
+            if bool(dca_late.any()):
+                dca_late_top1 = (pred[dca_late] == batch.target_first[dca_late]).float().mean().item()
+            if bool(dca_prior_same.any()):
+                dca_prior_same_top1 = (pred[dca_prior_same] == batch.target_first[dca_prior_same]).float().mean().item()
     else:
         precision = recall = f1 = 0.0
 
@@ -513,6 +580,10 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
     outcome_pred = (torch.sigmoid(outputs["outcome_logits"]) >= 0.5).float()
     step_valid = batch.step_mask > 0
     outcome_acc = (outcome_pred[step_valid] == batch.outcome.float()[step_valid]).float().mean().item() if bool(step_valid.any()) else 0.0
+    dca_rows = dca.float().sum().clamp(min=1.0)
+    dca_focus_mean = ((batch.dca_group_focus_frac.float() * dca.float()).sum() / dca_rows).item()
+    dca_spread_rate = (dca_spread.float().sum() / dca_rows).item()
+    dca_prior_unique_mean = ((batch.dca_prior_unique_slots.float() * dca.float()).sum() / dca_rows).item()
 
     return {
         "top1": float(top1),
@@ -544,9 +615,19 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
         "dca_top1": float(dca_top1),
         "dca_count_acc": float(dca_count_acc),
         "dca_count_mae": float(dca_count_mae),
+        "dca_pred_k": float(dca_pred_k),
+        "dca_target_k": float(dca_target_k),
         "dca_precision": float(dca_precision),
         "dca_recall": float(dca_recall),
         "dca_f1": float(dca_f1),
+        "dca_focus_mean": float(dca_focus_mean),
+        "dca_spread_rate": float(dca_spread_rate),
+        "dca_spread_top1": float(dca_spread_top1),
+        "dca_focus_top1": float(dca_focus_top1),
+        "dca_first_top1": float(dca_first_top1),
+        "dca_late_top1": float(dca_late_top1),
+        "dca_prior_same_top1": float(dca_prior_same_top1),
+        "dca_prior_unique_mean": float(dca_prior_unique_mean),
     }
 
 

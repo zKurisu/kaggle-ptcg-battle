@@ -224,6 +224,9 @@ class TorchSequencePolicy:
         dummy_first = np.full((1, seq_len), -1, dtype=np.int64)
         dummy_order = np.full((1, seq_len, MAX_SELECT_COUNT), -1, dtype=np.int64)
         dummy_multi = np.zeros((1, seq_len, nopt), dtype=np.float32)
+        dummy_dca = np.zeros((1, seq_len), dtype=np.int64)
+        dummy_dca_neg = np.full((1, seq_len), -1, dtype=np.int64)
+        dummy_dca_float = np.zeros((1, seq_len), dtype=np.float32)
         return SequenceBatch(
             board=torch.from_numpy(board),
             hand=torch.from_numpy(hand),
@@ -248,6 +251,15 @@ class TorchSequencePolicy:
             target_multi=torch.from_numpy(dummy_multi),
             target_type=torch.zeros((1, seq_len), dtype=torch.int64),
             target_context=torch.zeros((1, seq_len), dtype=torch.int64),
+            dca_group_index=torch.from_numpy(dummy_dca_neg),
+            dca_pos=torch.from_numpy(dummy_dca_neg),
+            dca_len=torch.from_numpy(dummy_dca),
+            dca_remaining=torch.from_numpy(dummy_dca),
+            dca_prior_same_slot=torch.from_numpy(dummy_dca),
+            dca_prior_unique_slots=torch.from_numpy(dummy_dca),
+            dca_prior_max_repeat=torch.from_numpy(dummy_dca),
+            dca_group_unique_slots=torch.from_numpy(dummy_dca),
+            dca_group_focus_frac=torch.from_numpy(dummy_dca_float),
             min_count=torch.zeros((1, seq_len), dtype=torch.int64),
             max_count=torch.ones((1, seq_len), dtype=torch.int64),
             step_mask=torch.from_numpy(step_mask),

@@ -70,6 +70,63 @@ def _cuda_mem(device: torch.device) -> str:
     return f" mem={alloc:.1f}/{reserved:.1f}G"
 
 
+def _fmt(stats: dict[str, float], key: str, digits: int = 3) -> str:
+    return f"{stats.get(key, 0.0):.{digits}f}"
+
+
+def _signal_stats_line(stats: dict[str, object]) -> str:
+    keys = [
+        ("target_k_mean", 3),
+        ("multi_target_rate", 3),
+        ("capable_multi_rate", 3),
+        ("dca_rate", 3),
+        ("dca_groups", 0),
+        ("dca_spread_rate", 3),
+        ("dca_focus_mean", 3),
+        ("dca_unique_mean", 3),
+    ]
+    parts: list[str] = []
+    for key, digits in keys:
+        value = stats.get(key, 0)
+        if isinstance(value, float):
+            parts.append(f"{key}={value:.{digits}f}")
+        else:
+            parts.append(f"{key}={value}")
+    return "Signal stats: " + " ".join(parts)
+
+
+def _signal_warnings(
+    *,
+    train_loss: dict[str, float],
+    train_acc: dict[str, float],
+    val_loss: dict[str, float],
+    val_acc: dict[str, float],
+    args: argparse.Namespace,
+) -> list[str]:
+    warnings: list[str] = []
+    if val_acc.get("multi2_rate", 0.0) < 0.05 and val_acc.get("capable2_rate", 0.0) > 0.05:
+        warnings.append("single_step_dominated")
+    if args.damage_counter_weight > 1.0 and val_acc.get("dca_n", 0.0) <= 0:
+        warnings.append("no_val_dca_signal")
+    if val_acc.get("dca_n", 0.0) > 50:
+        dca_gap = train_acc.get("dca_top1", 0.0) - val_acc.get("dca_top1", 0.0)
+        if dca_gap > 0.10:
+            warnings.append(f"dca_overfit_gap={dca_gap:.3f}")
+        if val_acc.get("dca_spread_rate", 0.0) < 0.15:
+            warnings.append("dca_labels_focus_dominated")
+        if args.damage_counter_weight > 1.0 and val_loss.get("dca_weight_share", 0.0) < max(0.05, val_acc.get("dca_rate", 0.0)):
+            warnings.append("dca_underweighted")
+        if val_acc.get("dca_late_top1", 0.0) + 0.05 < val_acc.get("dca_first_top1", 0.0):
+            warnings.append("dca_late_sequence_weak")
+    if val_acc.get("multi2_n", 0.0) > 50:
+        m2_gap = train_acc.get("multi2_f1", 0.0) - val_acc.get("multi2_f1", 0.0)
+        if m2_gap > 0.10:
+            warnings.append(f"multi_overfit_gap={m2_gap:.3f}")
+    if not np.isfinite(val_loss.get("loss", 0.0)):
+        warnings.append("nonfinite_val_loss")
+    return warnings
+
+
 def run_epoch(
     *,
     model: SequencePolicyNet,
@@ -136,6 +193,15 @@ def run_epoch(
                 f"m2Ord={ma.get('multi2_order_acc', 0):.3f} "
                 f"dcaN={ma.get('dca_n', 0):.0f} dcaR={ma.get('dca_rate', 0):.3f} "
                 f"dcaTop1={ma.get('dca_top1', 0):.3f} dcaF1={ma.get('dca_f1', 0):.3f} "
+                f"dcaCnt={ma.get('dca_count_acc', 0):.3f}/{ma.get('dca_count_mae', 0):.2f} "
+                f"dcaK={ma.get('dca_pred_k', 0):.2f}/{ma.get('dca_target_k', 0):.2f} "
+                f"dcaBlk={ma.get('dca_focus_mean', 0):.2f}/{ma.get('dca_spread_rate', 0):.2f}/"
+                f"{ma.get('dca_prior_unique_mean', 0):.2f} "
+                f"dcaSplit={ma.get('dca_first_top1', 0):.3f}/{ma.get('dca_late_top1', 0):.3f}/"
+                f"{ma.get('dca_spread_top1', 0):.3f} "
+                f"boost={mp.get('weight_boost', 0):.2f} dcaW={mp.get('dca_weight_share', 0):.2f} "
+                f"m2W={mp.get('multi_weight_share', 0):.2f} "
+                f"dcaA={mp.get('dca_action', 0):.3f}/{mp.get('non_dca_action', 0):.3f} "
                 f"outAcc={ma.get('outcome_acc', 0):.3f} "
                 f"{rate:.0f} samples/s eta={eta:.0f}s{_cuda_mem(device)}",
                 flush=True,
@@ -247,6 +313,7 @@ def main() -> None:
         draw_weight=args.draw_weight,
     )
     print("Corpus stats:", json.dumps(corpus.stats, ensure_ascii=False, sort_keys=True), flush=True)
+    print(_signal_stats_line(corpus.stats), flush=True)
     train_ids, val_ids = corpus.split_samples(args.val_fraction, args.seed)
     print(f"Split: train={len(train_ids)} val={len(val_ids)} seq_len={args.seq_len}", flush=True)
 
@@ -324,7 +391,33 @@ def main() -> None:
             f"val_m2F1={val_acc.get('multi2_f1', 0):.3f} val_m2Order={val_acc.get('multi2_order_acc', 0):.3f} "
             f"val_dcaN={val_acc.get('dca_n', 0):.0f} val_dcaR={val_acc.get('dca_rate', 0):.3f} "
             f"val_dcaTop1={val_acc.get('dca_top1', 0):.3f} val_dcaF1={val_acc.get('dca_f1', 0):.3f} "
+            f"val_dcaCnt={val_acc.get('dca_count_acc', 0):.3f}/{val_acc.get('dca_count_mae', 0):.2f} "
+            f"val_dcaK={val_acc.get('dca_pred_k', 0):.2f}/{val_acc.get('dca_target_k', 0):.2f} "
+            f"val_dcaBlk={val_acc.get('dca_focus_mean', 0):.2f}/{val_acc.get('dca_spread_rate', 0):.2f}/"
+            f"{val_acc.get('dca_prior_unique_mean', 0):.2f} "
+            f"val_dcaSplit={val_acc.get('dca_first_top1', 0):.3f}/{val_acc.get('dca_late_top1', 0):.3f}/"
+            f"{val_acc.get('dca_spread_top1', 0):.3f} "
+            f"val_boost={val_loss.get('weight_boost', 0):.2f} "
+            f"val_dcaW={val_loss.get('dca_weight_share', 0):.2f} val_m2W={val_loss.get('multi_weight_share', 0):.2f} "
+            f"val_dcaA={val_loss.get('dca_action', 0):.3f}/{val_loss.get('non_dca_action', 0):.3f} "
             f"val_outAcc={val_acc.get('outcome_acc', 0):.3f}",
+            flush=True,
+        )
+        warnings = _signal_warnings(
+            train_loss=train_loss,
+            train_acc=train_acc,
+            val_loss=val_loss,
+            val_acc=val_acc,
+            args=args,
+        )
+        print(
+            "signal_health "
+            f"top1_gap={train_acc.get('top1', 0) - val_acc.get('top1', 0):.3f} "
+            f"m2_gap={train_acc.get('multi2_f1', 0) - val_acc.get('multi2_f1', 0):.3f} "
+            f"dca_gap={train_acc.get('dca_top1', 0) - val_acc.get('dca_top1', 0):.3f} "
+            f"dca_weight_share={val_loss.get('dca_weight_share', 0):.3f} "
+            f"multi_weight_share={val_loss.get('multi_weight_share', 0):.3f} "
+            f"warnings={','.join(warnings) if warnings else 'none'}",
             flush=True,
         )
         save_checkpoint(last_path, model=model, args=args, corpus=corpus, epoch=epoch, val_loss=val)

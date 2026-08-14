@@ -1238,6 +1238,7 @@ def build_policy_model(arch: str = ARCH_POINTER, **kwargs) -> nn.Module:
     arch = (arch or ARCH_POINTER).strip().lower()
     if arch in {ARCH_POINTER, "mlp"}:
         kwargs.pop("state_layers", None)
+        kwargs.pop("state_token_feat_dim", None)
         return PolicyValueNet(**kwargs)
     if arch in {ARCH_CROSS_ATTN, "cross-attn", "attention"}:
         kwargs.pop("slot_state", None)

@@ -39,8 +39,10 @@ sys.path.insert(0, str(_REPO.parent))
 from ptcg_rl.bc2 import BCCorpus, discover_npz_paths, sequence_nll
 from ptcg_rl.encoder import FastEncoder
 from ptcg_rl.history_features import (
+    HISTORY_SUMMARY_DIM,
     action_event_from_encoded,
     board_snapshot_from_encoded,
+    history_summary_from_arrays,
     pack_action_history,
     pack_board_history,
     pack_log_history_from_obs,
@@ -52,9 +54,11 @@ from ptcg_rl.model import (
     checkpoint_feature_dims,
     checkpoint_hierarchical_plan,
     checkpoint_history_k,
+    checkpoint_history_summary_dim,
     checkpoint_log_history_k,
     checkpoint_opp_history_k,
     checkpoint_plan_dim,
+    checkpoint_state_token_feat_dim,
     checkpoint_width,
 )
 from ptcg_rl.numpy_policy import NumpyPolicy
@@ -136,6 +140,8 @@ def checkpoint_config(path: str) -> dict:
             "log_history_k": int(checkpoint_log_history_k(z)),
             "board_history_k": int(board_history_k),
             "board_history_feat_dim": int(board_history_feat_dim),
+            "history_summary_dim": int(checkpoint_history_summary_dim(z)),
+            "state_token_feat_dim": int(checkpoint_state_token_feat_dim(z)),
             "state_layers": max(1, int(state_layers)),
         }
 
@@ -169,14 +175,18 @@ def _history_numpy_from_trackers(
     args: argparse.Namespace,
 ) -> dict[str, np.ndarray] | None:
     out: dict[str, np.ndarray] = {}
+    own = None
+    log = None
+    boards = None
     if int(getattr(args, "history_k", 0)) > 0:
-        out.update({k: np.asarray(v) for k, v in pack_action_history(action_history, args.history_k).items()})
+        own = pack_action_history(action_history, args.history_k)
+        out.update({k: np.asarray(v) for k, v in own.items()})
     if int(getattr(args, "opp_history_k", 0)) > 0:
         opp = pack_action_history([], args.opp_history_k)
         out.update({f"opp_{k}": np.asarray(v) for k, v in opp.items()})
     if int(getattr(args, "log_history_k", 0)) > 0:
-        logs = pack_log_history_from_obs(obs, args.log_history_k)
-        out.update({f"log_{k}": np.asarray(v) for k, v in logs.items()})
+        log = pack_log_history_from_obs(obs, args.log_history_k)
+        out.update({f"log_{k}": np.asarray(v) for k, v in log.items()})
     if int(getattr(args, "board_history_k", 0)) > 0:
         boards = pack_board_history(
             board_history,
@@ -186,6 +196,25 @@ def _history_numpy_from_trackers(
         out["board_cards"] = np.asarray(boards["cards"])
         out["board_feats"] = np.asarray(boards["feats"])
         out["board_mask"] = np.asarray(boards["mask"])
+    summary_dim = int(getattr(args, "history_summary_dim", 0) or 0)
+    if summary_dim > 0:
+        if own is None:
+            own = pack_action_history(action_history, max(int(getattr(args, "history_k", 0) or 0), 32))
+        if log is None:
+            log = pack_log_history_from_obs(obs, max(int(getattr(args, "log_history_k", 0) or 0), 128))
+        if boards is None:
+            boards = pack_board_history(
+                board_history,
+                max(int(getattr(args, "board_history_k", 0) or 0), 12),
+                int(getattr(args, "board_history_feat_dim", 0) or 0) or 32,
+            )
+        out["summary"] = history_summary_from_arrays(
+            own_hist=own,
+            opp_hist=None,
+            log_hist=log,
+            board_hist=boards,
+            dim=summary_dim,
+        ).astype(np.float32)
     return out or None
 
 
@@ -403,7 +432,12 @@ def sample_trainable_action(
     board = torch.from_numpy(decision.board_cards).unsqueeze(0).to(dev)
     hand = torch.from_numpy(decision.hand_cards).unsqueeze(0).to(dev)
     feats = torch.from_numpy(decision.state_feats).unsqueeze(0).to(dev)
-    h = model.encode_state(board, hand, feats, history)
+    state_token_feats = None
+    if int(getattr(model, "state_token_feat_dim", 0) or 0) > 0:
+        arr = getattr(decision, "state_token_feats", None)
+        if arr is not None:
+            state_token_feats = torch.from_numpy(np.asarray(arr, dtype=np.float32)).unsqueeze(0).to(dev)
+    h = model.encode_state(board, hand, feats, history, state_token_feats=state_token_feats)
     value = float(model.value(h)[0])
 
     n_options = len(decision.opt_type)
@@ -498,6 +532,9 @@ def play_training_game(
             opponent.planner.reset(opponent.deck)
         action_history: list[dict] = []
         board_history: list[dict] = []
+        summary_dim = int(getattr(args, "history_summary_dim", 0) or 0)
+        action_keep = max(int(getattr(args, "history_k", 0) or 0), 32 if summary_dim > 0 else 1)
+        board_keep = max(int(getattr(args, "board_history_k", 0) or 0), 12 if summary_dim > 0 else 1)
         model.eval()
         for steps in range(args.max_turns):
             cur = obs.get("current") or {}
@@ -532,14 +569,14 @@ def play_training_game(
                     event = action_event_from_encoded(decision, action)
                     if event is not None:
                         action_history.append(event)
-                        if len(action_history) > max(args.history_k, 1) * 4:
-                            del action_history[:-max(args.history_k, 1) * 4]
-                    if args.board_history_k > 0:
+                        if len(action_history) > action_keep * 4:
+                            del action_history[:-action_keep * 4]
+                    if args.board_history_k > 0 or summary_dim > 0:
                         board_history.append(
                             board_snapshot_from_encoded(decision, args.board_history_feat_dim)
                         )
-                        if len(board_history) > max(args.board_history_k, 1) * 4:
-                            del board_history[:-max(args.board_history_k, 1) * 4]
+                        if len(board_history) > board_keep * 4:
+                            del board_history[:-board_keep * 4]
                 except Exception:
                     action = legal_random(sel)
             else:
@@ -1049,11 +1086,14 @@ def setup_anchor_corpus(args: argparse.Namespace, state_feat_dim: int, opt_feat_
         log_history_k=max(0, int(getattr(args, "log_history_k", 0))),
         board_history_k=max(0, int(getattr(args, "board_history_k", 0))),
         board_history_feat_dim=max(0, int(getattr(args, "board_history_feat_dim", 0))),
+        history_summary_dim=max(0, int(getattr(args, "history_summary_dim", 0))),
+        state_token_feat_dim=max(0, int(getattr(args, "state_token_feat_dim", 0))),
         split_by_game=(
             int(getattr(args, "history_k", 0)) > 0
             or int(getattr(args, "opp_history_k", 0)) > 0
             or int(getattr(args, "log_history_k", 0)) > 0
             or int(getattr(args, "board_history_k", 0)) > 0
+            or int(getattr(args, "history_summary_dim", 0)) > 0
         ),
         load_progress_every=args.bc_anchor_load_progress_every,
     )
@@ -1352,6 +1392,10 @@ def parse_args() -> argparse.Namespace:
                    help="override board snapshot history length; -1 infers from checkpoint")
     p.add_argument("--board-history-feat-dim", type=int, default=0,
                    help="override board history feature width; 0 infers from checkpoint")
+    p.add_argument("--history-summary-dim", type=int, default=-1,
+                   help="override explicit history summary width; -1 infers from checkpoint")
+    p.add_argument("--state-token-feat-dim", type=int, default=-1,
+                   help="override per-token state scalar feature width; -1 infers from checkpoint")
 
     p.add_argument("--bc-anchor-weight", type=float, default=0.0)
     p.add_argument("--bc-anchor-final-weight", type=float, default=None,
@@ -1425,12 +1469,16 @@ def main() -> None:
     log_history_k = cfg["log_history_k"] if args.log_history_k < 0 else args.log_history_k
     board_history_k = cfg["board_history_k"] if args.board_history_k < 0 else args.board_history_k
     board_history_feat_dim = args.board_history_feat_dim or cfg["board_history_feat_dim"]
+    history_summary_dim = cfg["history_summary_dim"] if args.history_summary_dim < 0 else args.history_summary_dim
+    state_token_feat_dim = cfg["state_token_feat_dim"] if args.state_token_feat_dim < 0 else args.state_token_feat_dim
     state_layers = args.state_layers or cfg["state_layers"]
     args.history_k = int(history_k)
     args.opp_history_k = int(opp_history_k)
     args.log_history_k = int(log_history_k)
     args.board_history_k = int(board_history_k)
     args.board_history_feat_dim = int(board_history_feat_dim)
+    args.history_summary_dim = int(history_summary_dim)
+    args.state_token_feat_dim = int(state_token_feat_dim)
 
     device = torch.device(args.device if torch.cuda.is_available() or not args.device.startswith("cuda") else "cpu")
     memory_msg = _configure_cuda_memory_limit(
@@ -1450,6 +1498,8 @@ def main() -> None:
         log_history_k=log_history_k,
         board_history_k=board_history_k,
         board_history_feat_dim=board_history_feat_dim,
+        history_summary_dim=history_summary_dim,
+        state_token_feat_dim=state_token_feat_dim,
         state_layers=state_layers,
     ).to(device)
     if args.init_mode in {"load", "resume"}:
@@ -1483,6 +1533,8 @@ def main() -> None:
             log_history_k=log_history_k,
             board_history_k=board_history_k,
             board_history_feat_dim=board_history_feat_dim,
+            history_summary_dim=history_summary_dim,
+            state_token_feat_dim=state_token_feat_dim,
             state_layers=state_layers,
         ).to(device)
         loaded, skipped = _load_npz_init(ref_model, ref_path, device, partial=False)
@@ -1513,6 +1565,7 @@ def main() -> None:
         f"plan_dim={plan_dim} hierarchical_plan={hierarchical_plan} "
         f"history_k={history_k} opp_history_k={opp_history_k} "
         f"log_history_k={log_history_k} board_history_k={board_history_k} "
+        f"history_summary_dim={history_summary_dim} state_token_feat_dim={state_token_feat_dim} "
         f"opponents={len(opponents)} opponent_weight_mode={args.opponent_weight_mode} "
         f"rollout_workers={args.rollout_workers} rollout_temperature={args.rollout_temperature} "
         f"rollout_temperature_final={args.rollout_temperature_final} "

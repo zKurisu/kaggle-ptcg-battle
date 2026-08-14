@@ -10398,3 +10398,24 @@ Update 2026-08-13 23:10 CST:
   and `logs/overnight_strategy_checked_20260813/eval/marnie_vs_shadow81_g60.csv`.
   Pull key logs/checkpoints back locally if results look useful; ks storage is
   ephemeral.
+
+Update 2026-08-14 06:20 CST:
+
+- After the live-history fix, an additional audit found that the old PPO/RL
+  script was still structurally incomplete for v13/history checkpoints.
+  `tools/rl_finetune_vs_pool.py` now infers and logs both
+  `history_summary_dim` and `state_token_feat_dim` from `--policy-init`, passes
+  them into candidate/ref models and BC anchor corpora, and passes
+  `state_token_feats` into `model.encode_state()` during trainable rollout
+  sampling.
+- PPO live summary construction is now aligned with submission inference:
+  summary uses own action history, public log history, and board snapshots; it
+  does not use offline opponent labeled decisions. Summary-only PPO rollouts
+  keep a 32-action / 12-board buffer instead of effectively shrinking to a few
+  events.
+- `ptcg_rl/model.py` now drops `state_token_feat_dim` when building legacy
+  pointer models, so RL can still use old checkpoints as templates without
+  immediately failing on an unexpected constructor argument.
+- Important: this does not affect the already-running
+  `overnight_strategy_checked_20260813` jobs, because those Python processes
+  loaded code before this patch. Use this fix for the next RL/league run.

@@ -10654,3 +10654,61 @@ Update 2026-08-14 08:20 CST:
   `/data/jie/ptcg_rl_git_v7_baseline_20260804/tmp_sync_placeholder`.
   It only contains duplicate source files from a mistyped `scp` target and is
   not on the Python execution path. It can be removed after user confirmation.
+
+Update 2026-08-14 12:10 CST:
+
+- User noted the current Kaggle environment is very bad for Marnie and asked to
+  focus on Dragapult and Alakazam. Remote `ks` has
+  `/data/jie/episodes_raw/pokemon-tcg-ai-battle-episodes-2026-08-13.zip`.
+- Analyzed 0812/0813 episode distributions on `ks` with
+  `/tmp/analyze_env_0812_0813_20260814.py`; outputs were pulled locally under
+  `logs/ladder_distribution_0812_0813_20260814/`.
+  Important approximate leaderboard-band conclusions:
+  - 0813 overall rows: Dragapult `1817`, Marnie `1778`, Ogerpon `1588`,
+    Alakazam `1332`, Lopunny `1053`.
+  - Marnie is clearly receding: 0812 max score `1230.3`, 0813 max score
+    `1127.1`; 1200+ Marnie rows disappeared in 0813.
+  - Dragapult is the most important current archetype: 0813 `1100-1199` has
+    `611` Dragapult rows, led by `cc2e995b5ad0`.
+  - Alakazam remains relevant but is not as dominant. 0813 `1100-1199` has
+    `148` Alakazam rows; top sigs include `75f1d900d851`,
+    `ecb67fcd9c0b`, and `7f9a538936e3`.
+  - Episode matchup summary says Alakazam's biggest broad weakness is
+    Dragapult: 0812 Alakazam vs Dragapult `0.249`, 0813 `0.379` over large
+    samples. Dragapult is strong into Alakazam: 0812 Dragapult vs Alakazam
+    `0.751`.
+- Pulled latest jie Kaggle submissions/replays locally only, using the local
+  jie credentials. Do not use the by account. Outputs are under
+  `logs/kaggle_live_20260814/`.
+  Latest live replay summaries:
+  - `55485247` old Marnie b8f repeat: `53` analyzed games, `34-18-1`,
+    WR `0.642`; losses concentrated in Archaludon and Mega Lucario, with some
+    same-sig Marnie losses.
+  - `55484585` v13 shadow Marnie b8f: `46` games, `28-18`, WR `0.609`;
+    weak into Archaludon (`1/5`) and Ogerpon (`0/2`), same archetype only
+    `7/13`.
+  - `55478159` Alakazam lossopt 7f9: `45` games, `30-15`, WR `0.667`;
+    main live weakness in this sample is Marnie b8f (`7/16` against sig
+    `b8f251a476e7`), not Dragapult because only one Dragapult appeared in the
+    pulled replay sample.
+  - `55484570` v13 shadow Lucario had only `9` games and `4-5`, not useful.
+- Current v14 sequence population training remains active on `ks`:
+  `logs/v14_sequence_0808_0812/pop_parallel3.nohup.log`.
+  It uses `data/seq_corpus_v14_0808_0812`, not 0813. Status around 12:10 CST:
+  `failed=0`; major running jobs include top-sig Alakazam `7f9a5389`,
+  Dragapult `cc2e995b`, Marnie `b8f251a4`, Lopunny `f1445356`, and Lucario
+  `43d6d8b0`.
+  Training metrics at this checkpoint:
+  - Alakazam `7f9a5389`: epoch 3, top1 about `0.86`, setF1 about `0.86`.
+  - Dragapult `cc2e995b`: epoch 4, top1 about `0.67`, setF1 about `0.67`.
+    This confirms Dragapult is intrinsically harder for the current sequence
+    target/model than Alakazam.
+- Started 0813-only v14 extraction on `ks` so current environment can be added
+  to the next Dragapult/Alakazam training/eval:
+  - runner: `/tmp/run_v14_extract_0813_20260814.sh`
+  - nohup log: `logs/v14_sequence_0813_extract_20260814.nohup.log`
+  - output corpus: `data/seq_corpus_v14_0813_only`
+  - manifest target:
+    `logs/v14_sequence_0813_20260814/train_manifest_0813_top3_allbands.csv`
+  The extractor reports "Processing 1 zips with 1 workers" because work is
+  sharded per zip, not per episode. Progress is printed every 250 episodes.

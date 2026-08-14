@@ -11,8 +11,19 @@ import torch
 
 from ptcg_rl.encoder import BOARD_SLOTS, MAX_HAND, OPT_FEAT_DIM, STATE_FEAT_DIM, STATE_TOKEN_FEAT_DIM
 from ptcg_rl.seq.constants import DAMAGE_COUNTER_ANY_CONTEXT, FUTURE_PLAN_DIM, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, TYPE_END
+from ptcg_rl.seq.constants import TYPE_ABILITY, TYPE_ATTACH, TYPE_ATTACK, TYPE_EVOLVE, TYPE_PLAY, TYPE_RETREAT
 
 _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+_STAT_TYPES = (
+    (TYPE_PLAY, "play"),
+    (TYPE_ATTACH, "attach"),
+    (TYPE_EVOLVE, "evolve"),
+    (TYPE_ABILITY, "ability"),
+    (TYPE_RETREAT, "retreat"),
+    (TYPE_ATTACK, "attack"),
+    (TYPE_END, "end"),
+)
 
 
 @dataclass
@@ -142,6 +153,7 @@ class SequenceCorpus:
         self.files: list[dict[str, np.ndarray]] = []
         self.games: list[list[tuple[int, int]]] = []
         self.samples: list[tuple[int, int]] = []
+        self._game_lengths: list[int] = []
         self.stats = {
             "files": 0,
             "raw_rows": 0,
@@ -163,7 +175,13 @@ class SequenceCorpus:
             "dca_spread_rows": 0,
             "dca_focus_sum": 0.0,
             "dca_unique_sum": 0,
+            "plan_rows": 0,
+            "plan_pos_sum": 0,
+            "plan_value_sum": 0.0,
+            "win_rows": 0,
         }
+        for _, name in _STAT_TYPES:
+            self.stats[f"type_{name}_rows"] = 0
 
         for path in paths:
             with np.load(path, allow_pickle=True) as z:
@@ -185,6 +203,7 @@ class SequenceCorpus:
                 rows = sorted(rows, key=lambda r: int(data["decision_index"][r]) if "decision_index" in data else r)
                 if len(rows) < int(min_game_decisions):
                     continue
+                self._game_lengths.append(len(rows))
                 gi = len(self.games)
                 refs = [(di, int(r)) for r in rows]
                 self.games.append(refs)
@@ -235,6 +254,20 @@ class SequenceCorpus:
                 self.stats["multi_target_rows"] += 1
         if int(data.get("max_c", np.zeros(len(data["board"]), dtype=np.int16))[i]) > 1:
             self.stats["capable_multi_rows"] += 1
+        typ = int(data.get("act_type", np.zeros(len(data["board"]), dtype=np.int16))[i])
+        for type_id, name in _STAT_TYPES:
+            if typ == type_id:
+                self.stats[f"type_{name}_rows"] += 1
+                break
+        if int(data.get("won", np.zeros(len(data["board"]), dtype=np.int8))[i]) == 1:
+            self.stats["win_rows"] += 1
+        if "future_plan" in data:
+            plan = np.asarray(data["future_plan"][i], dtype=np.float32).reshape(-1)
+            if plan.size:
+                plan01 = np.clip(plan, 0.0, 1.0)
+                self.stats["plan_rows"] += 1
+                self.stats["plan_pos_sum"] += int((plan01 > 0.05).sum())
+                self.stats["plan_value_sum"] += float(plan01.mean())
         ctx = int(data.get("act_context", np.zeros(len(data["board"]), dtype=np.int16))[i])
         if ctx == DAMAGE_COUNTER_ANY_CONTEXT:
             self.stats["dca_rows"] += 1
@@ -257,6 +290,21 @@ class SequenceCorpus:
         self.stats["dca_spread_rate"] = float(self.stats.get("dca_spread_rows", 0)) / dca
         self.stats["dca_focus_mean"] = float(self.stats.get("dca_focus_sum", 0.0)) / dca
         self.stats["dca_unique_mean"] = float(self.stats.get("dca_unique_sum", 0)) / dca
+        self.stats["win_rate"] = float(self.stats.get("win_rows", 0)) / kept
+        plan_rows = max(float(self.stats.get("plan_rows", 0)), 1.0)
+        self.stats["plan_label_density"] = float(self.stats.get("plan_pos_sum", 0)) / (plan_rows * max(self.future_plan_dim, 1))
+        self.stats["plan_value_mean"] = float(self.stats.get("plan_value_sum", 0.0)) / plan_rows
+        if self._game_lengths:
+            lengths = np.asarray(self._game_lengths, dtype=np.float32)
+            self.stats["game_len_mean"] = float(lengths.mean())
+            self.stats["game_len_p50"] = float(np.percentile(lengths, 50))
+            self.stats["game_len_p90"] = float(np.percentile(lengths, 90))
+        else:
+            self.stats["game_len_mean"] = 0.0
+            self.stats["game_len_p50"] = 0.0
+            self.stats["game_len_p90"] = 0.0
+        for _, name in _STAT_TYPES:
+            self.stats[f"type_{name}_rate"] = float(self.stats.get(f"type_{name}_rows", 0)) / target
 
     def split_samples(self, val_fraction: float = 0.1, seed: int = 7) -> tuple[list[int], list[int]]:
         rng = np.random.default_rng(seed)

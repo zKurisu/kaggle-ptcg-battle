@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import math
 import json
 import os
@@ -22,8 +23,11 @@ sys.path.insert(0, str(_REPO))
 
 from ptcg_rl.encoder import OPT_FEAT_DIM, STATE_FEAT_DIM, STATE_TOKEN_FEAT_DIM
 from ptcg_rl.seq.constants import DEFAULT_SEQ_LEN, FEATURE_VERSION, FUTURE_PLAN_DIM, LEDGER_FEAT_DIM
+from ptcg_rl.seq.data import SequenceBatch
 from ptcg_rl.seq.data import SequenceCorpus, discover_sequence_npz
 from ptcg_rl.seq.model import SequenceLossConfig, SequencePolicyNet, sequence_accuracy, sequence_policy_loss
+
+_TYPE_LOG_KEYS = ("play", "attach", "evolve", "ability", "attack", "end")
 
 
 def _split_csv(values: list[str]) -> list[str]:
@@ -70,15 +74,25 @@ def _cuda_mem(device: torch.device) -> str:
     return f" mem={alloc:.1f}/{reserved:.1f}G"
 
 
+def _nonfinite_names(parts: dict[str, float]) -> str:
+    bad = [k for k, v in sorted(parts.items()) if isinstance(v, (int, float)) and not np.isfinite(float(v))]
+    return ",".join(bad) if bad else "loss_tensor"
+
+
 def _fmt(stats: dict[str, float], key: str, digits: int = 3) -> str:
     return f"{stats.get(key, 0.0):.{digits}f}"
 
 
 def _signal_stats_line(stats: dict[str, object]) -> str:
     keys = [
+        ("game_len_mean", 1),
+        ("game_len_p90", 1),
+        ("win_rate", 3),
         ("target_k_mean", 3),
         ("multi_target_rate", 3),
         ("capable_multi_rate", 3),
+        ("plan_label_density", 3),
+        ("plan_value_mean", 3),
         ("dca_rate", 3),
         ("dca_groups", 0),
         ("dca_spread_rate", 3),
@@ -92,7 +106,134 @@ def _signal_stats_line(stats: dict[str, object]) -> str:
             parts.append(f"{key}={value:.{digits}f}")
         else:
             parts.append(f"{key}={value}")
-    return "Signal stats: " + " ".join(parts)
+    type_parts = []
+    for name in _TYPE_LOG_KEYS:
+        value = stats.get(f"type_{name}_rate", 0.0)
+        if isinstance(value, float):
+            type_parts.append(f"{name}:{value:.2f}")
+    return "Signal stats: " + " ".join(parts) + " type_rates=" + ",".join(type_parts)
+
+
+def _current_only_batch(batch: SequenceBatch) -> SequenceBatch:
+    """Keep only the rightmost/current decision row for validation ablation."""
+    values = {}
+    seq_len = int(batch.step_mask.shape[1])
+    last = max(seq_len - 1, 0)
+    for field in dataclasses.fields(batch):
+        value = getattr(batch, field.name)
+        if isinstance(value, torch.Tensor) and value.ndim >= 2 and value.shape[1] == seq_len:
+            out = torch.zeros_like(value)
+            out[:, last] = value[:, last]
+            values[field.name] = out
+        else:
+            values[field.name] = value
+    return SequenceBatch(**values)
+
+
+def _no_action_history_batch(batch: SequenceBatch) -> SequenceBatch:
+    """Keep board/hand history, but remove live action-ledger channels."""
+    values = {field.name: getattr(batch, field.name) for field in dataclasses.fields(batch)}
+    for name in (
+        "ledger_feats",
+        "prev_type",
+        "prev_card",
+        "prev_card2",
+        "prev_attack",
+        "prev_context",
+        "prev_select_type",
+        "prev_count",
+    ):
+        values[name] = torch.zeros_like(values[name])
+    return SequenceBatch(**values)
+
+
+def _reversed_prefix_batch(batch: SequenceBatch) -> SequenceBatch:
+    """Reverse historical prefix rows while preserving the live/current row."""
+    values = {}
+    seq_len = int(batch.step_mask.shape[1])
+    if seq_len <= 2:
+        return batch
+    order = torch.arange(seq_len, device=batch.step_mask.device)
+    order[:-1] = torch.flip(order[:-1], dims=[0])
+    for field in dataclasses.fields(batch):
+        value = getattr(batch, field.name)
+        if isinstance(value, torch.Tensor) and value.ndim >= 2 and value.shape[1] == seq_len:
+            values[field.name] = value.index_select(1, order)
+        else:
+            values[field.name] = value
+    return SequenceBatch(**values)
+
+
+def _current_logit_compare(
+    *,
+    name: str,
+    batch: SequenceBatch,
+    full_outputs: dict[str, torch.Tensor],
+    ab_outputs: dict[str, torch.Tensor],
+) -> dict[str, float]:
+    ab_acc = sequence_accuracy(ab_outputs, batch)
+    full_acc = sequence_accuracy(full_outputs, batch)
+    valid = (batch.target_first >= 0) & (batch.step_mask > 0)
+    current = torch.zeros_like(valid, dtype=torch.bool)
+    if current.shape[1] > 0:
+        current[:, -1] = True
+    mask = valid & current
+    if not bool(mask.any()):
+        return {
+            f"{name}_top1": 0.0,
+            f"{name}_delta": 0.0,
+            f"{name}_agree": 0.0,
+            f"{name}_kl": 0.0,
+        }
+    full_logits = full_outputs["action_logits"][mask]
+    ab_logits = ab_outputs["action_logits"][mask]
+    opt_mask = batch.option_mask[mask].float()
+    full_logits = full_logits.masked_fill(opt_mask <= 0, -1e4)
+    ab_logits = ab_logits.masked_fill(opt_mask <= 0, -1e4)
+    full_pred = full_logits.argmax(dim=-1)
+    ab_pred = ab_logits.argmax(dim=-1)
+    full_lp = torch.log_softmax(full_logits, dim=-1)
+    ab_lp = torch.log_softmax(ab_logits, dim=-1)
+    full_p = full_lp.exp()
+    kl = (full_p * (full_lp - ab_lp)).sum(dim=-1).mean().item()
+    return {
+        f"{name}_top1": float(ab_acc.get("cur_top1", 0.0)),
+        f"{name}_delta": float(ab_acc.get("cur_top1", 0.0) - full_acc.get("cur_top1", 0.0)),
+        f"{name}_agree": float((full_pred == ab_pred).float().mean().item()),
+        f"{name}_kl": float(kl),
+    }
+
+
+@torch.no_grad()
+def _current_ablation_metrics(
+    *,
+    model: SequencePolicyNet,
+    batch: SequenceBatch,
+    full_outputs: dict[str, torch.Tensor],
+) -> dict[str, float]:
+    out: dict[str, float] = {}
+    current_only = _current_only_batch(batch)
+    out.update(_current_logit_compare(
+        name="cur1",
+        batch=current_only,
+        full_outputs=full_outputs,
+        ab_outputs=model(current_only),
+    ))
+    no_action = _no_action_history_batch(batch)
+    out.update(_current_logit_compare(
+        name="noact",
+        batch=batch,
+        full_outputs=full_outputs,
+        ab_outputs=model(no_action),
+    ))
+    reversed_prefix = _reversed_prefix_batch(batch)
+    out.update(_current_logit_compare(
+        name="revhist",
+        batch=batch,
+        full_outputs=full_outputs,
+        ab_outputs=model(reversed_prefix),
+    ))
+    return out
 
 
 def _signal_warnings(
@@ -106,6 +247,27 @@ def _signal_warnings(
     warnings: list[str] = []
     if val_acc.get("multi2_rate", 0.0) < 0.05 and val_acc.get("capable2_rate", 0.0) > 0.05:
         warnings.append("single_step_dominated")
+    if val_loss.get("current_weight_share", 1.0) < 0.50:
+        warnings.append(f"current_step_underweighted={val_loss.get('current_weight_share', 0.0):.3f}")
+    if val_loss.get("current_row_share", 0.0) < 0.08:
+        warnings.append(f"sequence_prefix_dominant_raw={val_loss.get('current_row_share', 0.0):.3f}")
+    if train_loss.get("grad_norm", 0.0) > 1000.0:
+        warnings.append(f"large_preclip_grad={train_loss.get('grad_norm', 0.0):.1f}")
+    if val_acc.get("cur_n", 0.0) > 50 and val_acc.get("cur_top1", 0.0) + 0.05 < val_acc.get("top1", 0.0):
+        warnings.append("current_step_weaker_than_prefix")
+    if val_acc.get("cur1_agree", 0.0) > 0.90 and abs(val_acc.get("cur1_delta", 0.0)) < 0.02:
+        warnings.append("history_not_affecting_current")
+    if val_acc.get("noact_agree", 0.0) > 0.92 and abs(val_acc.get("noact_delta", 0.0)) < 0.02:
+        warnings.append("action_ledger_not_affecting_current")
+    if val_acc.get("revhist_agree", 0.0) > 0.92 and abs(val_acc.get("revhist_delta", 0.0)) < 0.02:
+        warnings.append("history_order_not_affecting_current")
+    if val_acc.get("plan_pos_rate", 0.0) > 0.10 and val_acc.get("plan_f1", 0.0) < 0.20:
+        warnings.append("future_plan_weak")
+    if val_acc.get("ambig_type_rate", 0.0) > 0.10 and val_acc.get("ambig_type_top1", 0.0) + 0.05 < val_acc.get("top1", 0.0):
+        warnings.append("ambiguous_options_weak")
+    for name in ("attach", "evolve", "attack"):
+        if val_acc.get(f"{name}_rate", 0.0) > 0.04 and val_acc.get(f"{name}_top1", 1.0) < 0.45:
+            warnings.append(f"{name}_decision_weak")
     if args.damage_counter_weight > 1.0 and val_acc.get("dca_n", 0.0) <= 0:
         warnings.append("no_val_dca_signal")
     if val_acc.get("dca_n", 0.0) > 50:
@@ -141,6 +303,7 @@ def run_epoch(
     grad_clip: float,
     max_batches: int,
     progress_every: int,
+    diagnostic_ablation: bool,
 ) -> tuple[dict[str, float], dict[str, float]]:
     train = optimizer is not None
     model.train(train)
@@ -161,16 +324,38 @@ def run_epoch(
             with torch.cuda.amp.autocast(enabled=amp):
                 outputs = model(batch)
                 loss, parts = sequence_policy_loss(outputs, batch, loss_cfg)
+            if not torch.isfinite(loss):
+                print(
+                    f"FATAL nonfinite_loss mode={'train' if train else 'val'} epoch={epoch} "
+                    f"batch={bi}/{total_batches} bad={_nonfinite_names(parts)} parts={parts}",
+                    flush=True,
+                )
+                raise RuntimeError("nonfinite sequence policy loss")
             if train:
                 optimizer.zero_grad(set_to_none=True)
                 scaler.scale(loss).backward()
+                grad_norm = 0.0
                 if grad_clip > 0:
                     scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                    grad = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                    grad_norm = float(grad.detach().cpu()) if torch.is_tensor(grad) else float(grad)
+                    if not np.isfinite(grad_norm):
+                        print(
+                            f"FATAL nonfinite_grad mode=train epoch={epoch} batch={bi}/{total_batches} "
+                            f"grad_norm={grad_norm} parts={parts}",
+                            flush=True,
+                        )
+                        raise RuntimeError("nonfinite sequence policy gradient")
                 scaler.step(optimizer)
                 scaler.update()
+                if progress_every and (bi == 1 or bi % progress_every == 0 or bi == total_batches):
+                    parts = dict(parts)
+                    parts["grad_norm"] = grad_norm
         loss_parts.append(parts)
-        acc_parts.append(sequence_accuracy(outputs, batch))
+        acc = sequence_accuracy(outputs, batch)
+        if diagnostic_ablation and not train:
+            acc.update(_current_ablation_metrics(model=model, batch=batch, full_outputs=outputs))
+        acc_parts.append(acc)
         if progress_every and (bi == 1 or bi % progress_every == 0 or bi == total_batches):
             elapsed = time.time() - t0
             rate = seen / max(elapsed, 1e-9)
@@ -187,7 +372,15 @@ def run_epoch(
                 f"top1={ma.get('top1', 0):.3f} type={ma.get('type_acc', 0):.3f} "
                 f"cnt={ma.get('count_acc', 0):.3f}/{ma.get('count_mae', 0):.2f} "
                 f"k={ma.get('pred_k', 0):.2f}/{ma.get('target_k', 0):.2f} "
+                f"cur={ma.get('cur_top1', 0):.3f}/{ma.get('cur_type_acc', 0):.3f}/"
+                f"{mp.get('current_weight_share', 0):.2f}/{mp.get('current_row_share', 0):.2f} "
+                f"seq={ma.get('seq_len_mean', 0):.1f}/{ma.get('seq_full_rate', 0):.2f}/{ma.get('history_present_rate', 0):.2f} "
                 f"setF1={ma.get('set_f1', 0):.3f} ordAcc={ma.get('order_acc', 0):.3f} "
+                f"atype={ma.get('action_type_acc', 0):.3f} "
+                f"pln={ma.get('plan_f1', 0):.3f}/{ma.get('plan_mae', 0):.3f}/"
+                f"{ma.get('plan_pos_rate', 0):.2f}->{ma.get('plan_pred_pos_rate', 0):.2f} "
+                f"opt={ma.get('option_n', 0):.1f}/{ma.get('ambig_type_rate', 0):.2f}/"
+                f"{ma.get('ambig_type_top1', 0):.3f} "
                 f"m2n={ma.get('multi2_n', 0):.0f} m2r={ma.get('multi2_rate', 0):.3f} "
                 f"cap2={ma.get('capable2_rate', 0):.3f} m2F1={ma.get('multi2_f1', 0):.3f} "
                 f"m2Ord={ma.get('multi2_order_acc', 0):.3f} "
@@ -201,8 +394,15 @@ def run_epoch(
                 f"{ma.get('dca_spread_top1', 0):.3f} "
                 f"boost={mp.get('weight_boost', 0):.2f} dcaW={mp.get('dca_weight_share', 0):.2f} "
                 f"m2W={mp.get('multi_weight_share', 0):.2f} "
+                f"curA={mp.get('current_action', 0):.3f}/{mp.get('prefix_action', 0):.3f} "
+                f"curHead={mp.get('action_current_head', 0):.3f}/{mp.get('action_prefix_head', 0):.3f} "
                 f"dcaA={mp.get('dca_action', 0):.3f}/{mp.get('non_dca_action', 0):.3f} "
-                f"outAcc={ma.get('outcome_acc', 0):.3f} "
+                f"out={ma.get('outcome_acc', 0):.3f}/{ma.get('outcome_brier', 0):.3f}/"
+                f"{ma.get('outcome_pos_rate', 0):.2f}->{ma.get('outcome_pred_pos_rate', 0):.2f} "
+                f"types=p{ma.get('play_top1', 0):.2f},at{ma.get('attach_top1', 0):.2f},"
+                f"ev{ma.get('evolve_top1', 0):.2f},ab{ma.get('ability_top1', 0):.2f},"
+                f"ak{ma.get('attack_top1', 0):.2f},en{ma.get('end_top1', 0):.2f} "
+                f"grad={mp.get('grad_norm', 0):.2f} "
                 f"{rate:.0f} samples/s eta={eta:.0f}s{_cuda_mem(device)}",
                 flush=True,
             )
@@ -269,7 +469,15 @@ def main() -> None:
     p.add_argument("--max-train-batches", type=int, default=0)
     p.add_argument("--max-val-batches", type=int, default=200)
     p.add_argument("--progress-every", type=int, default=50)
+    p.add_argument("--diagnostic-ablation", action="store_true",
+                   help="during validation, compare full sequence against current-only ablation")
     p.add_argument("--action-weight", type=float, default=1.0)
+    p.add_argument("--current-action-weight", type=float, default=1.0,
+                   help="main CE weight for the rightmost decision row used by live inference")
+    p.add_argument("--prefix-action-weight", type=float, default=0.10,
+                   help="auxiliary CE weight for historical prefix rows; keep small so history is context")
+    p.add_argument("--order-weight", type=float, default=0.15,
+                   help="ordered multi-select CE weight; applied only when target_k>1")
     p.add_argument("--multi-weight", type=float, default=0.15)
     p.add_argument("--count-weight", type=float, default=0.20)
     p.add_argument("--plan-weight", type=float, default=0.35)
@@ -336,6 +544,9 @@ def main() -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     loss_cfg = SequenceLossConfig(
         action_weight=args.action_weight,
+        current_action_weight=args.current_action_weight,
+        prefix_action_weight=args.prefix_action_weight,
+        order_weight=args.order_weight,
         multi_weight=args.multi_weight,
         count_weight=args.count_weight,
         plan_weight=args.plan_weight,
@@ -361,6 +572,7 @@ def main() -> None:
             grad_clip=args.grad_clip,
             max_batches=args.max_train_batches,
             progress_every=args.progress_every,
+            diagnostic_ablation=False,
         )
         with torch.no_grad():
             val_loss, val_acc = run_epoch(
@@ -376,16 +588,33 @@ def main() -> None:
                 grad_clip=0.0,
                 max_batches=args.max_val_batches,
                 progress_every=0,
+                diagnostic_ablation=args.diagnostic_ablation,
             )
         val = val_loss.get("loss", float("inf"))
         print(
             f"done epoch {epoch}/{args.epochs} "
             f"train={train_loss.get('loss', 0):.4f} val={val:.4f} "
             f"train_top1={train_acc.get('top1', 0):.3f} val_top1={val_acc.get('top1', 0):.3f} "
+            f"val_cur={val_acc.get('cur_top1', 0):.3f}/{val_acc.get('cur_type_acc', 0):.3f} "
+            f"val_curW={val_loss.get('current_weight_share', 0):.3f} "
+            f"val_curRow={val_loss.get('current_row_share', 0):.3f} "
+            f"val_seq={val_acc.get('seq_len_mean', 0):.1f}/{val_acc.get('seq_full_rate', 0):.2f}/"
+            f"{val_acc.get('history_present_rate', 0):.2f} "
+            f"val_cur1={val_acc.get('cur1_top1', 0):.3f}/{val_acc.get('cur1_delta', 0):+.3f}/"
+            f"{val_acc.get('cur1_agree', 0):.3f}/{val_acc.get('cur1_kl', 0):.3f} "
+            f"val_noact={val_acc.get('noact_top1', 0):.3f}/{val_acc.get('noact_delta', 0):+.3f}/"
+            f"{val_acc.get('noact_agree', 0):.3f}/{val_acc.get('noact_kl', 0):.3f} "
+            f"val_revhist={val_acc.get('revhist_top1', 0):.3f}/{val_acc.get('revhist_delta', 0):+.3f}/"
+            f"{val_acc.get('revhist_agree', 0):.3f}/{val_acc.get('revhist_kl', 0):.3f} "
             f"val_plan={val_loss.get('plan', 0):.4f} val_type={val_acc.get('type_acc', 0):.3f} "
+            f"val_planSig={val_acc.get('plan_f1', 0):.3f}/{val_acc.get('plan_mae', 0):.3f}/"
+            f"{val_acc.get('plan_pos_rate', 0):.2f}->{val_acc.get('plan_pred_pos_rate', 0):.2f} "
+            f"val_atype={val_acc.get('action_type_acc', 0):.3f} "
             f"val_count={val_acc.get('count_acc', 0):.3f} "
             f"val_setF1={val_acc.get('set_f1', 0):.3f} val_order={val_acc.get('order_acc', 0):.3f} "
             f"val_k={val_acc.get('pred_k', 0):.2f}/{val_acc.get('target_k', 0):.2f} "
+            f"val_opt={val_acc.get('option_n', 0):.1f}/{val_acc.get('ambig_type_rate', 0):.2f}/"
+            f"{val_acc.get('ambig_type_top1', 0):.3f} "
             f"val_m2n={val_acc.get('multi2_n', 0):.0f} val_m2r={val_acc.get('multi2_rate', 0):.3f} "
             f"val_cap2={val_acc.get('capable2_rate', 0):.3f} "
             f"val_m2F1={val_acc.get('multi2_f1', 0):.3f} val_m2Order={val_acc.get('multi2_order_acc', 0):.3f} "
@@ -399,8 +628,14 @@ def main() -> None:
             f"{val_acc.get('dca_spread_top1', 0):.3f} "
             f"val_boost={val_loss.get('weight_boost', 0):.2f} "
             f"val_dcaW={val_loss.get('dca_weight_share', 0):.2f} val_m2W={val_loss.get('multi_weight_share', 0):.2f} "
+            f"val_curA={val_loss.get('current_action', 0):.3f}/{val_loss.get('prefix_action', 0):.3f} "
+            f"val_curHead={val_loss.get('action_current_head', 0):.3f}/{val_loss.get('action_prefix_head', 0):.3f} "
             f"val_dcaA={val_loss.get('dca_action', 0):.3f}/{val_loss.get('non_dca_action', 0):.3f} "
-            f"val_outAcc={val_acc.get('outcome_acc', 0):.3f}",
+            f"val_out={val_acc.get('outcome_acc', 0):.3f}/{val_acc.get('outcome_brier', 0):.3f}/"
+            f"{val_acc.get('outcome_pos_rate', 0):.2f}->{val_acc.get('outcome_pred_pos_rate', 0):.2f} "
+            f"val_types=p{val_acc.get('play_top1', 0):.2f},at{val_acc.get('attach_top1', 0):.2f},"
+            f"ev{val_acc.get('evolve_top1', 0):.2f},ab{val_acc.get('ability_top1', 0):.2f},"
+            f"ak{val_acc.get('attack_top1', 0):.2f},en{val_acc.get('end_top1', 0):.2f}",
             flush=True,
         )
         warnings = _signal_warnings(
@@ -415,8 +650,20 @@ def main() -> None:
             f"top1_gap={train_acc.get('top1', 0) - val_acc.get('top1', 0):.3f} "
             f"m2_gap={train_acc.get('multi2_f1', 0) - val_acc.get('multi2_f1', 0):.3f} "
             f"dca_gap={train_acc.get('dca_top1', 0) - val_acc.get('dca_top1', 0):.3f} "
+            f"cur_gap={train_acc.get('cur_top1', 0) - val_acc.get('cur_top1', 0):.3f} "
+            f"cur1_delta={val_acc.get('cur1_delta', 0):+.3f} "
+            f"cur1_agree={val_acc.get('cur1_agree', 0):.3f} "
+            f"noact_delta={val_acc.get('noact_delta', 0):+.3f} "
+            f"noact_agree={val_acc.get('noact_agree', 0):.3f} "
+            f"revhist_delta={val_acc.get('revhist_delta', 0):+.3f} "
+            f"revhist_agree={val_acc.get('revhist_agree', 0):.3f} "
+            f"plan_f1={val_acc.get('plan_f1', 0):.3f} "
+            f"ambig_top1={val_acc.get('ambig_type_top1', 0):.3f} "
+            f"train_grad={train_loss.get('grad_norm', 0):.2f} "
             f"dca_weight_share={val_loss.get('dca_weight_share', 0):.3f} "
             f"multi_weight_share={val_loss.get('multi_weight_share', 0):.3f} "
+            f"current_weight_share={val_loss.get('current_weight_share', 0):.3f} "
+            f"current_row_share={val_loss.get('current_row_share', 0):.3f} "
             f"warnings={','.join(warnings) if warnings else 'none'}",
             flush=True,
         )

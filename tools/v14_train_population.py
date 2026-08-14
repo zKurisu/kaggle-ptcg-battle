@@ -94,6 +94,12 @@ def build_cmd(args: argparse.Namespace, job: Job) -> list[str]:
         str(args.progress_every),
         "--action-weight",
         str(args.action_weight),
+        "--current-action-weight",
+        str(args.current_action_weight),
+        "--prefix-action-weight",
+        str(args.prefix_action_weight),
+        "--order-weight",
+        str(args.order_weight),
         "--multi-weight",
         str(args.multi_weight),
         "--count-weight",
@@ -115,6 +121,8 @@ def build_cmd(args: argparse.Namespace, job: Job) -> list[str]:
         cmd += ["--date-to", args.date_to]
     if args.amp:
         cmd.append("--amp")
+    if args.diagnostic_ablation:
+        cmd.append("--diagnostic-ablation")
     if args.winner_only:
         cmd.append("--winner-only")
     if args.min_score:
@@ -170,6 +178,9 @@ def main() -> None:
     p.add_argument("--loss-weight", type=float, default=0.5)
     p.add_argument("--draw-weight", type=float, default=0.8)
     p.add_argument("--action-weight", type=float, default=1.0)
+    p.add_argument("--current-action-weight", type=float, default=1.0)
+    p.add_argument("--prefix-action-weight", type=float, default=0.10)
+    p.add_argument("--order-weight", type=float, default=0.15)
     p.add_argument("--multi-weight", type=float, default=0.15)
     p.add_argument("--count-weight", type=float, default=0.20)
     p.add_argument("--plan-weight", type=float, default=0.35)
@@ -178,6 +189,7 @@ def main() -> None:
     p.add_argument("--winner-only", action="store_true")
     p.add_argument("--min-score", type=float, default=0.0)
     p.add_argument("--amp", action="store_true")
+    p.add_argument("--diagnostic-ablation", action="store_true")
     p.add_argument("--device", default="cpu")
     p.add_argument("--progress-every", type=int, default=50)
     p.add_argument("--poll", type=float, default=30.0)

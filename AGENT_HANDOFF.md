@@ -1,10 +1,133 @@
 # Agent Handoff
 
-Last updated: 2026-08-14 20:36 Asia/Shanghai.
+Last updated: 2026-08-14 22:22 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
 ## Update: Training-Time Signal Diagnostics 2026-08-14
+
+Latest v14 Kaggle diagnosis after three poor submissions:
+
+- Current v14 submissions on `jie` were all poor despite some local metrics:
+  - `55501985` `submission_oldv14_mega_lucario_43d6`: public `569.1`.
+  - `55502017` `submission_oldv14_alakazam_7f9a`: public `799.4`.
+  - `55505115` `submission_v14_lopunny_f144`: public `881.8`.
+  Treat this as a pipeline-level failure, not a single-card matchup anomaly.
+- Old v14 local random was misleading. Mega Lucario `43d6` had random g300
+  `100.0%`, Alakazam `7f9a` had `99.7%`, and Lopunny `f144` had `99.7%`,
+  yet Kaggle did not hold 900+. Random only proves the agent can beat weak legal
+  play; it is not a quality gate for v14.
+- Live-tail local RR was also misleading. Files:
+  `logs/kaggle_live_20260814/oldv14_submit_analysis/rr_lucario_vs_live_tail_g40.csv`
+  and `rr_alakazam_vs_live_tail_g40.csv` predicted oldv14 Lucario/Alakazam at
+  about `98-99%` vs the extracted live opponent deck pool, while Kaggle scores
+  were `569.1/799.4`. This means the current shadow/live-tail agents are too
+  weak or too unlike real submitted policies. Do not use these local shadows as
+  decisive submission selectors.
+- Filtered old-v14 RR on local strong-random entries was internally coherent
+  but not enough for Kaggle. Top local entries were:
+  `Mega Lopunny f144` mean `0.702`, `Alakazam 7f9` mean `0.698`,
+  `Marnie b8f` mean `0.667`; `Dragapult cc2e` was only `0.371`.
+  Full matrix:
+  `logs/v14_sequence_0808_0812/rr_v14_pop_filtered_random96_20260814/archetype_matrix.csv`.
+- Label audit on `data/seq_corpus_v14_0801_0813_hq` shows why larger v14 models
+  did not become strategic:
+  - Dragapult `cc2e995b5ad0`: `569727` rows, row win rate `0.591`,
+    `multi_rate=0.032`. DCA has `95796` rows but most groups are focus labels:
+    `unique_slot_counts={1:74754, 2:18318, 3:2322, 4:372, 5:30}` and
+    `focus_1.0=74754`. This teaches "put counters on one target" far more than
+    tactical 60-damage allocation.
+  - Alakazam `7f9a538936e3`: `1250512` rows but row win rate only `0.470`;
+    many rows come from `600-899`. More data here is not automatically cleaner.
+  - Marnie `b8f251a476e7`: `3562957` rows, row win rate `0.501`; all-band
+    deck-sig BC directly imitates a large amount of losing/low-quality play.
+  - Lopunny `f1445356c3a7`: `732811` rows, row win rate `0.563`, local random
+    strong but Kaggle only `881.8`.
+- DCA-specific training did not solve strategy. `v14dca_dragapult_cc2e_w512_dca6`
+  reached training DCA top1 about `0.997`, but validation DCA top1 only about
+  `0.861`; RR vs old-v14 filtered pool remained weak, e.g. vs Crustle
+  `0.1625`, vs Marnie b8f `0.175`. This is stronger evidence that per-step DCA
+  labels are insufficient. Need block-level/plan-level targets or search/rules,
+  not just feature/weight tweaks.
+- Practical conclusion for next work:
+  - v14 must be diagnosed during training, not after random/RR.
+  - Do not restart large v14 training unless the training log reports history
+    sensitivity (`noact`/`revhist`), current-step metrics, ambiguous option
+    metrics, DCA split/focus metrics, per-action-type top1, and nonfinite/grad
+    checks.
+  - Next architecture/data change should stop treating the sequence as many
+    independent next-action rows. Use grouped tactical units for DCA and other
+    multi-step resolutions, and add an objective that requires chronology to
+    matter. If `revhist_delta≈0`, the model is still a single-step policy with
+    decorative history.
+
+Latest critical diagnostic result:
+
+- The first no-guard v14 diagnostic run
+  `logs/v14_signal_diag_20260814/diag_*.log` exposed two hard failures before
+  random/RR:
+  - `loss`/`val` became `nan` during epoch 1, driven by the order/ranking loss
+    path.
+  - The old sequence action loss supervised every prefix row almost equally;
+    the live inference row had only about `0.039-0.040` raw decision weight.
+    Validation ablation showed current-only input was essentially identical
+    (`cur1_delta` near zero, `cur1_agree` around `0.95-0.99`), so the model was
+    not measurably using history.
+- A second smoke isolated a separate numerical failure: with `--amp`, the first
+  backward pass produced `nonfinite_grad` even when order loss or DCA/multi
+  boost were disabled. The same smoke without AMP completed. Until bf16/fp16 is
+  explicitly repaired, **do not use `--amp` for v14 sequence training**.
+- The current local code changes align the objective with live inference:
+  `SequenceLossConfig` now has `current_action_weight`,
+  `prefix_action_weight`, and `order_weight`. Action CE is dominated by the
+  rightmost/current decision row; prefix CE is only a small auxiliary. Order CE
+  is applied only on true `target_k>1` rows and logits are clamped for loss
+  stability.
+- `tools/v14_train_sequence_policy.py` now hard-stops on nonfinite loss or
+  nonfinite gradient and logs `grad`/pre-clip gradient norm in progress lines.
+  `signal_health` now includes `current_row_share`,
+  `current_weight_share`, and `large_preclip_grad` warnings. Treat very large
+  pre-clip gradients as a real training failure signal, not harmless noise.
+- Active diagnostic runner on ks:
+  - script: `/tmp/run_v14_lossfix_diagnostics_20260814.sh`
+  - log dir: `logs/v14_lossfix_diag_20260814`
+  - checkpoints: `checkpoints/v14_lossfix_diag_20260814`
+  - jobs: Dragapult `cc2e995b5ad0`, Alakazam `7f9a538936e3`,
+    Mega Lopunny `f1445356c3a7`, Marnie `b8f251a476e7`
+  - config: no AMP, `width=256`, `layers=3`, `heads=8`, `batch=384`,
+    `epochs=2`, `max_train_batches=160`, `max_val_batches=40`,
+    `--diagnostic-ablation`, current/prefix/order weights `1.0/0.10/0.05`.
+  - Completed status `0` at `2026-08-14T21:35:04+08:00`.
+  - It showed no `nan` without AMP and aligned current-step supervision:
+    `current_weight_share=0.909`, raw `current_row_share≈0.037-0.040`.
+  - It also showed very large first-batch pre-clip gradients (`1e7` range),
+    falling to small finite values after a few dozen batches. Keep the new
+    `large_preclip_grad` warning for future runs.
+  - Final diagnostic metrics, epoch 2:
+    - Alakazam `7f9a`: `val_top1=0.756`, `val_cur=0.752/0.870`,
+      `cur1_delta=-0.031`, `cur1_agree=0.843`, `m2F1=0.827`,
+      warnings `ambiguous_options_weak,no_val_dca_signal`.
+    - Dragapult `cc2e`: `val_top1=0.672`, `val_cur=0.683/0.867`,
+      `cur1_delta=-0.050`, `cur1_agree=0.755`, `m2F1=0.769`,
+      `dcaTop1=0.874`, `dcaSplit=0.796/0.891/0.425`, warning
+      `attach_decision_weak`.
+    - Mega Lopunny `f144`: `val_top1=0.653`, `val_cur=0.657/0.828`,
+      `cur1_delta=-0.038`, `cur1_agree=0.831`, `m2F1=0.762`.
+    - Marnie `b8f`: `val_top1=0.728`, `val_cur=0.731/0.899`,
+      `cur1_delta=-0.037`, `cur1_agree=0.846`, `m2F1=0.767`.
+  - Interpretation: the loss/numerical path is now trainable, and current-only
+    ablation is no longer identical, but Dragapult attach remains weak and DCA
+    labels are still focus-heavy. Do not claim strategic improvement from these
+    diagnostics alone.
+- Added next-generation training-time history probes to
+  `tools/v14_train_sequence_policy.py` after this runner started. Future runs
+  with `--diagnostic-ablation` now also print:
+  - `val_noact=top1/delta/agree/kl`: zeroes action ledger/prev-action inputs
+    while keeping board/hand history.
+  - `val_revhist=top1/delta/agree/kl`: reverses historical prefix order while
+    preserving the live/current row.
+  Use these to distinguish "uses current board only" from "uses action ledger"
+  and "uses chronological history".
 
 Hard constraint from the user: do not wait for random/RR to discover whether a
 new signal worked. Any new signal and any existing critical signal must be

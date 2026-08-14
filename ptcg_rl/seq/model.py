@@ -17,16 +17,30 @@ from ptcg_rl.encoder import (
     STATE_TOKEN_FEAT_DIM,
 )
 from ptcg_rl.seq.constants import DAMAGE_COUNTER_ANY_CONTEXT, FUTURE_PLAN_DIM, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, N_ACTION_TYPES
+from ptcg_rl.seq.constants import TYPE_ABILITY, TYPE_ATTACH, TYPE_ATTACK, TYPE_END, TYPE_EVOLVE, TYPE_PLAY, TYPE_RETREAT
 from ptcg_rl.seq.data import SequenceBatch
 
 # Keep this fp16-safe. ``masked_fill`` runs under AMP during training, and
 # values like -1e9 cannot be represented in float16.
 NEG_INF = -1e4
 
+_MONITORED_TYPES = (
+    (TYPE_PLAY, "play"),
+    (TYPE_ATTACH, "attach"),
+    (TYPE_EVOLVE, "evolve"),
+    (TYPE_ABILITY, "ability"),
+    (TYPE_RETREAT, "retreat"),
+    (TYPE_ATTACK, "attack"),
+    (TYPE_END, "end"),
+)
+
 
 @dataclass
 class SequenceLossConfig:
     action_weight: float = 1.0
+    current_action_weight: float = 1.0
+    prefix_action_weight: float = 0.10
+    order_weight: float = 0.15
     multi_weight: float = 0.15
     count_weight: float = 0.20
     plan_weight: float = 0.35
@@ -339,28 +353,53 @@ def sequence_policy_loss(
     )
     decision_weights = weights * torch.maximum(multi_boost, damage_boost)
     valid_action = (batch.target_first >= 0) & (step_mask > 0)
+    current_step = torch.zeros_like(valid_action, dtype=torch.bool)
+    if current_step.shape[1] > 0:
+        current_step[:, -1] = True
     valid_weight_sum = weights[valid_action].sum().clamp(min=1.0) if bool(valid_action.any()) else weights.sum().clamp(min=1.0)
     decision_weight_sum = decision_weights[valid_action].sum().clamp(min=1.0) if bool(valid_action.any()) else decision_weights.sum().clamp(min=1.0)
     if bool(valid_action.any()):
-        action_loss = F.cross_entropy(
-            outputs["action_logits"][valid_action],
+        raw_action_loss = F.cross_entropy(
+            outputs["action_logits"][valid_action].float().clamp(min=-50.0, max=50.0),
             batch.target_first.long()[valid_action],
             reduction="none",
         )
         valid_decision_weights = decision_weights[valid_action]
-        raw_action_loss = action_loss
-        action_loss = (action_loss * valid_decision_weights).sum() / decision_weight_sum
+        valid_current = current_step[valid_action]
+        valid_prefix = ~valid_current
+        if bool(valid_current.any()):
+            current_action_loss = (
+                raw_action_loss[valid_current] * valid_decision_weights[valid_current]
+            ).sum() / valid_decision_weights[valid_current].sum().clamp(min=1.0)
+        else:
+            current_action_loss = outputs["action_logits"].sum() * 0.0
+        if bool(valid_prefix.any()) and float(cfg.prefix_action_weight) > 0.0:
+            prefix_action_loss = (
+                raw_action_loss[valid_prefix] * valid_decision_weights[valid_prefix]
+            ).sum() / valid_decision_weights[valid_prefix].sum().clamp(min=1.0)
+        else:
+            prefix_action_loss = outputs["action_logits"].sum() * 0.0
+        action_loss = (
+            float(cfg.current_action_weight) * current_action_loss
+            + float(cfg.prefix_action_weight) * prefix_action_loss
+        )
     else:
         raw_action_loss = torch.zeros(0, device=outputs["action_logits"].device)
         valid_decision_weights = torch.zeros(0, device=outputs["action_logits"].device)
+        current_action_loss = outputs["action_logits"].sum() * 0.0
+        prefix_action_loss = outputs["action_logits"].sum() * 0.0
         action_loss = outputs["action_logits"].sum() * 0.0
 
     order_logits = outputs.get("order_logits")
-    if order_logits is not None:
-        valid_order = (batch.target_order >= 0) & (step_mask.unsqueeze(-1) > 0)
+    if order_logits is not None and float(cfg.order_weight) > 0.0:
+        valid_order = (
+            (batch.target_order >= 0)
+            & (step_mask.unsqueeze(-1) > 0)
+            & multi_target.unsqueeze(-1)
+        )
         if bool(valid_order.any()):
             order_loss_raw = F.cross_entropy(
-                order_logits[valid_order],
+                order_logits[valid_order].float().clamp(min=-50.0, max=50.0),
                 batch.target_order.long()[valid_order],
                 reduction="none",
             )
@@ -406,7 +445,7 @@ def sequence_policy_loss(
 
     loss = (
         cfg.action_weight * action_loss
-        + 0.35 * cfg.action_weight * order_loss
+        + cfg.order_weight * cfg.action_weight * order_loss
         + cfg.multi_weight * multi_loss
         + cfg.count_weight * count_loss
         + cfg.plan_weight * plan_loss
@@ -416,6 +455,7 @@ def sequence_policy_loss(
 
     valid_dca = damage_counter[valid_action] if bool(valid_action.any()) else torch.zeros(0, dtype=torch.bool, device=weights.device)
     valid_multi = multi_target[valid_action] if bool(valid_action.any()) else torch.zeros(0, dtype=torch.bool, device=weights.device)
+    valid_current = current_step[valid_action] if bool(valid_action.any()) else torch.zeros(0, dtype=torch.bool, device=weights.device)
 
     def weighted_valid_loss(mask: torch.Tensor) -> float:
         if raw_action_loss.numel() == 0 or not bool(mask.any()):
@@ -430,9 +470,14 @@ def sequence_policy_loss(
     dca_pos = batch.dca_pos.float()
     dca_prior_unique = batch.dca_prior_unique_slots.float()
     dca_prior_same = batch.dca_prior_same_slot.float()
+    raw_current_weight = (decision_weights[current_step & valid_action].sum() / decision_weights[valid_action].sum().clamp(min=1.0)).detach() if bool(valid_action.any()) else torch.tensor(0.0, device=weights.device)
+    action_objective_mass = max(float(cfg.current_action_weight), 0.0) + max(float(cfg.prefix_action_weight), 0.0)
+    current_objective_share = max(float(cfg.current_action_weight), 0.0) / max(action_objective_mass, 1e-9)
     parts = {
         "loss": float(loss.detach().cpu()),
         "action": float(action_loss.detach().cpu()),
+        "action_current_head": float(current_action_loss.detach().cpu()),
+        "action_prefix_head": float(prefix_action_loss.detach().cpu()),
         "order": float(order_loss.detach().cpu()),
         "multi": float(multi_loss.detach().cpu()),
         "count": float(count_loss.detach().cpu()),
@@ -444,6 +489,10 @@ def sequence_policy_loss(
         "weight_boost": float((decision_weight_sum / valid_weight_sum).detach().cpu()),
         "dca_weight_share": float((decision_weights[damage_counter].sum() / decision_weights[valid_action].sum().clamp(min=1.0)).detach().cpu()) if bool(valid_action.any()) else 0.0,
         "multi_weight_share": float((decision_weights[multi_target].sum() / decision_weights[valid_action].sum().clamp(min=1.0)).detach().cpu()) if bool(valid_action.any()) else 0.0,
+        "current_row_share": float(raw_current_weight.cpu()),
+        "current_weight_share": float(current_objective_share),
+        "current_action": weighted_valid_loss(valid_current),
+        "prefix_action": weighted_valid_loss(~valid_current) if raw_action_loss.numel() else 0.0,
         "dca_action": weighted_valid_loss(valid_dca),
         "non_dca_action": weighted_valid_loss(~valid_dca) if raw_action_loss.numel() else 0.0,
         "multi2_action": weighted_valid_loss(valid_multi),
@@ -484,6 +533,32 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
             "dca_late_top1": 0.0,
             "dca_prior_same_top1": 0.0,
             "dca_prior_unique_mean": 0.0,
+            "cur_n": 0.0,
+            "cur_top1": 0.0,
+            "cur_type_acc": 0.0,
+            "cur_set_f1": 0.0,
+            "cur_dca_n": 0.0,
+            "cur_dca_top1": 0.0,
+            "seq_len_mean": 0.0,
+            "seq_full_rate": 0.0,
+            "history_present_rate": 0.0,
+            "ledger_progress": 0.0,
+            "prev_nonzero_rate": 0.0,
+            "plan_mae": 0.0,
+            "plan_f1": 0.0,
+            "plan_pos_rate": 0.0,
+            "plan_pred_pos_rate": 0.0,
+            "action_type_acc": 0.0,
+            "option_n": 0.0,
+            "bigopt_rate": 0.0,
+            "bigopt_top1": 0.0,
+            "ambig_type_rate": 0.0,
+            "ambig_type_top1": 0.0,
+            "action_entropy": 0.0,
+            "action_margin": 0.0,
+            "outcome_pos_rate": 0.0,
+            "outcome_pred_pos_rate": 0.0,
+            "outcome_brier": 0.0,
         }
     pred = outputs["action_logits"].argmax(dim=-1)
     top1 = (pred[valid] == batch.target_first[valid]).float().mean().item()
@@ -493,6 +568,10 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
     count_pred = outputs["count_logits"].argmax(dim=-1)
     count_acc = (count_pred[valid] == count_target[valid]).float().mean().item()
     count_mae = (count_pred[valid].float() - count_target[valid].float()).abs().mean().item()
+    current_step = torch.zeros_like(valid, dtype=torch.bool)
+    if current_step.shape[1] > 0:
+        current_step[:, -1] = True
+    current_valid = valid & current_step
     multi2 = valid & (count_target > 1)
     dca = valid & (batch.target_context.long() == DAMAGE_COUNTER_ANY_CONTEXT)
     dca_spread = dca & (batch.dca_group_unique_slots.long() > 1)
@@ -501,12 +580,28 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
     dca_late = dca & (batch.dca_pos.long() > 0)
     dca_prior_same = dca & (batch.dca_prior_same_slot.long() > 0)
     valid_n = float(valid.sum().item())
+    current_n = float(current_valid.sum().item())
     multi2_n = float(multi2.sum().item())
     dca_n = float(dca.sum().item())
     capable2_n = float((valid & (batch.max_count.long() > 1)).sum().item())
 
     opt_mask = batch.option_mask.float()
     logits = outputs["action_logits"].masked_fill(opt_mask <= 0, NEG_INF)
+    opt_n = opt_mask.sum(dim=-1)
+    pred_safe = pred.clamp(min=0, max=max(logits.shape[-1] - 1, 0))
+    pred_type = batch.opt_type.long().gather(-1, pred_safe.unsqueeze(-1)).squeeze(-1)
+    action_type_acc = (pred_type[valid] == batch.target_type.long()[valid]).float().mean().item()
+    same_type_count = ((batch.opt_type.long() == batch.target_type.long().unsqueeze(-1)) & (opt_mask > 0)).sum(dim=-1)
+    ambig_type = valid & (same_type_count > 1)
+    bigopt = valid & (opt_n >= 8)
+    probs = torch.softmax(logits, dim=-1)
+    log_probs = torch.log_softmax(logits, dim=-1)
+    entropy = (-(probs * log_probs).sum(dim=-1))[valid].mean().item()
+    top2 = logits.topk(k=min(2, logits.shape[-1]), dim=-1).values
+    if top2.shape[-1] >= 2:
+        margin = (top2[..., 0] - top2[..., 1])[valid].mean().item()
+    else:
+        margin = 0.0
     max_k = min(MAX_SELECT_COUNT, logits.shape[-1])
     multi2_precision = multi2_recall = multi2_f1 = 0.0
     multi2_top1 = multi2_count_acc = multi2_count_mae = 0.0
@@ -561,6 +656,15 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
     else:
         precision = recall = f1 = 0.0
 
+    cur_top1 = cur_type_acc = cur_set_f1 = cur_dca_top1 = 0.0
+    if bool(current_valid.any()):
+        cur_top1 = (pred[current_valid] == batch.target_first[current_valid]).float().mean().item()
+        cur_type_acc = (pred_type[current_valid] == batch.target_type.long()[current_valid]).float().mean().item()
+        cur_set_f1 = (2.0 * tp[current_valid] / (pp[current_valid] + gp[current_valid]).clamp(min=1.0)).mean().item() if max_k > 0 else 0.0
+        cur_dca = current_valid & dca
+        if bool(cur_dca.any()):
+            cur_dca_top1 = (pred[cur_dca] == batch.target_first[cur_dca]).float().mean().item()
+
     order_logits = outputs.get("order_logits")
     order_acc = 0.0
     order_n = 0.0
@@ -578,14 +682,54 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
                 multi2_order_n = float(order_valid_multi2.sum().item())
 
     outcome_pred = (torch.sigmoid(outputs["outcome_logits"]) >= 0.5).float()
+    outcome_prob = torch.sigmoid(outputs["outcome_logits"])
     step_valid = batch.step_mask > 0
     outcome_acc = (outcome_pred[step_valid] == batch.outcome.float()[step_valid]).float().mean().item() if bool(step_valid.any()) else 0.0
+    outcome_pos_rate = batch.outcome.float()[step_valid].mean().item() if bool(step_valid.any()) else 0.0
+    outcome_pred_pos_rate = outcome_pred[step_valid].float().mean().item() if bool(step_valid.any()) else 0.0
+    outcome_brier = ((outcome_prob[step_valid] - batch.outcome.float()[step_valid]) ** 2).mean().item() if bool(step_valid.any()) else 0.0
+    plan_target = batch.future_plan.float().clamp(0.0, 1.0)
+    plan_pred = torch.sigmoid(outputs["plan_logits"])
+    plan_mask = step_valid.unsqueeze(-1).expand_as(plan_target)
+    plan_mae = (plan_pred[plan_mask] - plan_target[plan_mask]).abs().mean().item() if bool(plan_mask.any()) else 0.0
+    plan_target_bin = (plan_target > 0.05) & plan_mask
+    plan_pred_bin = (plan_pred > 0.20) & plan_mask
+    plan_tp = (plan_target_bin & plan_pred_bin).float().sum()
+    plan_pp = plan_pred_bin.float().sum()
+    plan_gp = plan_target_bin.float().sum()
+    plan_f1 = float((2.0 * plan_tp / (plan_pp + plan_gp).clamp(min=1.0)).item())
+    plan_pos_rate = float((plan_gp / plan_mask.float().sum().clamp(min=1.0)).item())
+    plan_pred_pos_rate = float((plan_pp / plan_mask.float().sum().clamp(min=1.0)).item())
     dca_rows = dca.float().sum().clamp(min=1.0)
     dca_focus_mean = ((batch.dca_group_focus_frac.float() * dca.float()).sum() / dca_rows).item()
     dca_spread_rate = (dca_spread.float().sum() / dca_rows).item()
     dca_prior_unique_mean = ((batch.dca_prior_unique_slots.float() * dca.float()).sum() / dca_rows).item()
+    seq_lengths = batch.step_mask.float().sum(dim=-1)
+    seq_len_mean = seq_lengths.mean().item()
+    seq_full_rate = (seq_lengths >= batch.step_mask.shape[1]).float().mean().item()
+    history_present_rate = (seq_lengths > 1).float().mean().item()
+    ledger_progress = batch.ledger_feats.float()[step_valid][:, 0].mean().item() if bool(step_valid.any()) and batch.ledger_feats.shape[-1] > 0 else 0.0
+    prev_nonzero = (
+        (batch.prev_type.long() != 0)
+        | (batch.prev_card.long() != 0)
+        | (batch.prev_card2.long() != 0)
+        | (batch.prev_attack.long() != 0)
+    )
+    prev_nonzero_rate = prev_nonzero[step_valid].float().mean().item() if bool(step_valid.any()) else 0.0
 
-    return {
+    type_metrics: dict[str, float] = {}
+    for typ, name in _MONITORED_TYPES:
+        mask = valid & (batch.target_type.long() == typ)
+        n = float(mask.sum().item())
+        type_metrics[f"{name}_rate"] = float(n / max(valid_n, 1.0))
+        if bool(mask.any()):
+            type_metrics[f"{name}_top1"] = float((pred[mask] == batch.target_first[mask]).float().mean().item())
+            type_metrics[f"{name}_atype"] = float((pred_type[mask] == batch.target_type.long()[mask]).float().mean().item())
+        else:
+            type_metrics[f"{name}_top1"] = 0.0
+            type_metrics[f"{name}_atype"] = 0.0
+
+    metrics = {
         "top1": float(top1),
         "type_acc": float(type_acc),
         "count_acc": float(count_acc),
@@ -628,7 +772,35 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
         "dca_late_top1": float(dca_late_top1),
         "dca_prior_same_top1": float(dca_prior_same_top1),
         "dca_prior_unique_mean": float(dca_prior_unique_mean),
+        "cur_n": current_n,
+        "cur_top1": float(cur_top1),
+        "cur_type_acc": float(cur_type_acc),
+        "cur_set_f1": float(cur_set_f1),
+        "cur_dca_n": float((current_valid & dca).float().sum().item()),
+        "cur_dca_top1": float(cur_dca_top1),
+        "seq_len_mean": float(seq_len_mean),
+        "seq_full_rate": float(seq_full_rate),
+        "history_present_rate": float(history_present_rate),
+        "ledger_progress": float(ledger_progress),
+        "prev_nonzero_rate": float(prev_nonzero_rate),
+        "plan_mae": float(plan_mae),
+        "plan_f1": float(plan_f1),
+        "plan_pos_rate": float(plan_pos_rate),
+        "plan_pred_pos_rate": float(plan_pred_pos_rate),
+        "action_type_acc": float(action_type_acc),
+        "option_n": float(opt_n[valid].float().mean().item()),
+        "bigopt_rate": float(bigopt.float().sum().item() / max(valid_n, 1.0)),
+        "bigopt_top1": float((pred[bigopt] == batch.target_first[bigopt]).float().mean().item()) if bool(bigopt.any()) else 0.0,
+        "ambig_type_rate": float(ambig_type.float().sum().item() / max(valid_n, 1.0)),
+        "ambig_type_top1": float((pred[ambig_type] == batch.target_first[ambig_type]).float().mean().item()) if bool(ambig_type.any()) else 0.0,
+        "action_entropy": float(entropy),
+        "action_margin": float(margin),
+        "outcome_pos_rate": float(outcome_pos_rate),
+        "outcome_pred_pos_rate": float(outcome_pred_pos_rate),
+        "outcome_brier": float(outcome_brier),
     }
+    metrics.update(type_metrics)
+    return metrics
 
 
 def _fit_last_dim(x: torch.Tensor, dim: int) -> torch.Tensor:

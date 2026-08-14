@@ -32,6 +32,7 @@ class SequenceLossConfig:
     plan_weight: float = 0.35
     outcome_weight: float = 0.10
     type_weight: float = 0.10
+    multi_target_weight: float = 1.0
 
 
 class SequencePolicyNet(nn.Module):
@@ -322,6 +323,14 @@ def sequence_policy_loss(
 ) -> tuple[torch.Tensor, dict[str, float]]:
     step_mask = batch.step_mask.float()
     weights = batch.sample_weight.float() * step_mask
+    target_count = batch.target_multi.float().sum(dim=-1).long().clamp(0, MAX_SELECT_COUNT)
+    multi_target = (target_count > 1) & (step_mask > 0)
+    multi_boost = torch.where(
+        multi_target,
+        torch.full_like(weights, max(float(cfg.multi_target_weight), 1.0)),
+        torch.ones_like(weights),
+    )
+    decision_weights = weights * multi_boost
     valid_action = (batch.target_first >= 0) & (step_mask > 0)
     if bool(valid_action.any()):
         action_loss = F.cross_entropy(
@@ -329,7 +338,7 @@ def sequence_policy_loss(
             batch.target_first.long()[valid_action],
             reduction="none",
         )
-        action_loss = (action_loss * batch.sample_weight.float()[valid_action]).sum() / weights[valid_action].sum().clamp(min=1.0)
+        action_loss = (action_loss * decision_weights[valid_action]).sum() / decision_weights[valid_action].sum().clamp(min=1.0)
     else:
         action_loss = outputs["action_logits"].sum() * 0.0
 
@@ -342,7 +351,7 @@ def sequence_policy_loss(
                 batch.target_order.long()[valid_order],
                 reduction="none",
             )
-            order_weights = batch.sample_weight.float().unsqueeze(-1).expand_as(batch.target_order.float())[valid_order]
+            order_weights = decision_weights.unsqueeze(-1).expand_as(batch.target_order.float())[valid_order]
             order_loss = (order_loss_raw * order_weights).sum() / order_weights.sum().clamp(min=1.0)
         else:
             order_loss = outputs["action_logits"].sum() * 0.0
@@ -355,15 +364,15 @@ def sequence_policy_loss(
         batch.target_multi.float(),
         reduction="none",
     )
-    multi_loss = (multi_loss_raw * opt_mask * batch.sample_weight.float().unsqueeze(-1)).sum() / opt_mask.sum().clamp(min=1.0)
+    multi_weighted_mask = opt_mask * decision_weights.unsqueeze(-1)
+    multi_loss = (multi_loss_raw * multi_weighted_mask).sum() / multi_weighted_mask.sum().clamp(min=1.0)
 
-    target_count = batch.target_multi.float().sum(dim=-1).long().clamp(0, MAX_SELECT_COUNT)
     count_loss_raw = F.cross_entropy(
         outputs["count_logits"].reshape(-1, outputs["count_logits"].shape[-1]),
         target_count.reshape(-1),
         reduction="none",
     ).reshape_as(step_mask)
-    count_loss = (count_loss_raw * weights).sum() / weights.sum().clamp(min=1.0)
+    count_loss = (count_loss_raw * decision_weights).sum() / decision_weights.sum().clamp(min=1.0)
 
     plan_loss_raw = F.binary_cross_entropy_with_logits(
         outputs["plan_logits"],
@@ -380,7 +389,7 @@ def sequence_policy_loss(
         batch.target_type.long().reshape(-1).clamp(0, outputs["type_logits"].shape[-1] - 1),
         reduction="none",
     ).reshape_as(step_mask)
-    type_loss = (type_loss_raw * weights).sum() / weights.sum().clamp(min=1.0)
+    type_loss = (type_loss_raw * decision_weights).sum() / decision_weights.sum().clamp(min=1.0)
 
     loss = (
         cfg.action_weight * action_loss
@@ -400,6 +409,7 @@ def sequence_policy_loss(
         "plan": float(plan_loss.detach().cpu()),
         "outcome": float(outcome_loss.detach().cpu()),
         "type": float(type_loss.detach().cpu()),
+        "multi_target_rate": float((multi_target.float().sum() / step_mask.sum().clamp(min=1.0)).detach().cpu()),
     }
     return loss, parts
 
@@ -408,7 +418,15 @@ def sequence_policy_loss(
 def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) -> dict[str, float]:
     valid = (batch.target_first >= 0) & (batch.step_mask > 0)
     if not bool(valid.any()):
-        return {"top1": 0.0, "type_acc": 0.0, "count_acc": 0.0, "n": 0.0}
+        return {
+            "top1": 0.0,
+            "type_acc": 0.0,
+            "count_acc": 0.0,
+            "n": 0.0,
+            "multi2_n": 0.0,
+            "multi2_rate": 0.0,
+            "capable2_rate": 0.0,
+        }
     pred = outputs["action_logits"].argmax(dim=-1)
     top1 = (pred[valid] == batch.target_first[valid]).float().mean().item()
     type_pred = outputs["type_logits"].argmax(dim=-1)
@@ -417,10 +435,16 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
     count_pred = outputs["count_logits"].argmax(dim=-1)
     count_acc = (count_pred[valid] == count_target[valid]).float().mean().item()
     count_mae = (count_pred[valid].float() - count_target[valid].float()).abs().mean().item()
+    multi2 = valid & (count_target > 1)
+    valid_n = float(valid.sum().item())
+    multi2_n = float(multi2.sum().item())
+    capable2_n = float((valid & (batch.max_count.long() > 1)).sum().item())
 
     opt_mask = batch.option_mask.float()
     logits = outputs["action_logits"].masked_fill(opt_mask <= 0, NEG_INF)
     max_k = min(MAX_SELECT_COUNT, logits.shape[-1])
+    multi2_precision = multi2_recall = multi2_f1 = 0.0
+    multi2_top1 = multi2_count_acc = multi2_count_mae = 0.0
     if max_k > 0:
         top_idx = logits.topk(k=max_k, dim=-1).indices
         pred_k = torch.minimum(
@@ -438,18 +462,31 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
         precision = (tp[valid] / pp[valid].clamp(min=1.0)).mean().item()
         recall = (tp[valid] / gp[valid].clamp(min=1.0)).mean().item()
         f1 = (2.0 * tp[valid] / (pp[valid] + gp[valid]).clamp(min=1.0)).mean().item()
+        if bool(multi2.any()):
+            multi2_precision = (tp[multi2] / pp[multi2].clamp(min=1.0)).mean().item()
+            multi2_recall = (tp[multi2] / gp[multi2].clamp(min=1.0)).mean().item()
+            multi2_f1 = (2.0 * tp[multi2] / (pp[multi2] + gp[multi2]).clamp(min=1.0)).mean().item()
+            multi2_top1 = (pred[multi2] == batch.target_first[multi2]).float().mean().item()
+            multi2_count_acc = (count_pred[multi2] == count_target[multi2]).float().mean().item()
+            multi2_count_mae = (count_pred[multi2].float() - count_target[multi2].float()).abs().mean().item()
     else:
         precision = recall = f1 = 0.0
 
     order_logits = outputs.get("order_logits")
     order_acc = 0.0
     order_n = 0.0
+    multi2_order_acc = 0.0
+    multi2_order_n = 0.0
     if order_logits is not None:
         order_valid = (batch.target_order >= 0) & (batch.step_mask.unsqueeze(-1) > 0)
         if bool(order_valid.any()):
             order_pred = order_logits.argmax(dim=-1)
             order_acc = (order_pred[order_valid] == batch.target_order.long()[order_valid]).float().mean().item()
             order_n = float(order_valid.sum().item())
+            order_valid_multi2 = order_valid & (count_target.unsqueeze(-1) > 1)
+            if bool(order_valid_multi2.any()):
+                multi2_order_acc = (order_pred[order_valid_multi2] == batch.target_order.long()[order_valid_multi2]).float().mean().item()
+                multi2_order_n = float(order_valid_multi2.sum().item())
 
     outcome_pred = (torch.sigmoid(outputs["outcome_logits"]) >= 0.5).float()
     step_valid = batch.step_mask > 0
@@ -468,7 +505,18 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
         "order_acc": float(order_acc),
         "order_n": float(order_n),
         "outcome_acc": float(outcome_acc),
-        "n": float(valid.sum().item()),
+        "n": valid_n,
+        "multi2_n": multi2_n,
+        "multi2_rate": float(multi2_n / max(valid_n, 1.0)),
+        "capable2_rate": float(capable2_n / max(valid_n, 1.0)),
+        "multi2_top1": float(multi2_top1),
+        "multi2_count_acc": float(multi2_count_acc),
+        "multi2_count_mae": float(multi2_count_mae),
+        "multi2_precision": float(multi2_precision),
+        "multi2_recall": float(multi2_recall),
+        "multi2_f1": float(multi2_f1),
+        "multi2_order_acc": float(multi2_order_acc),
+        "multi2_order_n": float(multi2_order_n),
     }
 
 

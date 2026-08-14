@@ -10712,3 +10712,48 @@ Update 2026-08-14 12:10 CST:
     `logs/v14_sequence_0813_20260814/train_manifest_0813_top3_allbands.csv`
   The extractor reports "Processing 1 zips with 1 workers" because work is
   sharded per zip, not per episode. Progress is printed every 250 episodes.
+
+Update 2026-08-14 13:35 CST:
+
+- Inspected the C++ engine under `/home/jie/Do/0_PTCG/ptcg_engine/ptcgProgram 22`.
+  Important action semantics for the v14 sequence branch:
+  - `ApiSelect()` accepts a vector of option indices and `State::checkPlayerSelect()`
+    enforces `selectMin/selectMax`, so the engine truly supports same-step
+    multi-select.
+  - `ToJson` exports `minCount`, `maxCount`, `remainDamageCounter`, and
+    `remainEnergyCost`; `FastEncoder` already stores these in state feature
+    indices 19-22.
+  - Dragapult ex Phantom Dive is implemented as `DamageCounterAny` with
+    `eVal(6).targetBench()`. The engine then sets `remainDamageCounter=6`,
+    pushes `SelectDamageCounterAny`, and repeats a single-card selection six
+    times (`selectMin=selectMax=1`) via `setLastFunctionCallCount(count)`.
+    Therefore Dragapult's key bench-damage allocation is not represented by
+    `target_k>1`; it is a sequence of six single-target resolution decisions.
+- Consequence: v14 currently covers continuous decisions only at the raw engine
+  select-step level. It has causal sequence attention, prior-action fields,
+  ledger features, current state-token attention, and future-plan auxiliary
+  targets, and the live `TorchSequencePolicy` keeps a rolling sequence buffer.
+  However, it does not yet group resolution steps such as `DamageCounterAny`
+  into one tactical sub-plan. For Dragapult, the next redesign should add a
+  grouped damage-counter allocation audit/target and evaluate whether the six
+  choices create KO/setup breakpoints, not only next-option top1/setF1.
+- Added local/remote v14 multi-select diagnostics:
+  - `SequenceLossConfig.multi_target_weight`
+  - train progress prints `m2n/m2r/cap2/m2F1/m2Ord`
+  - audit prints valid `target_k`, raw action entry counts, min/max-count
+    distributions, and action types/opponents responsible for true same-step
+    multi-select.
+  A CPU smoke train on `ks` confirmed the new metrics are wired.
+- The 0813-only extraction completed with `759683` rows. The old runner failed
+  only after extraction because it invoked `v14_audit_sequence_corpus.py` with
+  the obsolete positional CLI. A manifest was built manually:
+  `logs/v14_sequence_0813_20260814/train_manifest_0813_top3_allbands.csv`
+  with 31 entries. Top relevant entries include Dragapult `cc2e995b5ad0`
+  (`120734` rows, Petit Canard, score `1218.2`) and Alakazam `7f9a538936e3`
+  (`49806` rows, fishcat, score `1127.1`).
+- Remote audits were started for 0813 Dragapult and Alakazam:
+  `logs/v14_sequence_0813_20260814/audit_dragapult_0813_focus.log` and
+  `logs/v14_sequence_0813_20260814/audit_alakazam_0813_focus.log`. If they are
+  still slow, the next tool should add a faster context-specific audit for
+  `act_context=14` (`DamageCounterAny`) rather than scanning everything through
+  the generic audit path.

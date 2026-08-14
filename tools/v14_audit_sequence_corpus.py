@@ -58,6 +58,13 @@ def main() -> None:
     rows_out: list[dict[str, object]] = []
     type_counts: Counter[int] = Counter()
     count_counts: Counter[int] = Counter()
+    raw_count_counts: Counter[int] = Counter()
+    min_count_counts: Counter[int] = Counter()
+    max_count_counts: Counter[int] = Counter()
+    multi_type_counts: Counter[int] = Counter()
+    capable_type_counts: Counter[int] = Counter()
+    multi_deck_counter: Counter[str] = Counter()
+    multi_opp_arch: Counter[str] = Counter()
     future_sums = np.zeros(FUTURE_PLAN_DIM, dtype=np.float64)
     future_n = 0
     games: dict[str, list[tuple[int, int, int, float, str, str]]] = defaultdict(list)
@@ -84,7 +91,13 @@ def main() -> None:
                     continue
                 game_key = str(z["game_key"][i]) if "game_key" in z else f"{z['episode_id'][i]}:{z['player_index'][i]}"
                 typ = int(z["act_type"][i]) if "act_type" in z else -1
-                action_count = len(np.asarray(z["action"][i], dtype=np.int64).reshape(-1))
+                nopt = len(np.asarray(z["ot"][i], dtype=np.int64).reshape(-1)) if "ot" in z else 0
+                action_raw = np.asarray(z["action"][i], dtype=np.int64).reshape(-1)
+                action_valid = action_raw[(action_raw >= 0) & (action_raw < nopt)]
+                action_count = int(action_valid.size)
+                raw_action_count = int(action_raw.size)
+                min_c = int(z["min_c"][i]) if "min_c" in z else 0
+                max_c = int(z["max_c"][i]) if "max_c" in z else 0
                 dec = int(z["decision_index"][i]) if "decision_index" in z else i
                 won = int(z["won"][i]) if "won" in z else 0
                 score = float(z["score"][i]) if "score" in z else 0.0
@@ -92,6 +105,15 @@ def main() -> None:
                 games[game_key].append((dec, typ, won, score, deck_sig, opp))
                 type_counts[typ] += 1
                 count_counts[action_count] += 1
+                raw_count_counts[raw_action_count] += 1
+                min_count_counts[min_c] += 1
+                max_count_counts[max_c] += 1
+                if action_count > 1:
+                    multi_type_counts[typ] += 1
+                    multi_deck_counter[deck_sig] += 1
+                    multi_opp_arch[opp] += 1
+                if max_c > 1:
+                    capable_type_counts[typ] += 1
                 total += 1
                 wins += won
                 draws += int(z["draw"][i]) if "draw" in z else 0
@@ -116,6 +138,10 @@ def main() -> None:
         "game_len_mean": float(np.mean(game_lengths)) if game_lengths else 0.0,
         "game_len_p50": float(np.percentile(game_lengths, 50)) if game_lengths else 0.0,
         "game_len_p90": float(np.percentile(game_lengths, 90)) if game_lengths else 0.0,
+        "target_k_gt1_rate": sum(v for k, v in count_counts.items() if k > 1) / max(total, 1),
+        "target_k_eq0_rate": count_counts.get(0, 0) / max(total, 1),
+        "max_count_gt1_rate": sum(v for k, v in max_count_counts.items() if k > 1) / max(total, 1),
+        "min_count_gt1_rate": sum(v for k, v in min_count_counts.items() if k > 1) / max(total, 1),
     }, ensure_ascii=False, sort_keys=True), flush=True)
 
     print("action_types", flush=True)
@@ -125,6 +151,36 @@ def main() -> None:
     print("selection_counts", flush=True)
     for count_value, count in sorted(count_counts.items()):
         print(f"  k={count_value:<2} {count:>8} {count / max(total, 1):.3f}", flush=True)
+
+    print("raw_action_entry_counts", flush=True)
+    for count_value, count in sorted(raw_count_counts.items()):
+        print(f"  raw_k={count_value:<2} {count:>8} {count / max(total, 1):.3f}", flush=True)
+
+    print("min_count_counts", flush=True)
+    for count_value, count in sorted(min_count_counts.items()):
+        print(f"  min={count_value:<2} {count:>8} {count / max(total, 1):.3f}", flush=True)
+
+    print("max_count_counts", flush=True)
+    for count_value, count in sorted(max_count_counts.items()):
+        print(f"  max={count_value:<2} {count:>8} {count / max(total, 1):.3f}", flush=True)
+
+    multi_total = sum(multi_type_counts.values())
+    capable_total = sum(capable_type_counts.values())
+    print("multi_target_action_types", flush=True)
+    for typ, count in multi_type_counts.most_common():
+        print(f"  {type_id_name(typ):<18} {count:>8} {count / max(multi_total, 1):.3f} total_rate={count / max(total, 1):.4f}", flush=True)
+
+    print("multi_capable_action_types", flush=True)
+    for typ, count in capable_type_counts.most_common():
+        print(f"  {type_id_name(typ):<18} {count:>8} {count / max(capable_total, 1):.3f} total_rate={count / max(total, 1):.4f}", flush=True)
+
+    print("top_multi_target_opponent_archetypes", flush=True)
+    for name, count in multi_opp_arch.most_common(20):
+        print(f"  {name:<24} {count:>8} {count / max(multi_total, 1):.3f}", flush=True)
+
+    print("top_multi_target_deck_sigs", flush=True)
+    for sig, count in multi_deck_counter.most_common(20):
+        print(f"  {sig:<16} {count:>8} {count / max(multi_total, 1):.3f}", flush=True)
 
     print("top_opponent_archetypes", flush=True)
     for name, count in opp_arch.most_common(20):

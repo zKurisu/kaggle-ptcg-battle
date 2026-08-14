@@ -7,6 +7,7 @@ import numpy as np
 
 from ptcg_rl.history_features import action_event_from_encoded
 from ptcg_rl.seq.constants import (
+    DAMAGE_COUNTER_ANY_CONTEXT,
     FUTURE_PLAN_DIM,
     LEDGER_FEAT_DIM,
     TYPE_ABILITY,
@@ -90,6 +91,10 @@ class SequenceLedger:
     last_event: dict[str, Any] = field(default_factory=dict)
     multi_select_count: int = 0
     card_repeat: dict[int, int] = field(default_factory=dict)
+    dca_active: bool = False
+    dca_steps: int = 0
+    dca_last_remain: int = 0
+    dca_target_repeat: dict[int, int] = field(default_factory=dict)
 
     def reset(self) -> None:
         self.decision_index = 0
@@ -98,6 +103,10 @@ class SequenceLedger:
         self.last_event.clear()
         self.multi_select_count = 0
         self.card_repeat.clear()
+        self.dca_active = False
+        self.dca_steps = 0
+        self.dca_last_remain = 0
+        self.dca_target_repeat.clear()
 
     def update(self, encoded: Any, action: list[int] | np.ndarray) -> dict[str, Any]:
         ev = selected_action_event(encoded, action)
@@ -109,6 +118,7 @@ class SequenceLedger:
         card = int(ev.get("card", 0) or 0)
         if card > 0:
             self.card_repeat[card] = self.card_repeat.get(card, 0) + 1
+        self._update_damage_counter_any(encoded, ev)
         self.last_event = ev
         self.decision_index += 1
         return ev
@@ -160,6 +170,29 @@ class SequenceLedger:
         out[61] = min(int(self.last_event.get("context", 0) or 0) / 64.0, 1.0) if self.last_event else 0.0
         out[62] = min(int(self.last_event.get("select_type", 0) or 0) / 16.0, 1.0) if self.last_event else 0.0
         out[63] = 1.0
+        current_ctx = int(round(_safe_feat(feats, 17) * 64.0))
+        current_remain = int(round(_safe_feat(feats, 21) * 30.0))
+        if current_ctx == DAMAGE_COUNTER_ANY_CONTEXT:
+            dca_steps = max(self.dca_steps, 0)
+            unique_targets = len(self.dca_target_repeat)
+            max_repeat = max(self.dca_target_repeat.values(), default=0)
+            inferred_total = max(dca_steps + max(current_remain, 0), 1)
+            out[64] = 1.0
+            out[65] = min(current_remain / 10.0, 1.0)
+            out[66] = min(dca_steps / 10.0, 1.0)
+            out[67] = min(unique_targets / 6.0, 1.0)
+            out[68] = min(max_repeat / 6.0, 1.0)
+            out[69] = min(inferred_total / 10.0, 1.0)
+            out[70] = min(dca_steps / inferred_total, 1.0)
+            out[71] = min(max_repeat / max(dca_steps, 1), 1.0)
+            out[72] = min(unique_targets / max(dca_steps, 1), 1.0)
+            out[73] = 1.0 if int(self.last_event.get("context", -1)) == DAMAGE_COUNTER_ANY_CONTEXT else 0.0
+            out[74] = _safe_feat(feats, 30)  # opponent bench damage sum
+            out[75] = _safe_feat(feats, 62)  # opponent damaged Pokemon count
+            out[76] = _safe_feat(feats, 63)  # max opponent in-play damage
+            out[77] = _safe_feat(feats, 13)  # opponent bench fullness
+            out[78] = _safe_feat(feats, 7)   # opponent prizes remaining
+            out[79] = 1.0
         return out
 
     def _age_feature(self, typ: int) -> float:
@@ -167,6 +200,27 @@ class SequenceLedger:
             return 1.0
         age = max(self.decision_index - self.last_seen[typ], 0)
         return min(age / 16.0, 1.0)
+
+    def _update_damage_counter_any(self, encoded: Any, ev: dict[str, Any]) -> None:
+        ctx = int(ev.get("context", -1))
+        if ctx != DAMAGE_COUNTER_ANY_CONTEXT:
+            self.dca_active = False
+            self.dca_steps = 0
+            self.dca_last_remain = 0
+            self.dca_target_repeat.clear()
+            return
+
+        feats = np.asarray(getattr(encoded, "state_feats", []), dtype=np.float32).reshape(-1)
+        remain_before = int(round(_safe_feat(feats, 21) * 30.0))
+        if (not self.dca_active) or (remain_before > self.dca_last_remain):
+            self.dca_steps = 0
+            self.dca_target_repeat.clear()
+        self.dca_active = True
+        self.dca_last_remain = max(remain_before - 1, 0)
+        self.dca_steps += 1
+        target_card = int(ev.get("card", 0) or 0)
+        if target_card > 0:
+            self.dca_target_repeat[target_card] = self.dca_target_repeat.get(target_card, 0) + 1
 
 
 def _safe_feat(feats: np.ndarray, idx: int) -> float:

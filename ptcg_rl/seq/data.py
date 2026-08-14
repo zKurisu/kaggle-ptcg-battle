@@ -39,6 +39,7 @@ class SequenceBatch:
     target_order: torch.Tensor
     target_multi: torch.Tensor
     target_type: torch.Tensor
+    target_context: torch.Tensor
     min_count: torch.Tensor
     max_count: torch.Tensor
     step_mask: torch.Tensor
@@ -254,6 +255,7 @@ class SequenceCorpus:
         target_order = np.full((*shape_bt, MAX_SELECT_COUNT), -1, dtype=np.int64)
         target_multi = np.zeros((*shape_bt, max_options), dtype=np.float32)
         target_type = np.zeros(shape_bt, dtype=np.int64)
+        target_context = np.zeros(shape_bt, dtype=np.int64)
         min_count = np.zeros(shape_bt, dtype=np.int64)
         max_count = np.zeros(shape_bt, dtype=np.int64)
         step_mask = np.zeros(shape_bt, dtype=np.float32)
@@ -309,6 +311,10 @@ class SequenceCorpus:
                     target_type[bi, local_t] = int(ot[int(valid[0])])
                 else:
                     target_type[bi, local_t] = TYPE_END
+                if "act_context" in data:
+                    target_context[bi, local_t] = int(data["act_context"][ri])
+                else:
+                    target_context[bi, local_t] = int(round(float(feats[bi, local_t, 17]) * 64.0)) if feats.shape[-1] > 17 else 0
                 min_count[bi, local_t] = int(data["min_c"][ri])
                 max_count[bi, local_t] = int(data["max_c"][ri])
                 step_mask[bi, local_t] = 1.0
@@ -340,6 +346,7 @@ class SequenceCorpus:
             target_order=torch.from_numpy(target_order),
             target_multi=torch.from_numpy(target_multi),
             target_type=torch.from_numpy(target_type),
+            target_context=torch.from_numpy(target_context),
             min_count=torch.from_numpy(min_count),
             max_count=torch.from_numpy(max_count),
             step_mask=torch.from_numpy(step_mask),

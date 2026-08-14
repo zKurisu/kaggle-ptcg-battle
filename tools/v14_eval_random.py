@@ -43,36 +43,38 @@ def legal_random(sel: dict) -> list[int]:
     return random.sample(range(len(opts)), k) if k > 0 else []
 
 
-def play_one(policy: TorchSequencePolicy, deck: list[int], game_index: int, seed: int, max_turns: int) -> tuple[int, int]:
+def play_one(policy: TorchSequencePolicy, deck: list[int], game_index: int, seed: int, max_turns: int) -> tuple[int, int, int]:
     from cg.game import battle_finish, battle_select, battle_start
 
     random.seed(seed)
     our_side = game_index % 2
+    policy_errors = 0
     policy.reset_history()
     obs, sd = battle_start(deck, deck)
     if obs is None:
-        return 0, 1
+        return 0, 1, policy_errors
     try:
         for _ in range(max_turns):
             cur = obs.get("current", {})
             res = cur.get("result", -1)
             if res != -1:
-                return (1 if res == our_side else 0), 0
+                return (1 if res == our_side else 0), 0, policy_errors
             sel = obs.get("select")
             if sel is None:
-                return 0, 1
+                return 0, 1, policy_errors
             you = int(cur.get("yourIndex", 0))
             if you == our_side:
                 try:
                     act = policy.select(obs, greedy=True, update_history=True)
                 except Exception:
+                    policy_errors += 1
                     act = legal_random(sel)
             else:
                 act = legal_random(sel)
             obs = battle_select(act)
             if obs is None:
-                return 0, 1
-        return 0, 1
+                return 0, 1, policy_errors
+        return 0, 1, policy_errors
     finally:
         battle_finish()
 
@@ -105,6 +107,7 @@ def main() -> None:
     deck = load_deck(args.deck)
     wins = 0
     errors = 0
+    policy_errors = 0
     t0 = time.time()
     workers = max(1, min(args.workers, args.games))
     print(f"Policy: {args.checkpoint}")
@@ -113,9 +116,10 @@ def main() -> None:
     if workers == 1:
         policy = TorchSequencePolicy.load(args.checkpoint, device=args.device)
         for g in range(args.games):
-            win, err = play_one(policy, deck, g, args.seed + g, args.max_turns)
+            win, err, perr = play_one(policy, deck, g, args.seed + g, args.max_turns)
             wins += win
             errors += err
+            policy_errors += perr
             done = g + 1
             if args.progress_every and (done == 1 or done % args.progress_every == 0 or done == args.games):
                 _print_progress(done, args.games, wins, t0)
@@ -124,14 +128,17 @@ def main() -> None:
         with ProcessPoolExecutor(max_workers=workers, initializer=init_worker, initargs=(args.checkpoint, deck, args.device, args.max_turns)) as ex:
             futs = [ex.submit(worker, t) for t in tasks]
             for done, fut in enumerate(as_completed(futs), 1):
-                win, err = fut.result()
+                win, err, perr = fut.result()
                 wins += int(win)
                 errors += int(err)
+                policy_errors += int(perr)
                 if args.progress_every and (done == 1 or done % args.progress_every == 0 or done == args.games):
                     _print_progress(done, args.games, wins, t0)
     print(f"\nWin rate vs Random: {wins / args.games * 100:.1f}% ({wins}/{args.games})")
     if errors:
         print(f"Timeout/error games: {errors}/{args.games}")
+    if policy_errors:
+        print(f"Policy fallback errors: {policy_errors}")
     print(f"Time: {time.time() - t0:.0f}s")
 
 

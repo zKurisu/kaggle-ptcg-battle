@@ -22,7 +22,7 @@ sys.path.insert(0, str(_WS))
 
 from ptcg_rl.deck_registry import deck_signature
 from ptcg_rl.encoder import OPT_FEAT_DIM, STATE_FEAT_DIM, STATE_TOKEN_FEAT_DIM
-from ptcg_rl.seq.constants import DEFAULT_FUTURE_HORIZON, FEATURE_VERSION, FUTURE_PLAN_DIM, LEDGER_FEAT_DIM
+from ptcg_rl.seq.constants import DAMAGE_COUNTER_ANY_CONTEXT, DEFAULT_FUTURE_HORIZON, FEATURE_VERSION, FUTURE_PLAN_DIM, LEDGER_FEAT_DIM
 from ptcg_rl.seq.features import SequenceLedger, future_plan_targets, option_type_for_action, selected_action_event
 
 ARCHETYPES = {
@@ -113,6 +113,60 @@ def _prev_event_fields(ledger: SequenceLedger) -> dict[str, int | float]:
         "prev_select_type": int(ev.get("select_type", 0) or 0),
         "prev_count": float(ev.get("count", 0.0) or 0.0),
     }
+
+
+def _first_action_index(row: dict[str, object]) -> int:
+    arr = np.asarray(row.get("action", []), dtype=np.int64).reshape(-1)
+    return int(arr[0]) if arr.size else -1
+
+
+def _annotate_damage_counter_any_groups(rows: list[dict[str, object]]) -> None:
+    for row in rows:
+        row["dca_group_index"] = -1
+        row["dca_pos"] = -1
+        row["dca_len"] = 0
+        row["dca_remaining"] = 0
+        row["dca_selected_slot"] = _first_action_index(row)
+        row["dca_prior_same_slot"] = 0
+        row["dca_prior_unique_slots"] = 0
+        row["dca_prior_max_repeat"] = 0
+        row["dca_group_unique_slots"] = 0
+        row["dca_group_focus_frac"] = 0.0
+
+    group_index = 0
+    i = 0
+    while i < len(rows):
+        if int(rows[i].get("act_context", -1)) != DAMAGE_COUNTER_ANY_CONTEXT:
+            i += 1
+            continue
+        j = i
+        while j < len(rows) and int(rows[j].get("act_context", -1)) == DAMAGE_COUNTER_ANY_CONTEXT:
+            j += 1
+        block = rows[i:j]
+        slots = [_first_action_index(r) for r in block]
+        total_counts: dict[int, int] = {}
+        for slot in slots:
+            if slot >= 0:
+                total_counts[slot] = total_counts.get(slot, 0) + 1
+        group_unique = len(total_counts)
+        group_focus = max(total_counts.values(), default=0) / max(len(block), 1)
+        prior: dict[int, int] = {}
+        for pos, row in enumerate(block):
+            slot = slots[pos]
+            row["dca_group_index"] = group_index
+            row["dca_pos"] = pos
+            row["dca_len"] = len(block)
+            row["dca_remaining"] = len(block) - pos
+            row["dca_selected_slot"] = slot
+            row["dca_prior_same_slot"] = prior.get(slot, 0) if slot >= 0 else 0
+            row["dca_prior_unique_slots"] = len(prior)
+            row["dca_prior_max_repeat"] = max(prior.values(), default=0)
+            row["dca_group_unique_slots"] = group_unique
+            row["dca_group_focus_frac"] = group_focus
+            if slot >= 0:
+                prior[slot] = prior.get(slot, 0) + 1
+        group_index += 1
+        i = j
 
 
 def _make_row(
@@ -306,6 +360,7 @@ def process_zip(
                     rows = player_rows[pi]
                     if len(rows) < 2:
                         continue
+                    _annotate_damage_counter_any_groups(rows)
                     reward_vec = [rewards[pi]] * len(rows)
                     for pos, row in enumerate(rows):
                         row["future_plan"] = future_plan_targets(
@@ -376,6 +431,16 @@ def _save_rows(dest: Path, rows: list[dict[str, object]], *, future_horizon: int
         act_context=np.asarray([r["act_context"] for r in rows], dtype=np.int16),
         act_select_type=np.asarray([r["act_select_type"] for r in rows], dtype=np.int16),
         act_count=np.asarray([r["act_count"] for r in rows], dtype=np.float16),
+        dca_group_index=np.asarray([r["dca_group_index"] for r in rows], dtype=np.int16),
+        dca_pos=np.asarray([r["dca_pos"] for r in rows], dtype=np.int16),
+        dca_len=np.asarray([r["dca_len"] for r in rows], dtype=np.int16),
+        dca_remaining=np.asarray([r["dca_remaining"] for r in rows], dtype=np.int16),
+        dca_selected_slot=np.asarray([r["dca_selected_slot"] for r in rows], dtype=np.int16),
+        dca_prior_same_slot=np.asarray([r["dca_prior_same_slot"] for r in rows], dtype=np.int16),
+        dca_prior_unique_slots=np.asarray([r["dca_prior_unique_slots"] for r in rows], dtype=np.int16),
+        dca_prior_max_repeat=np.asarray([r["dca_prior_max_repeat"] for r in rows], dtype=np.int16),
+        dca_group_unique_slots=np.asarray([r["dca_group_unique_slots"] for r in rows], dtype=np.int16),
+        dca_group_focus_frac=np.asarray([r["dca_group_focus_frac"] for r in rows], dtype=np.float16),
         prev_type=np.asarray([r["prev_type"] for r in rows], dtype=np.int16),
         prev_card=np.asarray([r["prev_card"] for r in rows], dtype=np.int16),
         prev_card2=np.asarray([r["prev_card2"] for r in rows], dtype=np.int16),

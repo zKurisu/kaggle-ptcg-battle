@@ -10757,3 +10757,117 @@ Update 2026-08-14 13:35 CST:
   still slow, the next tool should add a faster context-specific audit for
   `act_context=14` (`DamageCounterAny`) rather than scanning everything through
   the generic audit path.
+
+Update 2026-08-14 14:00 CST:
+
+- Implemented the first explicit engine-aligned Dragapult/DamageCounterAny
+  redesign on branch `sequence-decision-pipeline-v14`.
+  Engine-confirmed basis: `DamageCounterAny` is `act_context=14` in non-web
+  JSON and is resolved as repeated single-target selections with
+  `remainDamageCounter` decreasing each step.
+- Code changes:
+  - `ptcg_rl/encoder.py`: `OPT_FEAT_DIM` is now `72`; option features 64-71
+    are DamageCounterAny-specific signals derived from current target HP,
+    remaining counters, KO-now/full-remaining-KO, opponent bench target, and
+    overkill. Old checkpoints remain loadable because model forward truncates
+    or pads feature dims from checkpoint config.
+  - `ptcg_rl/seq/constants.py`: feature version is
+    `v14_sequence_decision_dca_v2`; `LEDGER_FEAT_DIM` is now `80`; added
+    `DAMAGE_COUNTER_ANY_CONTEXT = 14`.
+  - `ptcg_rl/seq/features.py`: `SequenceLedger` now tracks a live-compatible
+    DamageCounterAny prefix (steps already allocated, unique targets, focus
+    fraction proxy, remain/progress) in ledger features 64-79.
+  - `tools/v14_extract_sequences.py`: extracted rows now include
+    `dca_group_index`, `dca_pos`, `dca_len`, `dca_remaining`,
+    `dca_selected_slot`, `dca_prior_*`, `dca_group_unique_slots`, and
+    `dca_group_focus_frac` for contiguous DamageCounterAny blocks.
+  - `ptcg_rl/seq/data.py` / `ptcg_rl/seq/model.py`: batch now carries
+    `target_context`; training has `--damage-counter-weight`; metrics now
+    report `dcaN/dcaR/dcaTop1/dcaF1`.
+  - Added `tools/v14_audit_damage_counter_any.py` for fast block-level DCA
+    audit instead of using the slow generic audit for this purpose.
+- Verification:
+  - Local and remote `py_compile` passed for changed modules.
+  - Remote CPU smoke train on old 0813 Dragapult corpus succeeded with
+    `--damage-counter-weight 4.0`; progress printed `dcaN=19 dcaR=0.297
+    dcaTop1=0.053 dcaF1=0.053`, proving the new DCA metrics are wired.
+- Started the main new runner on `ks`:
+  - script: `/tmp/run_v14_dca_0808_0813_20260814.sh`
+  - log: `logs/v14_dca_0808_0813_20260814.runner.nohup.log`
+  - corpus: `data/seq_corpus_v14_dca_0808_0813`
+  - checkpoints: `checkpoints/v14_dca_0808_0813/`
+  - extraction uses 0808-0813 episodes, 6 zip workers, future horizon 16, and
+    leaderboard CSV
+    `logs/info_pull_20260813/leaderboard_full/pokemon-tcg-ai-battle-publicleaderboard-2026-08-13T09:36:23.csv`.
+  - after extraction it builds `train_manifest_top3_allbands.csv`, audits
+    Dragapult DCA blocks, then trains three models in parallel on explicitly
+    free GPUs:
+    `v14dca_dragapult_cc2e_w512_dca6` on GPU1,
+    `v14dca_dragapult_140f_w512_dca6` on GPU2, and
+    `v14dca_alakazam_7f9a_w384_ctx` on GPU3.
+  - The runner automatically runs random g500 after training. Deck paths used:
+    `logs/ladder_pool_0812_all_v13_20260813/decks/cc2e995b5ad0_dragapult_kh0a.csv`,
+    `logs/ladder_pool_0812_all_v13_20260813/decks/140f7d8b2f09_dragapult_dipam_chakraborty.csv`,
+    and `logs/ladder_pool_0802_all/decks/7f9a538936e3_alakazam_yushin_ito.csv`.
+- Status when started: old `v14_sequence_0808_0812` population still had
+  Marnie b8f, Alakazam 7f, and Mega Lopunny f144 running, but GPU usage showed
+  only GPU0 busy; the new runner binds new jobs to GPU1/2/3 after extraction.
+  Monitor with:
+  `ssh ks 'cd /data/jie/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/v14_dca_0808_0813_20260814.runner.nohup.log'`
+
+Update 2026-08-14 16:55 CST:
+
+- Old v14 population `logs/v14_sequence_0808_0812/pop_parallel3.nohup.log`
+  completed: `done=23 failed=0`. It uses the pre-DCA feature set
+  (`opt_feat_dim=64`, `ledger_feat_dim=64`) on corpus
+  `data/seq_corpus_v14_0808_0812`.
+- Fixed v14 live/eval compatibility after DCA feature expansion:
+  `TorchSequencePolicy` now builds inference batches with the dimensions from
+  checkpoint `model_config`, so old 64/64 checkpoints do not silently fail
+  after current code expanded to 72/80. `tools/v14_eval_random.py` now reports
+  policy fallback errors. The random audit showed `policy_errors=0`.
+- Backed up core old-v14 artifacts from `ks` to local:
+  `remote_backups/ks_20260814_v14_core/`
+  including `checkpoints/v14_sequence_0808_0812/pop_top2_allbands_parallel3`
+  (~2.1 GB), old v14 logs, DCA logs, random summaries, and RR manifest.
+- Old v14 random g300 summary:
+  - Strong vs random: Mega Lucario `43d6` 100.0, N's Zoroark `aa80` 100.0,
+    Alakazam `7f9a` 99.7, Cynthia `52f4` 99.7, Marnie `a3b0` 99.7,
+    Mega Lopunny `f144` 99.7, Marnie `b8f` 99.0, Ogerpon `8bc` 98.7,
+    Ogerpon `d175` 97.3.
+  - Dragapult remains weak for the stated goal: `cc2e` only 96.7, and
+    `3535` only 71.3. Training logs explain this: `cc2e` has train top1 about
+    0.825 but validation top1 only about 0.671 by epoch 8; `3535` overfits
+    badly (train top1 0.974, val top1 about 0.648). Old v14 did not yet model
+    the six-step DamageCounterAny allocation as one tactical sub-plan.
+  - Clearly poor random models: Team Rocket Mewtwo `958e` 33.0, Mega Starmie
+    `1756` 22.3, Festival `41ff` 41.0, Cynthia `bfeb` 57.3, Mega Lucario
+    `8388` 63.7, Dragapult `3535` 71.3.
+- Started filtered RR for old v14 only after random filtering:
+  - manifest:
+    `logs/v14_sequence_0808_0812/rr_v14_pop_filtered_random96_20260814/manifest.csv`
+  - log:
+    `logs/v14_sequence_0808_0812/rr_v14_pop_filtered_random96_20260814/rr_g40.log`
+  - output:
+    `logs/v14_sequence_0808_0812/rr_v14_pop_filtered_random96_20260814/rr_g40.csv`
+  - command uses `--manifest`, `--games 40`, `--workers 8`, 13 entries,
+    78 pairs. First completed pair showed Alakazam `5a5` lost heavily to
+    Alakazam `7f9` (7-33), matching the random/data-size signal.
+- Original DCA runner stalled because `tools/v14_audit_damage_counter_any.py`
+  re-read object arrays (`of_arr`/`oc`) while scanning all rows. That made the
+  audit take more than two hours before training. The old runner also had
+  obsolete random-eval CLI (`--policy`, `--out-csv`) that would have failed.
+  Killed the stuck audit/runner and replaced it with a continuation runner:
+  `/tmp/run_v14_dca_continue_20260814.sh`.
+- DCA audit was rewritten to use extracted numeric fields (`dca_group_index`,
+  `dca_pos`, `dca_len`, `dca_selected_slot`, `dca_group_unique_slots`,
+  `dca_group_focus_frac`) instead of object-array reconstruction. A 200k-row
+  smoke finished in 81s and confirmed Dragapult DCA groups are length 6:
+  `length_counts={6: 5495}`. Most groups focus one target:
+  `unique_slot_counts={1: 4013, 2: 1301, 3: 151, 4: 27, 5: 3}`.
+- DCA continuation status:
+  - log: `logs/v14_dca_0808_0813_20260814.continue.nohup.log`
+  - fast audit cap: 500k rows, then trains three models in parallel:
+    `v14dca_dragapult_cc2e_w512_dca6`, `v14dca_dragapult_140f_w512_dca6`,
+    `v14dca_alakazam_7f9a_w384_ctx`.
+  - random eval command was corrected to the positional checkpoint CLI.

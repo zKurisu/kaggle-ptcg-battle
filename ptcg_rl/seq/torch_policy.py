@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+import warnings
 
 from ptcg_rl.encoder import FastEncoder, OPT_FEAT_DIM, STATE_FEAT_DIM, STATE_TOKEN_FEAT_DIM
 from ptcg_rl.seq.constants import FUTURE_PLAN_DIM, LEDGER_FEAT_DIM, MAX_SELECT_COUNT
@@ -9,25 +10,44 @@ from ptcg_rl.seq.data import SequenceBatch
 from ptcg_rl.seq.features import SequenceLedger
 from ptcg_rl.seq.model import SequencePolicyNet
 
+warnings.filterwarnings("ignore", message="enable_nested_tensor is True.*", category=UserWarning)
+
 
 class TorchSequencePolicy:
     """Live/local inference wrapper for v14 sequence checkpoints."""
 
-    def __init__(self, model: SequencePolicyNet, *, device: str = "cpu", seq_len: int = 32):
+    def __init__(
+        self,
+        model: SequencePolicyNet,
+        *,
+        device: str = "cpu",
+        seq_len: int = 32,
+        model_config: dict | None = None,
+    ):
         self.model = model.to(device).eval()
         self.device = torch.device(device)
         self.seq_len = int(seq_len)
+        cfg = model_config or {}
+        self.state_feat_dim = int(cfg.get("state_feat_dim", STATE_FEAT_DIM))
+        self.opt_feat_dim = int(cfg.get("opt_feat_dim", OPT_FEAT_DIM))
+        self.state_token_feat_dim = int(cfg.get("state_token_feat_dim", STATE_TOKEN_FEAT_DIM))
+        self.ledger_feat_dim = int(cfg.get("ledger_feat_dim", LEDGER_FEAT_DIM))
+        self.future_plan_dim = int(cfg.get("future_plan_dim", FUTURE_PLAN_DIM))
         self.encoder = FastEncoder()
         self.ledger = SequenceLedger()
         self.buffer: list[dict[str, np.ndarray | int | float]] = []
 
     @classmethod
     def load(cls, path: str, *, device: str = "cpu") -> "TorchSequencePolicy":
-        ckpt = torch.load(path, map_location="cpu")
-        model = SequencePolicyNet(**ckpt["model_config"])
+        try:
+            ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        except TypeError:
+            ckpt = torch.load(path, map_location="cpu")
+        model_config = dict(ckpt["model_config"])
+        model = SequencePolicyNet(**model_config)
         model.load_state_dict(ckpt["model_state"])
-        seq_len = int(ckpt.get("model_config", {}).get("max_seq_len", 32))
-        return cls(model, device=device, seq_len=seq_len)
+        seq_len = int(model_config.get("max_seq_len", 32))
+        return cls(model, device=device, seq_len=seq_len, model_config=model_config)
 
     def reset_history(self) -> None:
         self.ledger.reset()
@@ -162,9 +182,9 @@ class TorchSequencePolicy:
         offset = seq_len - len(rows)
         board = np.zeros((1, seq_len, 12), dtype=np.int64)
         hand = np.zeros((1, seq_len, 25), dtype=np.int64)
-        feats = np.zeros((1, seq_len, STATE_FEAT_DIM), dtype=np.float32)
-        stf = np.zeros((1, seq_len, 37, STATE_TOKEN_FEAT_DIM), dtype=np.float32)
-        ledger = np.zeros((1, seq_len, LEDGER_FEAT_DIM), dtype=np.float32)
+        feats = np.zeros((1, seq_len, self.state_feat_dim), dtype=np.float32)
+        stf = np.zeros((1, seq_len, 37, self.state_token_feat_dim), dtype=np.float32)
+        ledger = np.zeros((1, seq_len, self.ledger_feat_dim), dtype=np.float32)
         prev_type = np.zeros((1, seq_len), dtype=np.int64)
         prev_card = np.zeros((1, seq_len), dtype=np.int64)
         prev_card2 = np.zeros((1, seq_len), dtype=np.int64)
@@ -176,15 +196,15 @@ class TorchSequencePolicy:
         opt_card = np.zeros((1, seq_len, nopt), dtype=np.int64)
         opt_card2 = np.zeros((1, seq_len, nopt), dtype=np.int64)
         opt_attack = np.zeros((1, seq_len, nopt), dtype=np.int64)
-        opt_feats = np.zeros((1, seq_len, nopt, OPT_FEAT_DIM), dtype=np.float32)
+        opt_feats = np.zeros((1, seq_len, nopt, self.opt_feat_dim), dtype=np.float32)
         option_mask = np.zeros((1, seq_len, nopt), dtype=np.float32)
         step_mask = np.zeros((1, seq_len), dtype=np.float32)
         for i, row in enumerate(rows, offset):
             board[0, i] = _fit_1d(row["board"], 12, np.int64)
             hand[0, i] = _fit_1d(row["hand"], 25, np.int64)
-            feats[0, i] = _fit_1d(row["feats"], STATE_FEAT_DIM, np.float32)
-            stf[0, i] = _fit_2d(row["state_token_feats"], 37, STATE_TOKEN_FEAT_DIM)
-            ledger[0, i] = _fit_1d(row["ledger_feats"], LEDGER_FEAT_DIM, np.float32)
+            feats[0, i] = _fit_1d(row["feats"], self.state_feat_dim, np.float32)
+            stf[0, i] = _fit_2d(row["state_token_feats"], 37, self.state_token_feat_dim)
+            ledger[0, i] = _fit_1d(row["ledger_feats"], self.ledger_feat_dim, np.float32)
             prev_type[0, i] = int(row["prev_type"])
             prev_card[0, i] = int(row["prev_card"])
             prev_card2[0, i] = int(row["prev_card2"])
@@ -198,7 +218,7 @@ class TorchSequencePolicy:
             opt_card[0, i, :n] = _fit_1d(row["opt_card"], n, np.int64)
             opt_card2[0, i, :n] = _fit_1d(row["opt_card2"], n, np.int64)
             opt_attack[0, i, :n] = _fit_1d(row["opt_attack"], n, np.int64)
-            opt_feats[0, i, :n] = _fit_2d(row["opt_feats"], n, OPT_FEAT_DIM)
+            opt_feats[0, i, :n] = _fit_2d(row["opt_feats"], n, self.opt_feat_dim)
             option_mask[0, i, :n] = 1.0
             step_mask[0, i] = 1.0
         dummy_first = np.full((1, seq_len), -1, dtype=np.int64)
@@ -227,11 +247,12 @@ class TorchSequencePolicy:
             target_order=torch.from_numpy(dummy_order),
             target_multi=torch.from_numpy(dummy_multi),
             target_type=torch.zeros((1, seq_len), dtype=torch.int64),
+            target_context=torch.zeros((1, seq_len), dtype=torch.int64),
             min_count=torch.zeros((1, seq_len), dtype=torch.int64),
             max_count=torch.ones((1, seq_len), dtype=torch.int64),
             step_mask=torch.from_numpy(step_mask),
             sample_weight=torch.ones((1, seq_len), dtype=torch.float32),
-            future_plan=torch.zeros((1, seq_len, FUTURE_PLAN_DIM), dtype=torch.float32),
+            future_plan=torch.zeros((1, seq_len, self.future_plan_dim), dtype=torch.float32),
             outcome=torch.zeros((1, seq_len), dtype=torch.float32),
             game_keys=["live"],
             row_refs=[[]],

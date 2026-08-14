@@ -51,6 +51,8 @@ def _prefix_mask(batch, prefix_len: int):
     clone.target_multi[:, prefix_len:] = 0
     clone.target_type = clone.target_type.clone()
     clone.target_type[:, prefix_len:] = 0
+    clone.target_context = clone.target_context.clone()
+    clone.target_context[:, prefix_len:] = 0
     clone.future_plan = clone.future_plan.clone()
     clone.future_plan[:, prefix_len:] = 0
     clone.outcome = clone.outcome.clone()
@@ -70,6 +72,8 @@ def _last_only(batch):
     clone.target_multi[:, :-1] = 0
     clone.target_type = clone.target_type.clone()
     clone.target_type[:, :-1] = 0
+    clone.target_context = clone.target_context.clone()
+    clone.target_context[:, :-1] = 0
     clone.future_plan = clone.future_plan.clone()
     clone.future_plan[:, :-1] = 0
     clone.outcome = clone.outcome.clone()
@@ -262,6 +266,7 @@ def main() -> None:
     shuffled.target_order = shuffled.target_order[:, perm]
     shuffled.target_multi = shuffled.target_multi[:, perm]
     shuffled.target_type = shuffled.target_type[:, perm]
+    shuffled.target_context = shuffled.target_context[:, perm]
     shuffled.min_count = shuffled.min_count[:, perm]
     shuffled.max_count = shuffled.max_count[:, perm]
     shuffled.step_mask = shuffled.step_mask[:, perm]

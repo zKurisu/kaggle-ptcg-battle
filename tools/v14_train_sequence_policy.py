@@ -134,6 +134,8 @@ def run_epoch(
                 f"m2n={ma.get('multi2_n', 0):.0f} m2r={ma.get('multi2_rate', 0):.3f} "
                 f"cap2={ma.get('capable2_rate', 0):.3f} m2F1={ma.get('multi2_f1', 0):.3f} "
                 f"m2Ord={ma.get('multi2_order_acc', 0):.3f} "
+                f"dcaN={ma.get('dca_n', 0):.0f} dcaR={ma.get('dca_rate', 0):.3f} "
+                f"dcaTop1={ma.get('dca_top1', 0):.3f} dcaF1={ma.get('dca_f1', 0):.3f} "
                 f"outAcc={ma.get('outcome_acc', 0):.3f} "
                 f"{rate:.0f} samples/s eta={eta:.0f}s{_cuda_mem(device)}",
                 flush=True,
@@ -207,6 +209,8 @@ def main() -> None:
     p.add_argument("--plan-weight", type=float, default=0.35)
     p.add_argument("--multi-target-weight", type=float, default=1.0,
                    help="boost decision losses on target_k>1 rows; default keeps historical weighting")
+    p.add_argument("--damage-counter-weight", type=float, default=1.0,
+                   help="boost DamageCounterAny resolution rows such as Dragapult Phantom Dive")
     p.add_argument("--out", required=True)
     args = p.parse_args()
 
@@ -271,6 +275,7 @@ def main() -> None:
         outcome_weight=0.10,
         type_weight=0.10,
         multi_target_weight=args.multi_target_weight,
+        damage_counter_weight=args.damage_counter_weight,
     )
     best = float("inf")
     best_path = args.out
@@ -317,6 +322,8 @@ def main() -> None:
             f"val_m2n={val_acc.get('multi2_n', 0):.0f} val_m2r={val_acc.get('multi2_rate', 0):.3f} "
             f"val_cap2={val_acc.get('capable2_rate', 0):.3f} "
             f"val_m2F1={val_acc.get('multi2_f1', 0):.3f} val_m2Order={val_acc.get('multi2_order_acc', 0):.3f} "
+            f"val_dcaN={val_acc.get('dca_n', 0):.0f} val_dcaR={val_acc.get('dca_rate', 0):.3f} "
+            f"val_dcaTop1={val_acc.get('dca_top1', 0):.3f} val_dcaF1={val_acc.get('dca_f1', 0):.3f} "
             f"val_outAcc={val_acc.get('outcome_acc', 0):.3f}",
             flush=True,
         )

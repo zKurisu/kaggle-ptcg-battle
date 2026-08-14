@@ -16,7 +16,7 @@ from ptcg_rl.encoder import (
     STATE_FEAT_DIM,
     STATE_TOKEN_FEAT_DIM,
 )
-from ptcg_rl.seq.constants import FUTURE_PLAN_DIM, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, N_ACTION_TYPES
+from ptcg_rl.seq.constants import DAMAGE_COUNTER_ANY_CONTEXT, FUTURE_PLAN_DIM, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, N_ACTION_TYPES
 from ptcg_rl.seq.data import SequenceBatch
 
 # Keep this fp16-safe. ``masked_fill`` runs under AMP during training, and
@@ -33,6 +33,7 @@ class SequenceLossConfig:
     outcome_weight: float = 0.10
     type_weight: float = 0.10
     multi_target_weight: float = 1.0
+    damage_counter_weight: float = 1.0
 
 
 class SequencePolicyNet(nn.Module):
@@ -325,12 +326,18 @@ def sequence_policy_loss(
     weights = batch.sample_weight.float() * step_mask
     target_count = batch.target_multi.float().sum(dim=-1).long().clamp(0, MAX_SELECT_COUNT)
     multi_target = (target_count > 1) & (step_mask > 0)
+    damage_counter = (batch.target_context.long() == DAMAGE_COUNTER_ANY_CONTEXT) & (step_mask > 0)
     multi_boost = torch.where(
         multi_target,
         torch.full_like(weights, max(float(cfg.multi_target_weight), 1.0)),
         torch.ones_like(weights),
     )
-    decision_weights = weights * multi_boost
+    damage_boost = torch.where(
+        damage_counter,
+        torch.full_like(weights, max(float(cfg.damage_counter_weight), 1.0)),
+        torch.ones_like(weights),
+    )
+    decision_weights = weights * torch.maximum(multi_boost, damage_boost)
     valid_action = (batch.target_first >= 0) & (step_mask > 0)
     if bool(valid_action.any()):
         action_loss = F.cross_entropy(
@@ -410,6 +417,7 @@ def sequence_policy_loss(
         "outcome": float(outcome_loss.detach().cpu()),
         "type": float(type_loss.detach().cpu()),
         "multi_target_rate": float((multi_target.float().sum() / step_mask.sum().clamp(min=1.0)).detach().cpu()),
+        "damage_counter_rate": float((damage_counter.float().sum() / step_mask.sum().clamp(min=1.0)).detach().cpu()),
     }
     return loss, parts
 
@@ -426,6 +434,9 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
             "multi2_n": 0.0,
             "multi2_rate": 0.0,
             "capable2_rate": 0.0,
+            "dca_n": 0.0,
+            "dca_rate": 0.0,
+            "dca_top1": 0.0,
         }
     pred = outputs["action_logits"].argmax(dim=-1)
     top1 = (pred[valid] == batch.target_first[valid]).float().mean().item()
@@ -436,8 +447,10 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
     count_acc = (count_pred[valid] == count_target[valid]).float().mean().item()
     count_mae = (count_pred[valid].float() - count_target[valid].float()).abs().mean().item()
     multi2 = valid & (count_target > 1)
+    dca = valid & (batch.target_context.long() == DAMAGE_COUNTER_ANY_CONTEXT)
     valid_n = float(valid.sum().item())
     multi2_n = float(multi2.sum().item())
+    dca_n = float(dca.sum().item())
     capable2_n = float((valid & (batch.max_count.long() > 1)).sum().item())
 
     opt_mask = batch.option_mask.float()
@@ -445,6 +458,8 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
     max_k = min(MAX_SELECT_COUNT, logits.shape[-1])
     multi2_precision = multi2_recall = multi2_f1 = 0.0
     multi2_top1 = multi2_count_acc = multi2_count_mae = 0.0
+    dca_precision = dca_recall = dca_f1 = 0.0
+    dca_top1 = dca_count_acc = dca_count_mae = 0.0
     if max_k > 0:
         top_idx = logits.topk(k=max_k, dim=-1).indices
         pred_k = torch.minimum(
@@ -469,6 +484,13 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
             multi2_top1 = (pred[multi2] == batch.target_first[multi2]).float().mean().item()
             multi2_count_acc = (count_pred[multi2] == count_target[multi2]).float().mean().item()
             multi2_count_mae = (count_pred[multi2].float() - count_target[multi2].float()).abs().mean().item()
+        if bool(dca.any()):
+            dca_precision = (tp[dca] / pp[dca].clamp(min=1.0)).mean().item()
+            dca_recall = (tp[dca] / gp[dca].clamp(min=1.0)).mean().item()
+            dca_f1 = (2.0 * tp[dca] / (pp[dca] + gp[dca]).clamp(min=1.0)).mean().item()
+            dca_top1 = (pred[dca] == batch.target_first[dca]).float().mean().item()
+            dca_count_acc = (count_pred[dca] == count_target[dca]).float().mean().item()
+            dca_count_mae = (count_pred[dca].float() - count_target[dca].float()).abs().mean().item()
     else:
         precision = recall = f1 = 0.0
 
@@ -517,6 +539,14 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
         "multi2_f1": float(multi2_f1),
         "multi2_order_acc": float(multi2_order_acc),
         "multi2_order_n": float(multi2_order_n),
+        "dca_n": dca_n,
+        "dca_rate": float(dca_n / max(valid_n, 1.0)),
+        "dca_top1": float(dca_top1),
+        "dca_count_acc": float(dca_count_acc),
+        "dca_count_mae": float(dca_count_mae),
+        "dca_precision": float(dca_precision),
+        "dca_recall": float(dca_recall),
+        "dca_f1": float(dca_f1),
     }
 
 

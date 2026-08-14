@@ -30,8 +30,9 @@ MAX_HP = 400            # practical max HP
 # ── Feature dimensions ────────────────────────────────────────────────────
 CARD_DIM = 64           # card embedding
 STATE_FEAT_DIM = 80     # scalar state features
-OPT_FEAT_DIM = 64       # per-option scalar features
+OPT_FEAT_DIM = 72       # per-option scalar features
 STATE_TOKEN_FEAT_DIM = 24  # per board/hand token scalar features for cross-attention
+DAMAGE_COUNTER_ANY_CONTEXT = 14  # SelectContext::DamageCounterAny after ToJson minus-one encoding.
 
 ALAKAZAM_IDS = {109, 245, 741, 742, 743}
 CRUSTLE_IDS = {344, 345, 756}
@@ -265,6 +266,8 @@ class FastEncoder:
         s[79] = self._tr_mewtwo_power_ready(opp_active, opp_inplay)
 
         # ── Options ───────────────────────────────────────────────────────
+        select_context = int(sel.get("context", 0) or 0)
+        remain_damage_counter = int(sel.get("remainDamageCounter", 0) or 0)
         opt_type = np.zeros(n_opt, dtype=np.int64)
         opt_card = np.zeros(n_opt, dtype=np.int64)
         opt_card2 = np.zeros(n_opt, dtype=np.int64)
@@ -355,6 +358,15 @@ class FastEncoder:
                 int(opt_attack[i]),
                 target_for_option,
                 opp_active,
+            )
+            self._fill_damage_counter_any_extras(
+                opt_feats[i],
+                target_for_option,
+                int(o.get("playerIndex", pid) if o.get("playerIndex") is not None else pid),
+                you,
+                int(area if area is not None else o.get("inPlayArea") or 0),
+                select_context,
+                remain_damage_counter,
             )
 
         return EncodedDecision(
@@ -530,6 +542,31 @@ class FastEncoder:
         feats[61] = 1.0 if target_id in ENGINE_IDS else 0.0
         feats[62] = 1.0 if self._damage_ratio(target) > 0 else 0.0
         feats[63] = 1.0 if 0 < self._hp_ratio(target) <= 0.25 else 0.0
+
+    def _fill_damage_counter_any_extras(
+        self,
+        feats: np.ndarray,
+        target: dict | None,
+        player_idx: int,
+        you: int,
+        area: int,
+        select_context: int,
+        remain_damage_counter: int,
+    ) -> None:
+        if select_context != DAMAGE_COUNTER_ANY_CONTEXT:
+            return
+        remain = max(0, int(remain_damage_counter))
+        hp = float((target or {}).get("hp", 0) or 0)
+        counters_to_ko = int(np.ceil(hp / 10.0)) if hp > 0 else 0
+        full_damage = float(remain * 10)
+        feats[64] = 1.0
+        feats[65] = min(remain / 10.0, 1.0)
+        feats[66] = min(counters_to_ko / 30.0, 1.0)
+        feats[67] = 1.0 if 0 < hp <= 10.0 else 0.0
+        feats[68] = 1.0 if hp > 0 and full_damage >= hp else 0.0
+        feats[69] = self._damage_ratio(target)
+        feats[70] = 1.0 if player_idx != you and area == 5 else 0.0
+        feats[71] = min(max(full_damage - hp, 0.0) / 120.0, 1.0) if hp > 0 else 0.0
 
     def _fill_state_token_features(
         self,

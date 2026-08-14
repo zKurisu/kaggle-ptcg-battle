@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-FEATURE_VERSION = "v14_sequence_decision_v1"
+FEATURE_VERSION = "v14_sequence_decision_dca_v2"
 
 DEFAULT_SEQ_LEN = 32
 DEFAULT_FUTURE_HORIZON = 12
 
-LEDGER_FEAT_DIM = 64
+LEDGER_FEAT_DIM = 80
 FUTURE_PLAN_DIM = 24
 MAX_SELECT_COUNT = 10
+
+# ``ToJson`` exports enum ids minus one.  The C++ engine uses
+# SelectContext::DamageCounterAny for effects such as Dragapult ex Phantom
+# Dive, then resolves the effect as repeated single-target selections.
+DAMAGE_COUNTER_ANY_CONTEXT = 14
 
 # Option type ids used by the game engine and the existing encoder.
 TYPE_NUMBER = 0

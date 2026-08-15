@@ -14,6 +14,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
 for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
     os.environ.setdefault(_var, "1")
 
@@ -257,6 +259,7 @@ def play_game(a: Entry, b: Entry, swapped: bool, use_mcts: bool, sims: int,
 
     if seed is not None:
         random.seed(seed)
+        np.random.seed(int(seed) & 0xFFFFFFFF)
     first, second = (b, a) if swapped else (a, b)
     for entry in (first, second):
         if entry.policy is not None and hasattr(entry.policy, "reset_history"):
@@ -323,7 +326,7 @@ def _print_match_progress(a: Entry, b: Entry, done: int, games: int,
 
 def play_matchup(a: Entry, b: Entry, games: int, use_mcts: bool, sims: int,
                  time_budget: float, max_turns: int, progress_every: int,
-                 workers: int = 1, seed: int = 1) -> dict:
+                 workers: int = 1, seed: int = 1, fresh_workers: bool = False) -> dict:
     wins_a = wins_b = draws = 0
     t0 = time.time()
     workers = max(1, min(int(workers), games))
@@ -348,11 +351,14 @@ def play_matchup(a: Entry, b: Entry, games: int, use_mcts: bool, sims: int,
             record(g + 1, res)
     else:
         tasks = [(g, seed + g) for g in range(games)]
-        with ProcessPoolExecutor(
-            max_workers=workers,
-            initializer=_init_match_worker,
-            initargs=(entry_payload(a), entry_payload(b), use_mcts, sims, time_budget, max_turns),
-        ) as ex:
+        ex_kwargs = {
+            "max_workers": workers,
+            "initializer": _init_match_worker,
+            "initargs": (entry_payload(a), entry_payload(b), use_mcts, sims, time_budget, max_turns),
+        }
+        if fresh_workers:
+            ex_kwargs["max_tasks_per_child"] = 1
+        with ProcessPoolExecutor(**ex_kwargs) as ex:
             futs = [ex.submit(_play_match_worker, t) for t in tasks]
             for done, fut in enumerate(as_completed(futs), 1):
                 record(done, fut.result())
@@ -437,6 +443,8 @@ def main() -> None:
     p.add_argument("--progress-every", type=int, default=10)
     p.add_argument("--workers", type=int, default=1,
                    help="parallel game worker processes per pair; each worker loads both policies once")
+    p.add_argument("--fresh-workers", action="store_true",
+                   help="start a fresh worker process for each game; slower but avoids engine state leakage")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--rules-entry", action="append", default=[],
                    help="experimental rule overlay for one entry, e.g. candidate=conservative")
@@ -480,6 +488,12 @@ def main() -> None:
     if mcts_by_name:
         mode += f"+mcts_entry:{','.join(sorted(mcts_by_name))}"
     print(f"Round-robin: {len(entries)} entries, {args.games} games/pair, {mode}", flush=True)
+    if int(args.workers) > 1:
+        print(
+            "WARNING: concurrent cg engine RR is for coarse screening only; "
+            "use --workers 1 --fresh-workers and fixed trace losses for hard conclusions.",
+            flush=True,
+        )
     for e in entries:
         kind = "random" if e.policy is None else e.policy_path
         suffix = ""
@@ -504,6 +518,7 @@ def main() -> None:
             entries[i], entries[j], args.games, args.mcts, args.mcts_sims,
             args.time_budget, args.max_turns, args.progress_every,
             workers=args.workers, seed=args.seed + done_pairs * 100000,
+            fresh_workers=args.fresh_workers,
         )
         elapsed = time.time() - t0
         print(f"Finished pair {done_pairs}/{total_pairs} in {elapsed:.0f}s total", flush=True)

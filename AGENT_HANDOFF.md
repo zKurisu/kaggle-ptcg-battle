@@ -115,6 +115,18 @@ Hard random gate added 2026-08-15:
   public branch. If it diverges, the replay markdown reports
   `first_non_exact_script_step` and match counts (`exact`, `mapped`,
   `fallback`) so the first behavioral divergence is visible.
+- `tools/v15_scripted_random_trace.py --state-replay --script-in SCRIPT.json`
+  is the preferred behavior-comparison mode. It does not step the engine; it
+  re-runs the new policy on the exact candidate observations recorded from the
+  losing game. This makes old/new action changes clear even when the engine
+  cannot restore a full hidden random state.
+- `tools/v15_compare_random_loss.py OLD.pt NEW.pt --deck DECK.csv --out-dir DIR`
+  wraps the workflow above: find OLD's first random loss, write
+  `baseline_first_loss_trace.md`, save
+  `baseline_first_loss_random_script.json`, replay NEW on the recorded
+  candidate states, and write a short `summary.md` with same/changed counts and
+  the first changed decision. Use `--script-in existing.json` to compare against
+  an already-recorded loss.
 
 First-loss trace findings from v15 pilot:
 

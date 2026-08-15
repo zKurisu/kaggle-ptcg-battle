@@ -149,6 +149,12 @@ def play_game(args, game: int, seed: int, encoder: FastEncoder, policy, opp_poli
     from cg.game import battle_finish, battle_select, battle_start
 
     random.seed(seed)
+    try:
+        import numpy as np
+
+        np.random.seed(int(seed) & 0xFFFFFFFF)
+    except Exception:
+        pass
     candidate_side = game % 2
     if hasattr(policy, "reset_history"):
         policy.reset_history()

@@ -2,6 +2,7 @@
 """Evaluate a BC-trained policy.npz against random agents."""
 import sys, os, random, time, argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import numpy as np
 
 for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
     os.environ.setdefault(_var, "1")
@@ -80,6 +81,7 @@ def _play_one_game(policy, deck, game_index, use_mcts=False, sims=48,
     from cg.game import battle_start, battle_select, battle_finish
 
     random.seed(seed)
+    np.random.seed(int(seed) & 0xFFFFFFFF)
     our_side = 0 if game_index % 2 == 0 else 1
     if hasattr(policy, "reset_history"):
         policy.reset_history()

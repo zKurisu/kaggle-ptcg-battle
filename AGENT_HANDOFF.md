@@ -11825,3 +11825,33 @@ Update 2026-08-15 07:45 CST:
     when plan tokens are removed.
   - If `turnNext` itself fails, debug labels from corpus rows before training
     any longer run.
+
+## Update: v15 Random-Gate Reproducibility 2026-08-15 Evening
+
+- Active branch for the rewrite work is `sequence-decision-pipeline-v15`.
+- Do not trust multi-process random/RR as a hard correctness gate for v15.
+  Concurrent local `cg.game` evaluation produced losses that disappeared when
+  the same game/seed was replayed alone. This indicates process-level engine
+  interference or state leakage during concurrent evaluation.
+- Authoritative random gate command for trace/debug is now:
+  `python3 tools/v15_find_random_losses.py POLICY --deck DECK --games 300 --workers 1 --fresh-workers --seed 1 --progress-every 25 --max-turns 700 --out-csv OUT.csv`
+- `tools/v15_find_random_losses.py` now supports `--start-game` and
+  `--fresh-workers`; use `--start-game N --games 1 --workers 1 --fresh-workers`
+  to reproduce one game through the same eval path.
+- `tools/v15_scripted_random_trace.py` also supports `--start-game`; use it to
+  write a full step-by-step trace for a fixed random game.
+- Added NumPy seeding in `tools/eval_bc.py`, `tools/v15_scripted_random_trace.py`,
+  and `tools/v15_trace_game.py`. Python `random.seed()` alone was insufficient.
+- Fixed a v15 live-policy selection bug: route targets were hard-forced even in
+  single-choice contexts, so `top` could show ATTACK while `chosen` executed
+  RETREAT. Single-choice route is now only a logit prior; it no longer overrides
+  the final top action.
+- Added Dragapult tactical priors in `ptcg_rl/v15/torch_policy.py`:
+  - low-deck attack pressure when Dragapult is active and ATTACK is legal;
+  - low-deck stuck-active escape when a non-attacker is active, Dragapult is on
+    bench, and no attack/retreat is legal, preferring attach-to-active over END;
+  - stronger SWITCH-context preference for Dragapult over Budew/Drakloak in
+    closing games.
+- Current trusted long check is running on ks:
+  `logs/v15_route_count_long_20260815/gates/dragapult_cc2e_route_count_w512_serial_fresh/`
+  It is intentionally slow because it uses one fresh worker at a time.

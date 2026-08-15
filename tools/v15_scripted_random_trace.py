@@ -177,6 +177,7 @@ def play_game(
     from cg.game import battle_finish, battle_select, battle_start
 
     random.seed(seed)
+    np.random.seed(int(seed) & 0xFFFFFFFF)
     if script is None:
         candidate_side = game % 2
     else:
@@ -430,6 +431,8 @@ def main() -> None:
                    help="which action to remember between recorded observations during --state-replay")
     p.add_argument("--target-outcome", choices=["loss", "win", "draw", "any"], default="loss")
     p.add_argument("--games", type=int, default=100)
+    p.add_argument("--start-game", type=int, default=0,
+                   help="first game index to scan; seed is still computed as --seed + game")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--max-turns", type=int, default=700)
     p.add_argument("--progress-every", type=int, default=10)
@@ -457,12 +460,14 @@ def main() -> None:
         counts[outcome] += 1
         selected = (outcome, trace, meta)
     else:
-        for g in range(args.games):
+        start_game = max(0, int(args.start_game))
+        end_game = start_game + max(0, int(args.games))
+        for scanned, g in enumerate(range(start_game, end_game), 1):
             outcome, trace, meta, _ = play_game(args, game=g, seed=args.seed + g, policy=policy, encoder=encoder, script=None)
             counts[outcome] += 1
-            if args.progress_every and (g == 0 or (g + 1) % args.progress_every == 0):
+            if args.progress_every and (scanned == 1 or scanned % args.progress_every == 0):
                 print(
-                    f"{g + 1}/{args.games} win={counts['win']} loss={counts['loss']} draw={counts['draw']} "
+                    f"{scanned}/{args.games} game={g} win={counts['win']} loss={counts['loss']} draw={counts['draw']} "
                     f"elapsed={time.time() - t0:.0f}s",
                     flush=True,
                 )

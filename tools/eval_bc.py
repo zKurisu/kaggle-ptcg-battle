@@ -204,8 +204,8 @@ def main():
         if args.auto_deck:
             raise FileNotFoundError(f"no registry deck found for policy: {args.policy}")
 
-    policy = load_policy(args.policy, device="cpu")
     deck = load_deck(args.deck)
+    policy = None if int(args.workers) > 1 else load_policy(args.policy, device="cpu")
     
     print(f"Policy: {args.policy}")
     print(f"Deck: {args.deck} ({len(deck)} cards)")

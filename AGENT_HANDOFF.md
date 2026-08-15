@@ -127,6 +127,12 @@ Hard random gate added 2026-08-15:
   candidate states, and write a short `summary.md` with same/changed counts and
   the first changed decision. Use `--script-in existing.json` to compare against
   an already-recorded loss.
+- `tools/eval_bc.py` was adjusted after v15 torch checkpoints hung in
+  multi-worker random eval: when `--workers > 1`, the parent process now avoids
+  preloading the policy and lets each worker load it in its initializer. This
+  avoids forking after torch checkpoint load. If a gate log stays at 0 bytes
+  while sleeping `eval_bc.py` workers exist, kill that stale gate and rerun after
+  syncing this fix.
 
 First-loss trace findings from v15 pilot:
 

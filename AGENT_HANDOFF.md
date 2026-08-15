@@ -1,8 +1,74 @@
 # Agent Handoff
 
-Last updated: 2026-08-15 14:04 Asia/Shanghai.
+Last updated: 2026-08-15 15:05 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
+
+## Update: v15 Rewrite Started 2026-08-15
+
+Branch:
+
+- Local branch is now `sequence-decision-pipeline-v15`.
+- The earlier v14 ordered-plan WIP remains in the worktree but should not be
+  treated as the v15 direction. v15 code is isolated under `ptcg_rl/v15/` and
+  `tools/v15_*`.
+
+New v15 files:
+
+- `ptcg_rl/v15/constants.py`: canonical ids for event source, plan modes,
+  known-opponent-hand slots, and option/action types.
+- `ptcg_rl/v15/events.py`: live-compatible event packing. It stores own
+  selected actions plus public logs visible from the observation. Opponent
+  hidden action indices are not copied directly. Known opponent hand is tracked
+  only from public card movement logs.
+- `ptcg_rl/v15/data.py`: row-level corpus loader with game-grouped validation
+  split, signal stats, and warnings. The split was fixed to select whole games
+  until the requested validation row count is reached; the first version could
+  leave only one validation row.
+- `ptcg_rl/v15/model.py`: turn-block plan policy. State tokens, event history,
+  known-card tokens, and legal option tokens feed a plan latent. The action
+  scorer directly uses the plan latent. Current type prior and
+  history-conditioned type prior are added to legal option logits so probes can
+  verify whether those branches affect live actions.
+- `tools/v15_extract_blocks.py`: extracts v15 `.v15block.npz` files from raw
+  Kaggle episode zips with progress output.
+- `tools/v15_train_plan_policy.py`: trains the v15 model and prints mandatory
+  training-time signals and ablation probes every epoch.
+- `docs/14_v15_rewrite.md`: short design note and starter commands.
+
+Local smoke completed:
+
+- Command extracted 12 episodes from `2026-08-12` into
+  `/tmp/ptcg_v15_smoke`, producing `2179` rows. Dragapult had `613` rows.
+- Dragapult signal density was healthy for a smoke corpus:
+  `event_slots_mean=46.89`, `public_log_slots_mean=31.51`,
+  `known_rate=0.879`, `known_slots_mean=2.56`, `plan_rate=0.909`,
+  `plan_slots_mean=3.20`, `turn_continue_rate=0.909`, `dca_rate=0.137`,
+  `dca_spread_rate=0.500`.
+- First v15 model without explicit priors still had decorative branches:
+  `noPlan` and `noHistory` mostly agreed with full action logits.
+- Adding current type prior made `noPlan` meaningful:
+  example smoke `noPlan=0.037/0.889/0.01907`.
+- Adding history-conditioned type prior plus tail-event pooling made history
+  visible:
+  final smoke `noHist=-0.004/0.851/0.01964`,
+  `noPlan=-0.000/0.868/0.02155`.
+- Remaining failure: order sensitivity is still weak.
+  Final smoke `revHist=0.010/0.979/0.00403`, so
+  `history_order_not_affecting_action` remains a valid warning. Do not claim
+  v15 has solved multi-turn chronological reasoning until this improves on a
+  larger diagnostic or after an ordered transition objective is added.
+
+Important v15 interpretation:
+
+- v15 is not yet a submission candidate. It is a clean training/probe base.
+- The correct next action is a remote smoke on ks, then a small Dragapult and
+  Alakazam diagnostic over more 0812/0813 data. Watch training logs first;
+  random/RR should come only after `noPlan`, `noHistory`, and preferably
+  `revHist` probes show real action-logit impact.
+- If `reverse_history` remains weak after enough batches, the next structural
+  change should be an ordered transition objective or a turn-block decoder, not
+  more filtered BC/winner-only tuning.
 
 ## Update: v14 Failure Summary And v15 Rewrite Gate 2026-08-15
 

@@ -1,8 +1,269 @@
 # Agent Handoff
 
-Last updated: 2026-08-15 00:10 Asia/Shanghai.
+Last updated: 2026-08-15 14:04 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
+
+## Update: v14 Failure Summary And v15 Rewrite Gate 2026-08-15
+
+Current hard direction from the user:
+
+- Do not continue fine-tuning as the main path. The old BC family is treated as
+  locked for submission/baseline comparison. New work should be large
+  architecture/data-objective rewrites, explicit rule/plan integration, or
+  from-scratch retraining. Small loss-weight tweaks and weak-matchup
+  fine-tunes have repeatedly consumed time without changing structure.
+- Do not discover failures only after random/RR/Kaggle. Every new signal must be
+  visible during training. A run that cannot prove it uses sequence/global/plan
+  information in training logs should be stopped before long evaluation.
+- v15 should be rewritten after testing the current v14 changes fails the signal
+  gate. The rewrite must be probe-first: the data object, model, loss, and
+  diagnostics must all make multi-turn decisions observable.
+
+Historical version lessons:
+
+- v7: strongest simple baseline. Direct BC with older compact features and
+  deck-sig/top2 filtering produced useful Kaggle results, especially Ogerpon.
+  It had limited strategic generalization, but its simplicity made it stable.
+- v8/v9: adding gameplan/trajectory-style features did not improve online
+  performance. Offline metrics could look fine while Kaggle ladder dropped
+  sharply. Lesson: adding features without proving the action head uses them is
+  actively risky.
+- v10: fixed several v8/v9 extraction/feature issues and recovered much of v7
+  for Ogerpon fixed top2 (`951.8` final shown, temporarily about `1040`).
+  Top3 was much worse. Lesson: cleaner data/signature selection matters, but it
+  still did not solve multi-option/global/weak-matchup reasoning.
+- v11: opponent/matchup features and more dates helped random quality only when
+  enough dates were used. Two-day v11 was poor; all-date/12-day v11 rose toward
+  v10 random quality. Structural matchup weaknesses remained.
+- high1100/team-specific/winner-only/900+ mixes: results were unstable. Some
+  high-only models missed 600-1100 climb opponents; some winner-only mixtures
+  overfit sparse lucky wins or lost broad coverage. DVH/old strong submissions
+  are local comparison baselines only and must not be reused for submission.
+- v12/v13 history/ledger/teacher/trajectory attempts: history streams, summary
+  features, success-trajectory mining, and weak-matchup fine-tunes did not show
+  stable broad gains. Directly fitting rare successful weak-matchup games did
+  not reliably improve those matchups, suggesting many "success" rows are luck,
+  opponent mistakes, or non-transferable lines.
+- v14: sequence-first rewrite added current-row weighting, DCA labels,
+  same-turn continuation, opportunity losses, rank losses, known-info/reveal
+  probes, and ablation diagnostics. Local random/RR and Kaggle submissions still
+  showed pipeline-level failure: v14 submitted Lucario/Alakazam/Lopunny could
+  not stably hold strong ladder scores.
+
+Concrete v14 failures now known:
+
+- The policy is still mostly a current-board next-action imitator. Even after
+  sequence inputs, `revhist_delta` stayed around `-0.005` to `-0.006` and
+  `revhist_agree` stayed about `0.95-0.98` in rank/turn-next diagnostics. If
+  reversing chronological history barely changes the live action, the model is
+  not learning a true multi-turn policy.
+- Latest completed rank/turn-next evidence:
+  - Rank-margin diagnostic: Alakazam baseline `val_cur=0.762/0.877`, rank
+    margin `0.35` `val_cur=0.761/0.873`; Dragapult baseline
+    `val_cur=0.680/0.862`, rank margin `0.35` `val_cur=0.676/0.860`.
+    Exact rank margin did not improve the live action.
+  - Turn-next diagnostic: Alakazam loss-only `val_cur=0.708/0.857`, conditioned
+    `0.704/0.855`; Dragapult loss-only `0.619/0.846`, conditioned
+    `0.616/0.845`. Conditioning was active but did not improve current action.
+- Same-turn/turn-next labels are learnable but not controlling the action head.
+  The 2026-08-15 turn-next diagnostic had `turn_next_type_pos_acc` roughly
+  `0.59-0.62` on current rows and attack prediction high, but conditioning on
+  this signal did not improve current action accuracy or smoke rollouts.
+- Opportunity/rank losses were negative or no-op. Type-level opportunity
+  pressure, exact rank margin, and target-type margins either degraded
+  `val_cur`/random smoke or changed only auxiliary metrics. They did not repair
+  attach/evolve/attack misses.
+- Multi-select remains rare and underpowered. Typical target count is close to
+  one, with true multi rows often only a few percent. A row-level BCE/order loss
+  cannot make the model understand turn-block or damage-allocation strategy by
+  itself.
+- Dragapult-specific DCA is still too shallow. DCA labels are focus-dominated;
+  training DCA accuracy can become high while validation and RR remain weak.
+  Per-step DCA supervision does not teach the broader prize-map/damage-plan
+  required by Dragapult.
+- Known opponent hand/reveal information is not currently proven useful. Some
+  audits found `known_opp_rate=0`, so the corpus/extractor must be verified
+  before any claim that the model remembers revealed cards.
+- Random and local shadow RR are unreliable gates. Several models had
+  near-perfect random and strong local RR but failed badly on Kaggle, proving
+  the shadow pool is too weak or too unlike real submitted policies.
+
+Signals expected before any long v15 training:
+
+- Data integrity signals: per-deck rows by date/score/team, winner/loss split,
+  opponent archetype coverage, target count distribution, same-turn block
+  length, reveal/known-info nonzero rate, DCA focus/split/spread distribution,
+  and leak-safe train/val split by game/team/date.
+- Live-decision signals: current-row top1/topk, ambiguous-option top1, per-type
+  action top1, attach/evolve/ability/attack miss rates, terminal-while-continue
+  rate, target margin against best legal alternative, and multi-target exact/F1.
+- Sequence-use signals: removing, zeroing, shuffling, or reversing historical
+  events must change current logits. Track `delta`, `agree`, and KL for
+  no-history/no-actions/reversed-history/no-known-info/no-plan ablations.
+  A healthy sequence model should not have `revhist_agree > 0.90` on contexts
+  where turn history is relevant.
+- Ordered-plan signals: model should predict the next 2-4 actions in the same
+  turn or next turn with stepwise type/card/context/attack metrics, and those
+  plan tokens must measurably affect current action logits.
+- Global resource signals: expose remaining deck/discard/prize/resource state,
+  revealed opponent cards, used supporter/energy/retreat flags, prize race, and
+  key engine status as audited fields. If a field is claimed useful, log its
+  nonzero rate and ablation impact.
+- Online proxies only after training signals pass: random, filtered RR, live
+  ladder-pool RR, and Kaggle replay analysis should validate a model that has
+  already shown real signal use, not act as the first diagnostic.
+
+v15 rewrite requirements:
+
+- Start a new branch from the current project state, but do not keep extending
+  v14 with more auxiliary heads unless they are tied to action-logit probes.
+- Design the corpus around canonical events and turn blocks, not only
+  independent prefix rows. The unit of learning should include "what plan was
+  executed over this turn/phase" and "which current legal action advances that
+  plan".
+- Build a clean model path for state tokens, option tokens, event-history
+  tokens, known-opponent-card tokens, and plan tokens. The action scorer must be
+  conditioned on the plan representation, not merely share an auxiliary loss.
+- Include rule/plan hooks as first-class inputs or teachers. For structural
+  weaknesses, pure BC imitation has not been enough; v15 should allow explicit
+  strategic overlays and teacher/search-generated plans to be trained/evaluated.
+- Add a small mandatory diagnostic-train target before any overnight run. It
+  should finish quickly and fail loudly if labels are zero, losses are nonfinite,
+  chronological ablation has no effect, or the action head ignores plan tokens.
+- Current v14 local code contains work-in-progress ordered same-turn plan
+  fields. Treat that as experimental scaffolding only. It is not yet proof that
+  v14 is fixed; the likely next step is v15 rewrite after a compile/smoke check.
+
+## Update: v14 Same-Turn And Opportunity Diagnostics 2026-08-15
+
+Current direction from the user: stop treating random/RR as the first place to
+discover broken ideas. Every new sequence/global/history signal must be visible
+in the training log, and bad runs should be stopped from training metrics alone.
+Avoid local loops around tiny hyperparameter tweaks; use diagnostics to decide
+whether the pipeline actually changed the decision being made.
+
+Completed diagnostic conclusions:
+
+- Same-turn planner signal is valid but insufficient. `turn_continue` learned
+  quickly (`turn_f1` around `0.98` on Alakazam), proving same-turn targets are
+  extractable and trainable. However, the action head still ended turns during
+  same-turn continuation opportunities around `8-11%`, and attach/attack misses
+  stayed high. The planner head alone does not force the chosen legal action.
+- `turn_terminal_weight` sweep did not solve this. We tried weights
+  `0/0.5/1.0/1.5`; `pterm` shifted only slightly and attach/attack miss did not
+  materially improve. Do not keep tuning terminal mass as the main lever.
+- `opportunity_type_weight` is currently a negative result. In
+  `logs/v14_opportunity_diag_20260815`, Alakazam epoch 1 already showed higher
+  opportunity type weight reduced `val_cur` and did not improve attach:
+  baseline `val_cur=0.718`, attach miss `0.418`; weight `0.5` had
+  `val_cur=0.701`, attach miss `0.473`; weight `1.0` had `val_cur=0.691`,
+  attach miss `0.494`; weight `2.0 + terminal0.5` had `val_cur=0.670`.
+  Interpretation: the model often assigns some mass to the right action type,
+  but the exact target action still loses to another legal option. Type-level
+  pressure alone is too coarse.
+
+Code changes now present locally and synced to ks:
+
+- `ptcg_rl/seq/data.py`: sequence batches include same-turn continuation
+  targets: `turn_continue`, `turn_remaining`, `turn_future_types`.
+- `tools/v14_extract_sequences.py`: extracted rows now save `turn_number` and
+  `turn_action_count`.
+- `ptcg_rl/seq/model.py`: same-turn heads and conditioning exist; loss/metrics
+  include `turn_plan`, `turn_terminal`, `opportunity_type`, and the new
+  `opportunity_margin` objective. The margin objective penalizes key current
+  targets (`attach/evolve/ability/attack`) when the target action logit is not
+  above the best other-type legal action by a configurable margin.
+- `tools/v14_train_sequence_policy.py`: training logs now print
+  `oppMargin`, `val_oppMargin`, `val_oppMarginL`, and `signal_health`
+  fields `cur_opp_margin` plus `opp_margin_loss`.
+- `tools/v14_train_population.py`: population training now passes
+  `--opportunity-margin-weight` and `--opportunity-margin` through to the
+  sequence trainer.
+
+Active/queued remote work:
+
+- Active on ks: `/tmp/run_v14_opportunity_diag_20260815.sh`, log dir
+  `logs/v14_opportunity_diag_20260815`, checkpoints
+  `checkpoints/v14_opportunity_diag_20260815`. Four Alakazam 7f9 jobs are
+  running on GPUs 0-3. This run started before the margin code was synced, so it
+  does not contain `opportunity_margin` metrics.
+- Queued on ks: `/tmp/run_v14_margin_diag_20260815.sh`. Start it only after the
+  opportunity run finishes. It runs Alakazam `7f9a538936e3` and Dragapult
+  `cc2e995b5ad0` baseline/margin pairs over
+  `data/seq_corpus_v14_0801_0813_hq`, with log dir
+  `logs/v14_margin_diag_20260815` and checkpoints
+  `checkpoints/v14_margin_diag_20260815`.
+
+2026-08-15 12:55 follow-up:
+
+- The first margin diagnostic launch accidentally included `--amp`. Training
+  logs immediately exposed a degenerate run: epoch 1 top1 around `0.38-0.44`,
+  `next` near zero, turn prediction collapsed toward always-continue, and
+  action type metrics were far below the previous no-AMP diagnostics. The bad
+  run was stopped from training signals before waiting for RR.
+- `tools/v14_train_sequence_policy.py` now refuses `--amp` by default. Use
+  `--allow-amp` only for an explicit AMP repair experiment. This is a hard
+  guard because AMP has repeatedly produced nonfinite or degenerate v14
+  training signals.
+- `/tmp/run_v14_margin_diag_20260815.sh` was fixed to no-AMP and relaunched.
+  Early no-AMP batch metrics returned to the expected learning curve, so the
+  immediate failure was AMP misuse, not the margin implementation itself.
+- The no-AMP margin run was restarted once more with `--diagnostic-ablation`,
+  because the first no-AMP restart omitted ablation and therefore could not
+  validate history/ledger/order sensitivity. The current valid run is in
+  `logs/v14_margin_diag_20260815` and should be interpreted from the run whose
+  process command includes `--diagnostic-ablation`.
+- Early epoch-1 valid margin signals: ablation fields are real again. Current
+  action depends somewhat on history/ledger (`stateless_delta` and `noact_delta`
+  are nonzero), but `revhist_delta` remains near zero, so chronological order is
+  still weak for live current decisions. Opportunity margin weight `0.5`
+  improves some attach/type margin numbers but lowers `val_cur`/ambiguous
+  top-1 and hurts early random smoke, especially Dragapult. Treat
+  opportunity-margin as a negative or at best inconclusive direction unless
+  later epochs reverse this.
+- New exact-rank diagnostic code has been added and synced to ks:
+  `current_rank_margin_weight`, `current_rank_margin`, and
+  `current_rank_margin_min_options`. This directly requires the current target
+  action to beat the best non-target legal action, covering same-type target
+  mistakes that type-level losses miss. Training logs now include
+  `cur_rank_margin`, rank violation rate, ambiguous-target rank margin, and
+  `rank_margin_loss`.
+- Queued script for the next GPU-free slot:
+  `/tmp/run_v14_rank_diag_20260815.sh`, log dir
+  `logs/v14_rank_diag_20260815`, checkpoints
+  `checkpoints/v14_rank_diag_20260815`. It compares baseline vs rank weight
+  `0.35` on Alakazam `7f9a538936e3` and Dragapult `cc2e995b5ad0`, with
+  `--diagnostic-ablation` and no AMP.
+
+Final margin diagnostic result:
+
+- `logs/v14_margin_diag_20260815` completed at
+  `2026-08-15T13:22:03+08:00`; logs/checkpoints were pulled locally under
+  `artifacts/ks_pull_20260815_v14_margin_diag/`.
+- Alakazam baseline `m00`: epoch 3 `val=1.9605`, `val_top1=0.768`,
+  `val_cur=0.762/0.877`, random smoke `46/48`.
+- Alakazam opportunity-margin `m05`: epoch 3 `val=2.3129`,
+  `val_top1=0.750`, `val_cur=0.744/0.851`, random smoke `44/48`.
+- Dragapult baseline `m00`: epoch 3 `val=2.2010`, `val_top1=0.670`,
+  `val_cur=0.680/0.862`, random smoke `35/48`.
+- Dragapult opportunity-margin `m05`: epoch 3 `val=2.5581`,
+  `val_top1=0.667`, `val_cur=0.661/0.836`, random smoke `29/48`.
+- Conclusion: opportunity-margin made target-type margins look better but
+  degraded the primary action objective and rollout smoke. Do not promote it.
+  The next active run is exact rank margin, not opportunity margin.
+
+Immediate interpretation rule:
+
+- If margin weight improves `cur_attach/evolve/ability/attack_target_margin_other`
+  and reduces corresponding `miss_if_target` without reducing `val_cur`,
+  promote it to a broader multi-archetype diagnostic.
+- If margin improves only the metric but not random smoke or ambiguous-current
+  top1, the action-ranking problem is likely not type-vs-other; move to exact
+  action-set/listwise supervision or grouped turn-block imitation.
+- If history probes still show `revhist_delta≈0` and `noact_delta≈0`, the model
+  remains mostly current-board BC despite sequence inputs. Do not run more large
+  history jobs until the loss forces chronology to matter.
 
 ## Update: Training-Time Signal Diagnostics 2026-08-14
 
@@ -11304,3 +11565,58 @@ Update 2026-08-15 07:45 CST:
   - `stateless` removes both explicit history and known memory.
 - If `known_opp_rate` is nontrivial but `noknown_delta≈0`, the model is still
   not using public reveal information in a measurable way.
+
+## Update: 2026-08-15 Afternoon Signal Diagnostics
+
+- Local/remote branch remains `sequence-decision-pipeline-v14`; remote working
+  tree is still `ks:/data/jie/ptcg_rl_git_v7_baseline_20260804`.
+- Critical rule from user: do not keep doing BC fine-tune / tiny filtered-data
+  adjustments. BC is effectively locked as a baseline; only structural changes
+  or retraining with new objectives are worth trying.
+- `v14_opportunity_diag_20260815` and `v14_margin_diag_20260815` were negative.
+  Opportunity type/margin and exact rank-margin harden current-row CE but do not
+  fix the root issue.
+- `v14_rank_diag_20260815` completed and was pulled locally to:
+  - `artifacts/ks_pull_20260815_v14_rank_diag/logs`
+  - `artifacts/ks_pull_20260815_v14_rank_diag/checkpoints`
+- Rank diagnostic final result:
+  - Alakazam `7f9` rank-margin 0.0: val `1.9605`, val top1 `0.768`, current
+    `0.762/0.877`, random smoke `43/48`.
+  - Alakazam `7f9` rank-margin 0.35: val `2.2632`, val top1 `0.767`, current
+    `0.761/0.873`, random smoke `46/48`.
+  - Dragapult `cc2e` rank-margin 0.0: val `2.2010`, val top1 `0.670`, current
+    `0.680/0.862`, random smoke `40/48`.
+  - Dragapult `cc2e` rank-margin 0.35: val `2.5047`, val top1 `0.666`, current
+    `0.676/0.860`, random smoke `33/48`.
+  - Interpretation: exact rank-margin is not the right lever. It worsens loss
+    and does not address `history_order_not_affecting_current`.
+- New code added after rank diagnostics:
+  - `SequenceCorpus` now precomputes same-turn next-action labels:
+    `turn_next_exists`, `turn_next_type`, `turn_next_card`,
+    `turn_next_card2`, `turn_next_attack`, `turn_next_context`.
+  - `SequencePolicyNet` now has same-turn concrete next-action heads and an
+    optional `turn_next_condition_scale` path into the action scorer.
+  - Trainer exposes `--turn-next-plan-weight`,
+    `--turn-next-condition-scale`, and subweights for type/card/attack/context.
+  - Training logs now include `turnNext`, `cur_turn_next`,
+    `val_turnNextL`, `cond=.../tn...`, and warnings for weak/collapsed
+    turn-next learning.
+- Remote short diagnostic currently running:
+  - PID `3524727`
+  - script `/tmp/run_v14_turn_next_diag_20260815.sh`
+  - logs `logs/v14_turn_next_diag_20260815/`
+  - checkpoints `checkpoints/v14_turn_next_diag_20260815/`
+  - four parallel jobs: Alakazam/Dragapult loss-only and
+    loss+`turn_next_condition_scale=0.50`.
+  - Early signal at batch 40: turn-next labels are real and learnable
+    (`turn_next_rate` about 0.86-0.91; positive type acc already about
+    0.40-0.52). Card prediction is still weak. Conditioning is active
+    (`tn≈0.30`) but has not yet visibly changed current-action metrics.
+- Next decision after this diagnostic:
+  - If `turnNext` learns but `revhist_delta` and current metrics remain nearly
+    unchanged, do not tune weights. Jump to a stronger plan-token architecture:
+    make predicted/teacher same-turn next actions explicit plan tokens that
+    cross-attend to legal options, and add ablation showing action logits change
+    when plan tokens are removed.
+  - If `turnNext` itself fails, debug labels from corpus rows before training
+    any longer run.

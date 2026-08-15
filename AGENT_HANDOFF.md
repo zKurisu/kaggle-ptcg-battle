@@ -53,17 +53,45 @@ Local smoke completed:
   visible:
   final smoke `noHist=-0.004/0.851/0.01964`,
   `noPlan=-0.000/0.868/0.02155`.
-- Remaining failure: order sensitivity is still weak.
-  Final smoke `revHist=0.010/0.979/0.00403`, so
-  `history_order_not_affecting_action` remains a valid warning. Do not claim
-  v15 has solved multi-turn chronological reasoning until this improves on a
-  larger diagnostic or after an ordered transition objective is added.
+- A later local known-prior smoke connected public known-card memory to action
+  logits as a weak type prior. It made all four action probes visible on the
+  small Dragapult corpus:
+  `noHist=0.031/0.685/0.02556`,
+  `revHist=-0.023/0.795/0.00746`,
+  `noKnown=0.024/0.882/0.00269`,
+  `noPlan=-0.047/0.630/0.02268`.
+  `knownType` was still weak after only four train batches, so known/reveal
+  value should be judged by training logs, not assumed solved.
+- Remote ks smoke on 16 episodes from `2026-08-12` also passed the basic signal
+  gate. Without known prior but with `type_prior_scale=1.50`:
+  `noHist=-0.004/0.759/0.03255`,
+  `revHist=0.026/0.916/0.00449`,
+  `noPlan=0.026/0.874/0.03049`.
+  With known prior:
+  `noHist=0.013/0.830/0.02797`,
+  `revHist=0.033/0.872/0.00440`,
+  `noKnown=0.010/0.959/0.00057`,
+  `noPlan=0.014/0.767/0.02891`.
+  Interpretation: history/order/plan paths now affect action logits on remote;
+  known-info is wired but remains weak.
+
+Active remote pilot:
+
+- Script: `ks:/tmp/run_v15_pilot_0812_0813_20260815.sh`.
+- Runner log: `logs/v15_pilot_0812_0813_20260815/nohup.log`.
+- Corpus target: `data/seq_corpus_v15_0812_0813`.
+- Checkpoints target: `checkpoints/v15_pilot_0812_0813_20260815`.
+- It extracts `2026-08-12..2026-08-13` with two workers, then trains
+  Dragapult, Alakazam, and Mega Lopunny in parallel on GPUs 0/1/2.
+- At `2026-08-15 15:00 CST`, extraction had reached roughly `500/4600`
+  episodes for each zip with zero bad actions/errors. Expected remaining
+  extraction time was on the order of 15-20 minutes, then training starts.
 
 Important v15 interpretation:
 
 - v15 is not yet a submission candidate. It is a clean training/probe base.
-- The correct next action is a remote smoke on ks, then a small Dragapult and
-  Alakazam diagnostic over more 0812/0813 data. Watch training logs first;
+- The correct next action is to watch the active remote pilot's training logs
+  after extraction completes. Watch training logs first;
   random/RR should come only after `noPlan`, `noHistory`, and preferably
   `revHist` probes show real action-logit impact.
 - If `reverse_history` remains weak after enough batches, the next structural

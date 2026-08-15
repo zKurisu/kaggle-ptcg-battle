@@ -110,6 +110,18 @@ def build_cmd(args: argparse.Namespace, job: Job) -> list[str]:
         str(args.next_type_weight),
         "--dca-plan-weight",
         str(args.dca_plan_weight),
+        "--history-condition-scale",
+        str(args.history_condition_scale),
+        "--plan-condition-scale",
+        str(args.plan_condition_scale),
+        "--next-type-condition-scale",
+        str(args.next_type_condition_scale),
+        "--dca-condition-scale",
+        str(args.dca_condition_scale),
+        "--known-condition-scale",
+        str(args.known_condition_scale),
+        "--type-prior-scale",
+        str(args.type_prior_scale),
         "--multi-target-weight",
         str(args.multi_target_weight),
         "--damage-counter-weight",
@@ -190,6 +202,12 @@ def main() -> None:
     p.add_argument("--plan-weight", type=float, default=0.35)
     p.add_argument("--next-type-weight", type=float, default=0.25)
     p.add_argument("--dca-plan-weight", type=float, default=0.25)
+    p.add_argument("--history-condition-scale", type=float, default=0.0)
+    p.add_argument("--plan-condition-scale", type=float, default=0.0)
+    p.add_argument("--next-type-condition-scale", type=float, default=0.0)
+    p.add_argument("--dca-condition-scale", type=float, default=0.0)
+    p.add_argument("--known-condition-scale", type=float, default=0.0)
+    p.add_argument("--type-prior-scale", type=float, default=0.0)
     p.add_argument("--multi-target-weight", type=float, default=1.0)
     p.add_argument("--damage-counter-weight", type=float, default=1.0)
     p.add_argument("--winner-only", action="store_true")

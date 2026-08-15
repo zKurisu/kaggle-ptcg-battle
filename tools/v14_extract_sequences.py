@@ -174,6 +174,9 @@ def _make_row(
     encoded,
     action: list[int],
     ledger_feats: np.ndarray,
+    known_opp_cards: np.ndarray,
+    known_opp_counts: np.ndarray,
+    known_opp_mask: np.ndarray,
     prev: dict[str, int | float],
     deck: list[int],
     deck_sig: str,
@@ -201,6 +204,9 @@ def _make_row(
         "feats": np.asarray(encoded.state_feats, dtype=np.float16),
         "state_token_feats": np.asarray(encoded.state_token_feats, dtype=np.float16),
         "ledger_feats": np.asarray(ledger_feats, dtype=np.float16),
+        "known_opp_cards": np.asarray(known_opp_cards, dtype=np.int16),
+        "known_opp_counts": np.asarray(known_opp_counts, dtype=np.float16),
+        "known_opp_mask": np.asarray(known_opp_mask, dtype=np.float16),
         "ot": ot,
         "oc": np.asarray(encoded.opt_card, dtype=np.int16),
         "oc2": np.asarray(encoded.opt_card2, dtype=np.int16),
@@ -311,6 +317,9 @@ def process_zip(
                                     encoded=encoded,
                                     action=action,
                                     ledger_feats=pend["ledger_feats"],
+                                    known_opp_cards=pend["known_opp_cards"],
+                                    known_opp_counts=pend["known_opp_counts"],
+                                    known_opp_mask=pend["known_opp_mask"],
                                     prev=pend["prev"],
                                     deck=decks[pi],
                                     deck_sig=deck_sigs[pi],
@@ -340,14 +349,20 @@ def process_zip(
 
                         obs = pd.get("observation")
                         obs = obs if isinstance(obs, dict) else None
+                        if obs:
+                            ledgers[pi].observe_public_logs(obs)
                         sel = obs.get("select") if obs else None
                         if pd.get("status") == "ACTIVE" and isinstance(sel, dict) and len(sel.get("option", [])) > 0:
                             try:
                                 encoded = encoder.encode(obs)
+                                known_cards, known_counts, known_mask = ledgers[pi].known_opp_arrays()
                                 pending[pi] = {
                                     "obs": obs,
                                     "encoded": encoded,
                                     "ledger_feats": ledgers[pi].features(encoded),
+                                    "known_opp_cards": known_cards,
+                                    "known_opp_counts": known_counts,
+                                    "known_opp_mask": known_mask,
                                     "prev": _prev_event_fields(ledgers[pi]),
                                     "step_index": step_index,
                                     "decision_index": len(player_rows[pi]),
@@ -418,6 +433,9 @@ def _save_rows(dest: Path, rows: list[dict[str, object]], *, future_horizon: int
         feats=stack("feats", np.float16),
         state_token_feats=stack("state_token_feats", np.float16),
         ledger_feats=stack("ledger_feats", np.float16),
+        known_opp_cards=stack("known_opp_cards", np.int16),
+        known_opp_counts=stack("known_opp_counts", np.float16),
+        known_opp_mask=stack("known_opp_mask", np.float16),
         ot=obj("ot"),
         oc=obj("oc"),
         oc2=obj("oc2"),

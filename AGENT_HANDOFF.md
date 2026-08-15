@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-14 22:22 Asia/Shanghai.
+Last updated: 2026-08-15 00:10 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -11251,3 +11251,56 @@ Update 2026-08-15 00:10 CST:
     top1, and current-vs-prefix loss.
   - Then continue structural signal fixes: current action must actually depend
     on useful history/order, not only future auxiliary heads.
+
+Update 2026-08-15 07:45 CST:
+
+- Nightly runner is still active because Alakazam `7f9` is training. Remote
+  time check showed:
+  - active process: `v14seqlong_alakazam_7f9_0801_0813_seqplan`
+  - GPU2 about 36GB used, other GPUs free.
+  - the runner will automatically evaluate random/RR and write `summary.txt`
+    after `7f9` finishes.
+- Completed and tested so far:
+  - `v14seqlong_dragapult_7b80_0801_0813_seqplan`: random g500 only 48.4%
+    (242/500), filtered old-v14 RR mean 0.052. This model is broken/overfit;
+    do not submit.
+  - `v14seqlong_dragapult_cc2e_0801_0813_seqplan`: random g500 82.4%
+    (412/500), filtered old-v14 RR mean 0.212, worst matchups include old
+    Alakazam `7f9`, Crustle, Lopunny, Ogerpon, Marnie. Still not submit-grade.
+  - `v14seqlong_alakazam_5892_0801_0813_seqplan`: random g500 92.8%
+    (464/500), filtered old-v14 RR mean 0.238. It is better than the bad
+    Dragapult runs but still weak against the filtered pool; not submit-grade
+    unless `7f9` also fails and a low-risk ablation is needed.
+- Training-time interpretation from completed jobs:
+  - Full-history/future objectives are now measurable and nonzero, but small
+    sig datasets overfit hard. `7b80` train top1 climbed to 0.85 while val
+    stayed near 0.63 and DCA/multi gaps grew; extra epochs made it worse.
+  - `cc2e` generalizes better than `7b80` but DCA block planning remains
+    insufficient: final val `dcaTop1` about 0.862 and `dplan_f1` about 0.330;
+    random/RR show this is not enough for Dragapult.
+- Tomorrow, do not continue this exact small-sig high-epoch recipe. Resume
+  structural fixes and consider stronger data splitting/regularization or
+  a different objective before more full overnight runs.
+
+## Update: Known-Info / Reveal Ledger 2026-08-15
+
+- Added public-information memory on top of the old BC history features.
+  `SequenceLedger.observe_public_logs()` now consumes engine logs and tracks
+  opponent cards that were publicly revealed or searched into hand.
+- `SequenceBatch` now carries `known_opp_cards`, `known_opp_counts`, and
+  `known_opp_mask`. These are extracted into corpus files, batched during
+  training, and passed through live inference.
+- `SequencePolicyNet` now consumes known-info in two ways:
+  - it can be folded into the ledger summary;
+  - it also has an explicit `known_query` path that conditions action scoring.
+- New training-time diagnostics are available:
+  - `known_opp_rate`, `known_opp_slots_mean`, `known_opp_count_mean`
+  - `known_query_ratio`
+  - `val_noknown=...`
+  - warning `known_info_not_affecting_current`
+- Ablation meanings:
+  - `noact` removes action-ledger history but keeps reveal/known memory.
+  - `noknown` removes reveal/known memory but keeps ordinary action history.
+  - `stateless` removes both explicit history and known memory.
+- If `known_opp_rate` is nontrivial but `noknown_delta≈0`, the model is still
+  not using public reveal information in a measurable way.

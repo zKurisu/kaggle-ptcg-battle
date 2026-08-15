@@ -16,7 +16,7 @@ from ptcg_rl.encoder import (
     STATE_FEAT_DIM,
     STATE_TOKEN_FEAT_DIM,
 )
-from ptcg_rl.seq.constants import DAMAGE_COUNTER_ANY_CONTEXT, FUTURE_PLAN_DIM, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, N_ACTION_TYPES
+from ptcg_rl.seq.constants import DAMAGE_COUNTER_ANY_CONTEXT, FUTURE_PLAN_DIM, KNOWN_OPP_CARDS, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, N_ACTION_TYPES
 from ptcg_rl.seq.constants import TYPE_ABILITY, TYPE_ATTACH, TYPE_ATTACK, TYPE_END, TYPE_EVOLVE, TYPE_PLAY, TYPE_RETREAT
 from ptcg_rl.seq.data import SequenceBatch
 
@@ -75,6 +75,12 @@ class SequencePolicyNet(nn.Module):
         future_plan_dim: int = FUTURE_PLAN_DIM,
         max_seq_len: int = 64,
         next_type_horizon: int = 4,
+        history_condition_scale: float = 0.0,
+        plan_condition_scale: float = 0.0,
+        next_type_condition_scale: float = 0.0,
+        dca_condition_scale: float = 0.0,
+        known_condition_scale: float = 0.0,
+        type_prior_scale: float = 0.0,
     ):
         super().__init__()
         width = int(width)
@@ -90,6 +96,12 @@ class SequencePolicyNet(nn.Module):
         self.future_plan_dim = int(future_plan_dim)
         self.max_seq_len = int(max_seq_len)
         self.next_type_horizon = max(1, int(next_type_horizon))
+        self.history_condition_scale = float(history_condition_scale)
+        self.plan_condition_scale = float(plan_condition_scale)
+        self.next_type_condition_scale = float(next_type_condition_scale)
+        self.dca_condition_scale = float(dca_condition_scale)
+        self.known_condition_scale = float(known_condition_scale)
+        self.type_prior_scale = float(type_prior_scale)
 
         card_dim = width // 4
         attack_dim = max(16, width // 12)
@@ -151,6 +163,12 @@ class SequencePolicyNet(nn.Module):
             nn.LayerNorm(width),
             nn.GELU(),
         )
+        self.known_opp_fc = nn.Sequential(
+            nn.Linear(card_dim + 1, width),
+            nn.LayerNorm(width),
+            nn.GELU(),
+            nn.Linear(width, width),
+        )
         self.decision_fc = nn.Sequential(
             nn.Linear(width * 4, width),
             nn.LayerNorm(width),
@@ -173,6 +191,37 @@ class SequencePolicyNet(nn.Module):
 
         self.option_query = nn.Linear(width, width)
         self.option_key = nn.Linear(width, width)
+        self.history_query = nn.Sequential(
+            nn.Linear(width * 4, width),
+            nn.LayerNorm(width),
+            nn.GELU(),
+            nn.Linear(width, width),
+        )
+        self.plan_query = nn.Sequential(
+            nn.Linear(self.future_plan_dim, width),
+            nn.LayerNorm(width),
+            nn.GELU(),
+            nn.Linear(width, width),
+        )
+        self.next_type_query = nn.Sequential(
+            nn.Linear(N_OPT_TYPES + 1, width),
+            nn.LayerNorm(width),
+            nn.GELU(),
+            nn.Linear(width, width),
+        )
+        self.dca_query = nn.Sequential(
+            nn.Linear(MAX_SELECT_COUNT + 3, width),
+            nn.LayerNorm(width),
+            nn.GELU(),
+            nn.Linear(width, width),
+        )
+        self.known_query = nn.Sequential(
+            nn.Linear(width, width),
+            nn.LayerNorm(width),
+            nn.GELU(),
+            nn.Linear(width, width),
+        )
+        self.action_query_norm = nn.LayerNorm(width)
         self.order_pos_emb = nn.Embedding(MAX_SELECT_COUNT, width)
         self.action_score = nn.Sequential(
             nn.Linear(width * 3, width),
@@ -244,6 +293,12 @@ class SequencePolicyNet(nn.Module):
             "future_plan_dim": self.future_plan_dim,
             "max_seq_len": self.max_seq_len,
             "next_type_horizon": self.next_type_horizon,
+            "history_condition_scale": self.history_condition_scale,
+            "plan_condition_scale": self.plan_condition_scale,
+            "next_type_condition_scale": self.next_type_condition_scale,
+            "dca_condition_scale": self.dca_condition_scale,
+            "known_condition_scale": self.known_condition_scale,
+            "type_prior_scale": self.type_prior_scale,
         }
 
     def forward(self, batch: SequenceBatch) -> dict[str, torch.Tensor]:
@@ -267,6 +322,9 @@ class SequencePolicyNet(nn.Module):
         opt_summary = (opt_emb * opt_mask.unsqueeze(-1)).sum(dim=2) / opt_mask.sum(dim=2, keepdim=True).clamp(min=1.0)
         prev = self._prev_action_embedding(batch)
         ledger = self.ledger_fc(_fit_last_dim(batch.ledger_feats.float(), self.ledger_feat_dim))
+        known_ctx = self._known_opp_context(batch)
+        if self.known_condition_scale != 0.0:
+            ledger = ledger + known_ctx * self.known_condition_scale
 
         step_mask = batch.step_mask.float()
         decision = self.decision_fc(torch.cat([state_pool + state_feat, opt_summary, prev, ledger], dim=-1))
@@ -281,10 +339,55 @@ class SequencePolicyNet(nn.Module):
         seq = self.sequence_encoder(decision, mask=causal)
         seq = self.sequence_norm(seq) * step_mask.unsqueeze(-1)
 
+        plan_logits = self.plan_head(seq)
+        next_type_logits = self.next_type_head(seq).view(
+            bsz,
+            seq_len,
+            self.next_type_horizon,
+            N_OPT_TYPES + 1,
+        )
+        dca_spread_logits = self.dca_spread_head(seq).squeeze(-1)
+        dca_unique_logits = self.dca_unique_head(seq)
+        dca_focus_logits = self.dca_focus_head(seq).squeeze(-1)
+        type_logits = self.type_head(seq)
+        count_logits = self.count_head(seq)
+
+        prefix_count = torch.cumsum(step_mask, dim=1) - step_mask
+        prefix_sum = torch.cumsum(seq * step_mask.unsqueeze(-1), dim=1) - seq * step_mask.unsqueeze(-1)
+        prefix_summary = prefix_sum / prefix_count.clamp(min=1.0).unsqueeze(-1)
+        prefix_summary = prefix_summary * (prefix_count > 0).float().unsqueeze(-1)
+        prev_seq = torch.zeros_like(seq)
+        if seq_len > 1:
+            prev_seq[:, 1:] = seq[:, :-1]
+        hist_ctx = self.history_query(torch.cat([
+            seq,
+            prefix_summary,
+            seq - prefix_summary,
+            seq * prefix_summary + prev_seq,
+        ], dim=-1))
+        plan_ctx = self.plan_query(torch.sigmoid(plan_logits))
+        next_ctx = self.next_type_query(torch.softmax(next_type_logits[:, :, 0, :], dim=-1))
+        dca_ctx = self.dca_query(torch.cat([
+            torch.sigmoid(dca_spread_logits).unsqueeze(-1),
+            torch.softmax(dca_unique_logits, dim=-1),
+            torch.sigmoid(dca_focus_logits).unsqueeze(-1),
+        ], dim=-1))
+        known_ctx_q = self.known_query(known_ctx)
+
         q_base = self.option_query(seq)
+        hist_applied = hist_ctx * self.history_condition_scale
+        plan_applied = plan_ctx * self.plan_condition_scale
+        next_applied = next_ctx * self.next_type_condition_scale
+        dca_applied = dca_ctx * self.dca_condition_scale
+        known_applied = known_ctx_q * self.known_condition_scale
+        q_base = self.action_query_norm(q_base + hist_applied + plan_applied + next_applied + dca_applied + known_applied)
         q = q_base.unsqueeze(2)
         k = self.option_key(opt_emb)
         scores = self.action_score(torch.cat([q.expand_as(k), k, q.expand_as(k) * k], dim=-1)).squeeze(-1)
+        if self.type_prior_scale != 0.0:
+            opt_type = batch.opt_type.long().clamp(0, N_OPT_TYPES)
+            type_prior = F.log_softmax(type_logits.float(), dim=-1).gather(-1, opt_type)
+            scores = scores + type_prior.to(scores.dtype) * self.type_prior_scale
         scores = scores.masked_fill(opt_mask <= 0, NEG_INF)
         order_queries = q_base.unsqueeze(2) + self.order_pos_emb(
             torch.arange(MAX_SELECT_COUNT, device=seq.device)
@@ -300,19 +403,27 @@ class SequencePolicyNet(nn.Module):
         return {
             "action_logits": scores,
             "order_logits": order_scores,
-            "plan_logits": self.plan_head(seq),
-            "next_type_logits": self.next_type_head(seq).view(
-                bsz,
-                seq_len,
-                self.next_type_horizon,
-                N_OPT_TYPES + 1,
-            ),
-            "dca_spread_logits": self.dca_spread_head(seq).squeeze(-1),
-            "dca_unique_logits": self.dca_unique_head(seq),
-            "dca_focus_logits": self.dca_focus_head(seq).squeeze(-1),
+            "plan_logits": plan_logits,
+            "next_type_logits": next_type_logits,
+            "dca_spread_logits": dca_spread_logits,
+            "dca_unique_logits": dca_unique_logits,
+            "dca_focus_logits": dca_focus_logits,
             "outcome_logits": self.outcome_head(seq).squeeze(-1),
-            "type_logits": self.type_head(seq),
-            "count_logits": self.count_head(seq),
+            "type_logits": type_logits,
+            "count_logits": count_logits,
+            "base_query_norm": q_base.detach().float().norm(dim=-1),
+            "history_query_norm": hist_applied.detach().float().norm(dim=-1),
+            "plan_query_norm": plan_applied.detach().float().norm(dim=-1),
+            "next_type_query_norm": next_applied.detach().float().norm(dim=-1),
+            "dca_query_norm": dca_applied.detach().float().norm(dim=-1),
+            "known_query_norm": known_applied.detach().float().norm(dim=-1),
+            "prefix_summary_norm": prefix_summary.detach().float().norm(dim=-1),
+            "known_opp_card_slots": batch.known_opp_mask.detach().float().sum(dim=-1),
+            "type_prior_abs": (
+                type_prior.detach().float().abs().mean(dim=-1)
+                if self.type_prior_scale != 0.0
+                else torch.zeros_like(step_mask, dtype=torch.float32)
+            ),
         }
 
     def _state_tokens(
@@ -352,6 +463,14 @@ class SequencePolicyNet(nn.Module):
             self.type_emb(opt_type + 1),
             feats,
         ], dim=-1))
+
+    def _known_opp_context(self, batch: SequenceBatch) -> torch.Tensor:
+        cards = batch.known_opp_cards.long().clamp(0, N_CARDS + 1)
+        counts = batch.known_opp_counts.float().clamp(0.0, 1.0).unsqueeze(-1)
+        mask = batch.known_opp_mask.float().clamp(0.0, 1.0).unsqueeze(-1)
+        tok = self.known_opp_fc(torch.cat([self.card_emb(cards), counts], dim=-1))
+        denom = mask.sum(dim=2).clamp(min=1.0)
+        return (tok * mask).sum(dim=2) / denom
 
     def _prev_action_embedding(self, batch: SequenceBatch) -> torch.Tensor:
         return self.prev_action_fc(torch.cat([
@@ -572,6 +691,27 @@ def sequence_policy_loss(
     raw_current_weight = (decision_weights[current_step & valid_action].sum() / decision_weights[valid_action].sum().clamp(min=1.0)).detach() if bool(valid_action.any()) else torch.tensor(0.0, device=weights.device)
     action_objective_mass = max(float(cfg.current_action_weight), 0.0) + max(float(cfg.prefix_action_weight), 0.0)
     current_objective_share = max(float(cfg.current_action_weight), 0.0) / max(action_objective_mass, 1e-9)
+
+    def norm_ratio(name: str) -> float:
+        value = outputs.get(name)
+        base = outputs.get("base_query_norm")
+        if value is None or base is None:
+            return 0.0
+        mask = step_mask > 0
+        if not bool(mask.any()):
+            return 0.0
+        ratio = value.float()[mask].mean() / base.float()[mask].mean().clamp(min=1e-6)
+        return float(ratio.detach().cpu())
+
+    def masked_mean(name: str) -> float:
+        value = outputs.get(name)
+        if value is None:
+            return 0.0
+        mask = step_mask > 0
+        if not bool(mask.any()):
+            return 0.0
+        return float(value.float()[mask].mean().detach().cpu())
+
     parts = {
         "loss": float(loss.detach().cpu()),
         "action": float(action_loss.detach().cpu()),
@@ -606,6 +746,14 @@ def sequence_policy_loss(
         "dca_pos_mean": float(((dca_pos.clamp(min=0) * damage_counter.float()).sum() / dca_rows).detach().cpu()),
         "dca_prior_unique_mean": float(((dca_prior_unique * damage_counter.float()).sum() / dca_rows).detach().cpu()),
         "dca_prior_same_mean": float(((dca_prior_same * damage_counter.float()).sum() / dca_rows).detach().cpu()),
+        "hist_query_ratio": norm_ratio("history_query_norm"),
+        "plan_query_ratio": norm_ratio("plan_query_norm"),
+        "next_query_ratio": norm_ratio("next_type_query_norm"),
+        "dca_query_ratio": norm_ratio("dca_query_norm"),
+        "known_query_ratio": norm_ratio("known_query_norm"),
+        "prefix_summary_ratio": norm_ratio("prefix_summary_norm"),
+        "known_opp_slots_mean": masked_mean("known_opp_card_slots"),
+        "type_prior_abs": masked_mean("type_prior_abs"),
     }
     return loss, parts
 
@@ -649,6 +797,9 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
             "history_present_rate": 0.0,
             "ledger_progress": 0.0,
             "prev_nonzero_rate": 0.0,
+            "known_opp_rate": 0.0,
+            "known_opp_slots_mean": 0.0,
+            "known_opp_count_mean": 0.0,
             "plan_mae": 0.0,
             "plan_f1": 0.0,
             "plan_pos_rate": 0.0,
@@ -881,6 +1032,13 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
     seq_full_rate = (seq_lengths >= batch.step_mask.shape[1]).float().mean().item()
     history_present_rate = (seq_lengths > 1).float().mean().item()
     ledger_progress = batch.ledger_feats.float()[step_valid][:, 0].mean().item() if bool(step_valid.any()) and batch.ledger_feats.shape[-1] > 0 else 0.0
+    known_mask = batch.known_opp_mask.float().clamp(0.0, 1.0)
+    known_counts = batch.known_opp_counts.float().clamp(0.0, 1.0)
+    known_slots = known_mask.sum(dim=-1)
+    known_step = step_valid & (known_slots > 0)
+    known_opp_rate = known_step.float().sum().item() / max(float(step_valid.float().sum().item()), 1.0) if bool(step_valid.any()) else 0.0
+    known_opp_slots_mean = known_slots[known_step].mean().item() if bool(known_step.any()) else 0.0
+    known_opp_count_mean = (known_counts.sum(dim=-1)[known_step]).mean().item() if bool(known_step.any()) else 0.0
     prev_nonzero = (
         (batch.prev_type.long() != 0)
         | (batch.prev_card.long() != 0)
@@ -955,6 +1113,9 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
         "history_present_rate": float(history_present_rate),
         "ledger_progress": float(ledger_progress),
         "prev_nonzero_rate": float(prev_nonzero_rate),
+        "known_opp_rate": float(known_opp_rate),
+        "known_opp_slots_mean": float(known_opp_slots_mean),
+        "known_opp_count_mean": float(known_opp_count_mean),
         "plan_mae": float(plan_mae),
         "plan_f1": float(plan_f1),
         "plan_pos_rate": float(plan_pos_rate),

@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 from ptcg_rl.encoder import BOARD_SLOTS, MAX_HAND, OPT_FEAT_DIM, STATE_FEAT_DIM, STATE_TOKEN_FEAT_DIM
-from ptcg_rl.seq.constants import DAMAGE_COUNTER_ANY_CONTEXT, FUTURE_PLAN_DIM, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, TYPE_END
+from ptcg_rl.seq.constants import DAMAGE_COUNTER_ANY_CONTEXT, FUTURE_PLAN_DIM, KNOWN_OPP_CARDS, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, TYPE_END
 from ptcg_rl.seq.constants import TYPE_ABILITY, TYPE_ATTACH, TYPE_ATTACK, TYPE_EVOLVE, TYPE_PLAY, TYPE_RETREAT
 
 _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
@@ -33,6 +33,9 @@ class SequenceBatch:
     feats: torch.Tensor
     state_token_feats: torch.Tensor
     ledger_feats: torch.Tensor
+    known_opp_cards: torch.Tensor
+    known_opp_counts: torch.Tensor
+    known_opp_mask: torch.Tensor
     prev_type: torch.Tensor
     prev_card: torch.Tensor
     prev_card2: torch.Tensor
@@ -175,6 +178,10 @@ class SequenceCorpus:
             "dca_spread_rows": 0,
             "dca_focus_sum": 0.0,
             "dca_unique_sum": 0,
+            "known_opp_rows": 0,
+            "known_opp_slots": 0.0,
+            "known_opp_count_sum": 0.0,
+            "known_opp_max_slots": 0.0,
             "plan_rows": 0,
             "plan_pos_sum": 0,
             "plan_value_sum": 0.0,
@@ -268,6 +275,15 @@ class SequenceCorpus:
                 self.stats["plan_rows"] += 1
                 self.stats["plan_pos_sum"] += int((plan01 > 0.05).sum())
                 self.stats["plan_value_sum"] += float(plan01.mean())
+        if "known_opp_mask" in data:
+            mask = np.asarray(data["known_opp_mask"][i], dtype=np.float32).reshape(-1)
+            counts = np.asarray(data.get("known_opp_counts", np.zeros(len(data["board"]), dtype=object))[i], dtype=np.float32).reshape(-1)
+            slots = float((mask > 0).sum())
+            if slots > 0:
+                self.stats["known_opp_rows"] += 1
+                self.stats["known_opp_slots"] += slots
+                self.stats["known_opp_count_sum"] += float((np.clip(counts, 0.0, 1.0) * mask).sum())
+                self.stats["known_opp_max_slots"] = max(float(self.stats["known_opp_max_slots"]), slots)
         ctx = int(data.get("act_context", np.zeros(len(data["board"]), dtype=np.int16))[i])
         if ctx == DAMAGE_COUNTER_ANY_CONTEXT:
             self.stats["dca_rows"] += 1
@@ -294,6 +310,10 @@ class SequenceCorpus:
         plan_rows = max(float(self.stats.get("plan_rows", 0)), 1.0)
         self.stats["plan_label_density"] = float(self.stats.get("plan_pos_sum", 0)) / (plan_rows * max(self.future_plan_dim, 1))
         self.stats["plan_value_mean"] = float(self.stats.get("plan_value_sum", 0.0)) / plan_rows
+        known_rows = max(float(self.stats.get("known_opp_rows", 0)), 1.0)
+        self.stats["known_opp_rate"] = float(self.stats.get("known_opp_rows", 0)) / kept
+        self.stats["known_opp_slots_mean"] = float(self.stats.get("known_opp_slots", 0.0)) / known_rows
+        self.stats["known_opp_count_mean"] = float(self.stats.get("known_opp_count_sum", 0.0)) / known_rows
         if self._game_lengths:
             lengths = np.asarray(self._game_lengths, dtype=np.float32)
             self.stats["game_len_mean"] = float(lengths.mean())
@@ -341,6 +361,9 @@ class SequenceCorpus:
         feats = np.zeros((*shape_bt, self.state_feat_dim), dtype=np.float32)
         state_token_feats = np.zeros((*shape_bt, BOARD_SLOTS + MAX_HAND, self.state_token_feat_dim), dtype=np.float32)
         ledger_feats = np.zeros((*shape_bt, self.ledger_feat_dim), dtype=np.float32)
+        known_opp_cards = np.zeros((*shape_bt, KNOWN_OPP_CARDS), dtype=np.int64)
+        known_opp_counts = np.zeros((*shape_bt, KNOWN_OPP_CARDS), dtype=np.float32)
+        known_opp_mask = np.zeros((*shape_bt, KNOWN_OPP_CARDS), dtype=np.float32)
         prev_type = np.zeros(shape_bt, dtype=np.int64)
         prev_card = np.zeros(shape_bt, dtype=np.int64)
         prev_card2 = np.zeros(shape_bt, dtype=np.int64)
@@ -396,6 +419,12 @@ class SequenceCorpus:
                     )
                 if "ledger_feats" in data:
                     ledger_feats[bi, local_t] = _fit_1d(data["ledger_feats"][ri], self.ledger_feat_dim, dtype=np.float32)
+                if "known_opp_cards" in data:
+                    known_opp_cards[bi, local_t] = _fit_1d(data["known_opp_cards"][ri], KNOWN_OPP_CARDS, dtype=np.int64)
+                if "known_opp_counts" in data:
+                    known_opp_counts[bi, local_t] = _fit_1d(data["known_opp_counts"][ri], KNOWN_OPP_CARDS, dtype=np.float32)
+                if "known_opp_mask" in data:
+                    known_opp_mask[bi, local_t] = _fit_1d(data["known_opp_mask"][ri], KNOWN_OPP_CARDS, dtype=np.float32)
                 prev_type[bi, local_t] = int(_get_row(data, "prev_type", ri, 0))
                 prev_card[bi, local_t] = int(_get_row(data, "prev_card", ri, 0))
                 prev_card2[bi, local_t] = int(_get_row(data, "prev_card2", ri, 0))
@@ -450,6 +479,9 @@ class SequenceCorpus:
             feats=torch.from_numpy(feats),
             state_token_feats=torch.from_numpy(state_token_feats),
             ledger_feats=torch.from_numpy(ledger_feats),
+            known_opp_cards=torch.from_numpy(known_opp_cards),
+            known_opp_counts=torch.from_numpy(known_opp_counts),
+            known_opp_mask=torch.from_numpy(known_opp_mask),
             prev_type=torch.from_numpy(prev_type),
             prev_card=torch.from_numpy(prev_card),
             prev_card2=torch.from_numpy(prev_card2),

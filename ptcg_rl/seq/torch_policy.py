@@ -5,7 +5,7 @@ import torch
 import warnings
 
 from ptcg_rl.encoder import FastEncoder, OPT_FEAT_DIM, STATE_FEAT_DIM, STATE_TOKEN_FEAT_DIM
-from ptcg_rl.seq.constants import FUTURE_PLAN_DIM, LEDGER_FEAT_DIM, MAX_SELECT_COUNT
+from ptcg_rl.seq.constants import FUTURE_PLAN_DIM, KNOWN_OPP_CARDS, LEDGER_FEAT_DIM, MAX_SELECT_COUNT
 from ptcg_rl.seq.data import SequenceBatch
 from ptcg_rl.seq.features import SequenceLedger
 from ptcg_rl.seq.model import SequencePolicyNet
@@ -65,6 +65,7 @@ class TorchSequencePolicy:
         update_history: bool = True,
         **_: object,
     ) -> list[int]:
+        self.ledger.observe_public_logs(obs_dict)
         encoded = self.encoder.encode(obs_dict)
         row = self._row_from_encoded(encoded)
         rows = (self.buffer + [row])[-self.seq_len:]
@@ -126,6 +127,7 @@ class TorchSequencePolicy:
         return picks
 
     def remember_decision(self, obs_dict: dict, picks: list[int]) -> None:
+        self.ledger.observe_public_logs(obs_dict)
         encoded = self.encoder.encode(obs_dict)
         self.remember_encoded(encoded, picks, self._row_from_encoded(encoded))
 
@@ -157,12 +159,16 @@ class TorchSequencePolicy:
 
     def _row_from_encoded(self, encoded) -> dict[str, np.ndarray | int | float]:
         prev = self.ledger.last_event or {}
+        known_cards, known_counts, known_mask = self.ledger.known_opp_arrays()
         return {
             "board": np.asarray(encoded.board_cards, dtype=np.int64),
             "hand": np.asarray(encoded.hand_cards, dtype=np.int64),
             "feats": np.asarray(encoded.state_feats, dtype=np.float32),
             "state_token_feats": np.asarray(encoded.state_token_feats, dtype=np.float32),
             "ledger_feats": self.ledger.features(encoded),
+            "known_opp_cards": known_cards,
+            "known_opp_counts": known_counts,
+            "known_opp_mask": known_mask,
             "prev_type": int(prev.get("type", 0) or 0),
             "prev_card": int(prev.get("card", 0) or 0),
             "prev_card2": int(prev.get("card2", 0) or 0),
@@ -188,6 +194,9 @@ class TorchSequencePolicy:
         feats = np.zeros((1, seq_len, self.state_feat_dim), dtype=np.float32)
         stf = np.zeros((1, seq_len, 37, self.state_token_feat_dim), dtype=np.float32)
         ledger = np.zeros((1, seq_len, self.ledger_feat_dim), dtype=np.float32)
+        known_opp_cards = np.zeros((1, seq_len, KNOWN_OPP_CARDS), dtype=np.int64)
+        known_opp_counts = np.zeros((1, seq_len, KNOWN_OPP_CARDS), dtype=np.float32)
+        known_opp_mask = np.zeros((1, seq_len, KNOWN_OPP_CARDS), dtype=np.float32)
         prev_type = np.zeros((1, seq_len), dtype=np.int64)
         prev_card = np.zeros((1, seq_len), dtype=np.int64)
         prev_card2 = np.zeros((1, seq_len), dtype=np.int64)
@@ -208,6 +217,9 @@ class TorchSequencePolicy:
             feats[0, i] = _fit_1d(row["feats"], self.state_feat_dim, np.float32)
             stf[0, i] = _fit_2d(row["state_token_feats"], 37, self.state_token_feat_dim)
             ledger[0, i] = _fit_1d(row["ledger_feats"], self.ledger_feat_dim, np.float32)
+            known_opp_cards[0, i] = _fit_1d(row.get("known_opp_cards", []), KNOWN_OPP_CARDS, np.int64)
+            known_opp_counts[0, i] = _fit_1d(row.get("known_opp_counts", []), KNOWN_OPP_CARDS, np.float32)
+            known_opp_mask[0, i] = _fit_1d(row.get("known_opp_mask", []), KNOWN_OPP_CARDS, np.float32)
             prev_type[0, i] = int(row["prev_type"])
             prev_card[0, i] = int(row["prev_card"])
             prev_card2[0, i] = int(row["prev_card2"])
@@ -236,6 +248,9 @@ class TorchSequencePolicy:
             feats=torch.from_numpy(feats),
             state_token_feats=torch.from_numpy(stf),
             ledger_feats=torch.from_numpy(ledger),
+            known_opp_cards=torch.from_numpy(known_opp_cards),
+            known_opp_counts=torch.from_numpy(known_opp_counts),
+            known_opp_mask=torch.from_numpy(known_opp_mask),
             prev_type=torch.from_numpy(prev_type),
             prev_card=torch.from_numpy(prev_card),
             prev_card2=torch.from_numpy(prev_card2),

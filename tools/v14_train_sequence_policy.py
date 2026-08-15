@@ -93,6 +93,9 @@ def _signal_stats_line(stats: dict[str, object]) -> str:
         ("capable_multi_rate", 3),
         ("plan_label_density", 3),
         ("plan_value_mean", 3),
+        ("known_opp_rate", 3),
+        ("known_opp_slots_mean", 2),
+        ("known_opp_count_mean", 2),
         ("dca_rate", 3),
         ("dca_groups", 0),
         ("dca_spread_rate", 3),
@@ -144,6 +147,40 @@ def _no_action_history_batch(batch: SequenceBatch) -> SequenceBatch:
         "prev_count",
     ):
         values[name] = torch.zeros_like(values[name])
+    return SequenceBatch(**values)
+
+
+def _stateless_current_batch(batch: SequenceBatch) -> SequenceBatch:
+    """Keep only current board/hand/options and remove all explicit history ledgers."""
+    current = _current_only_batch(batch)
+    values = {field.name: getattr(current, field.name) for field in dataclasses.fields(current)}
+    for name in (
+        "ledger_feats",
+        "prev_type",
+        "prev_card",
+        "prev_card2",
+        "prev_attack",
+        "prev_context",
+        "prev_select_type",
+        "prev_count",
+        "known_opp_cards",
+        "known_opp_counts",
+        "known_opp_mask",
+    ):
+        values[name] = torch.zeros_like(values[name])
+    return SequenceBatch(**values)
+
+
+def _no_known_info_batch(batch: SequenceBatch) -> SequenceBatch:
+    """Remove public known-opponent-hand memory while keeping other history."""
+    values = {field.name: getattr(batch, field.name) for field in dataclasses.fields(batch)}
+    values["known_opp_cards"] = torch.zeros_like(values["known_opp_cards"])
+    values["known_opp_counts"] = torch.zeros_like(values["known_opp_counts"])
+    values["known_opp_mask"] = torch.zeros_like(values["known_opp_mask"])
+    ledger = values["ledger_feats"].clone()
+    if ledger.shape[-1] > 80:
+        ledger[..., 80:] = 0
+    values["ledger_feats"] = ledger
     return SequenceBatch(**values)
 
 
@@ -239,12 +276,26 @@ def _current_ablation_metrics(
         full_outputs=full_outputs,
         ab_outputs=model(current_only),
     ))
+    stateless = _stateless_current_batch(batch)
+    out.update(_current_logit_compare(
+        name="stateless",
+        batch=stateless,
+        full_outputs=full_outputs,
+        ab_outputs=model(stateless),
+    ))
     no_action = _no_action_history_batch(batch)
     out.update(_current_logit_compare(
         name="noact",
         batch=batch,
         full_outputs=full_outputs,
         ab_outputs=model(no_action),
+    ))
+    no_known = _no_known_info_batch(batch)
+    out.update(_current_logit_compare(
+        name="noknown",
+        batch=batch,
+        full_outputs=full_outputs,
+        ab_outputs=model(no_known),
     ))
     reversed_prefix = _reversed_prefix_batch(batch)
     out.update(_current_logit_compare(
@@ -277,6 +328,8 @@ def _signal_warnings(
         warnings.append("current_step_weaker_than_prefix")
     if val_acc.get("cur1_agree", 0.0) > 0.90 and abs(val_acc.get("cur1_delta", 0.0)) < 0.02:
         warnings.append("history_not_affecting_current")
+    if val_acc.get("stateless_agree", 0.0) > 0.88 and abs(val_acc.get("stateless_delta", 0.0)) < 0.03:
+        warnings.append("stateless_current_matches_full")
     if val_acc.get("noact_agree", 0.0) > 0.92 and abs(val_acc.get("noact_delta", 0.0)) < 0.02:
         warnings.append("action_ledger_not_affecting_current")
     if val_acc.get("revhist_agree", 0.0) > 0.92 and abs(val_acc.get("revhist_delta", 0.0)) < 0.02:
@@ -289,6 +342,16 @@ def _signal_warnings(
         warnings.append("history_order_not_affecting_future")
     if val_acc.get("plan_pos_rate", 0.0) > 0.10 and val_acc.get("plan_f1", 0.0) < 0.20:
         warnings.append("future_plan_weak")
+    if args.history_condition_scale > 0.0 and val_loss.get("hist_query_ratio", 0.0) < 0.05:
+        warnings.append(f"history_condition_inactive={val_loss.get('hist_query_ratio', 0.0):.3f}")
+    if args.plan_condition_scale > 0.0 and val_loss.get("plan_query_ratio", 0.0) < 0.05:
+        warnings.append(f"plan_condition_inactive={val_loss.get('plan_query_ratio', 0.0):.3f}")
+    if args.next_type_condition_scale > 0.0 and val_loss.get("next_query_ratio", 0.0) < 0.05:
+        warnings.append(f"next_condition_inactive={val_loss.get('next_query_ratio', 0.0):.3f}")
+    if args.known_condition_scale > 0.0 and val_loss.get("known_query_ratio", 0.0) < 0.03 and val_acc.get("known_opp_rate", 0.0) > 0.01:
+        warnings.append(f"known_condition_inactive={val_loss.get('known_query_ratio', 0.0):.3f}")
+    if val_acc.get("known_opp_rate", 0.0) > 0.05 and val_acc.get("noknown_agree", 0.0) > 0.95 and abs(val_acc.get("noknown_delta", 0.0)) < 0.02:
+        warnings.append("known_info_not_affecting_current")
     if val_acc.get("next_type_n", 0.0) > 50 and val_acc.get("next_type_acc", 0.0) < 0.45:
         warnings.append(f"next_type_weak={val_acc.get('next_type_acc', 0.0):.3f}")
     if val_acc.get("ambig_type_rate", 0.0) > 0.10 and val_acc.get("ambig_type_top1", 0.0) + 0.05 < val_acc.get("top1", 0.0):
@@ -409,6 +472,8 @@ def run_epoch(
                 f"cur={ma.get('cur_top1', 0):.3f}/{ma.get('cur_type_acc', 0):.3f}/"
                 f"{mp.get('current_weight_share', 0):.2f}/{mp.get('current_row_share', 0):.2f} "
                 f"seq={ma.get('seq_len_mean', 0):.1f}/{ma.get('seq_full_rate', 0):.2f}/{ma.get('history_present_rate', 0):.2f} "
+                f"known={ma.get('known_opp_rate', 0):.2f}/{ma.get('known_opp_slots_mean', 0):.1f}/"
+                f"{mp.get('known_opp_slots_mean', 0):.1f} "
                 f"setF1={ma.get('set_f1', 0):.3f} ordAcc={ma.get('order_acc', 0):.3f} "
                 f"atype={ma.get('action_type_acc', 0):.3f} "
                 f"pln={ma.get('plan_f1', 0):.3f}/{ma.get('plan_mae', 0):.3f}/"
@@ -437,6 +502,9 @@ def run_epoch(
                 f"curA={mp.get('current_action', 0):.3f}/{mp.get('prefix_action', 0):.3f} "
                 f"curHead={mp.get('action_current_head', 0):.3f}/{mp.get('action_prefix_head', 0):.3f} "
                 f"dcaA={mp.get('dca_action', 0):.3f}/{mp.get('non_dca_action', 0):.3f} "
+                f"cond=h{mp.get('hist_query_ratio', 0):.2f}/p{mp.get('plan_query_ratio', 0):.2f}/"
+                f"n{mp.get('next_query_ratio', 0):.2f}/d{mp.get('dca_query_ratio', 0):.2f}/"
+                f"k{mp.get('known_query_ratio', 0):.2f}/t{mp.get('type_prior_abs', 0):.2f} "
                 f"out={ma.get('outcome_acc', 0):.3f}/{ma.get('outcome_brier', 0):.3f}/"
                 f"{ma.get('outcome_pos_rate', 0):.2f}->{ma.get('outcome_pred_pos_rate', 0):.2f} "
                 f"types=p{ma.get('play_top1', 0):.2f},at{ma.get('attach_top1', 0):.2f},"
@@ -525,6 +593,18 @@ def main() -> None:
                    help="predict future action-type sequence from each prefix state")
     p.add_argument("--dca-plan-weight", type=float, default=0.25,
                    help="predict block-level DamageCounterAny spread/unique/focus labels")
+    p.add_argument("--history-condition-scale", type=float, default=0.0,
+                   help="inject previous causal sequence state into the live action scorer")
+    p.add_argument("--plan-condition-scale", type=float, default=0.0,
+                   help="inject predicted future-plan embedding into the live action scorer")
+    p.add_argument("--next-type-condition-scale", type=float, default=0.0,
+                   help="inject predicted next-action-type embedding into the live action scorer")
+    p.add_argument("--dca-condition-scale", type=float, default=0.0,
+                   help="inject predicted DamageCounterAny block-plan embedding into the action scorer")
+    p.add_argument("--known-condition-scale", type=float, default=0.0,
+                   help="inject public known-opponent-hand memory into the action scorer")
+    p.add_argument("--type-prior-scale", type=float, default=0.0,
+                   help="add predicted action-type log-probability as an option-level prior")
     p.add_argument("--multi-target-weight", type=float, default=1.0,
                    help="boost decision losses on target_k>1 rows; default keeps historical weighting")
     p.add_argument("--damage-counter-weight", type=float, default=1.0,
@@ -581,9 +661,21 @@ def main() -> None:
         ledger_feat_dim=LEDGER_FEAT_DIM,
         future_plan_dim=FUTURE_PLAN_DIM,
         max_seq_len=args.seq_len,
+        history_condition_scale=args.history_condition_scale,
+        plan_condition_scale=args.plan_condition_scale,
+        next_type_condition_scale=args.next_type_condition_scale,
+        dca_condition_scale=args.dca_condition_scale,
+        known_condition_scale=args.known_condition_scale,
+        type_prior_scale=args.type_prior_scale,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"Model params: {n_params/1e6:.2f}M device={device}", flush=True)
+    print(
+        f"Model params: {n_params/1e6:.2f}M device={device} "
+        f"condition_scales=hist:{args.history_condition_scale} plan:{args.plan_condition_scale} "
+        f"next:{args.next_type_condition_scale} dca:{args.dca_condition_scale} "
+        f"known:{args.known_condition_scale} type:{args.type_prior_scale}",
+        flush=True,
+    )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     loss_cfg = SequenceLossConfig(
@@ -646,10 +738,16 @@ def main() -> None:
             f"val_curRow={val_loss.get('current_row_share', 0):.3f} "
             f"val_seq={val_acc.get('seq_len_mean', 0):.1f}/{val_acc.get('seq_full_rate', 0):.2f}/"
             f"{val_acc.get('history_present_rate', 0):.2f} "
+            f"val_known={val_acc.get('known_opp_rate', 0):.3f}/{val_acc.get('known_opp_slots_mean', 0):.2f}/"
+            f"{val_acc.get('known_opp_count_mean', 0):.2f} "
             f"val_cur1={val_acc.get('cur1_top1', 0):.3f}/{val_acc.get('cur1_delta', 0):+.3f}/"
             f"{val_acc.get('cur1_agree', 0):.3f}/{val_acc.get('cur1_kl', 0):.3f} "
+            f"val_stateless={val_acc.get('stateless_top1', 0):.3f}/{val_acc.get('stateless_delta', 0):+.3f}/"
+            f"{val_acc.get('stateless_agree', 0):.3f}/{val_acc.get('stateless_kl', 0):.3f} "
             f"val_noact={val_acc.get('noact_top1', 0):.3f}/{val_acc.get('noact_delta', 0):+.3f}/"
             f"{val_acc.get('noact_agree', 0):.3f}/{val_acc.get('noact_kl', 0):.3f} "
+            f"val_noknown={val_acc.get('noknown_top1', 0):.3f}/{val_acc.get('noknown_delta', 0):+.3f}/"
+            f"{val_acc.get('noknown_agree', 0):.3f}/{val_acc.get('noknown_kl', 0):.3f} "
             f"val_revhist={val_acc.get('revhist_top1', 0):.3f}/{val_acc.get('revhist_delta', 0):+.3f}/"
             f"{val_acc.get('revhist_agree', 0):.3f}/{val_acc.get('revhist_kl', 0):.3f} "
             f"val_plan={val_loss.get('plan', 0):.4f} val_type={val_acc.get('type_acc', 0):.3f} "
@@ -686,6 +784,9 @@ def main() -> None:
             f"val_curA={val_loss.get('current_action', 0):.3f}/{val_loss.get('prefix_action', 0):.3f} "
             f"val_curHead={val_loss.get('action_current_head', 0):.3f}/{val_loss.get('action_prefix_head', 0):.3f} "
             f"val_dcaA={val_loss.get('dca_action', 0):.3f}/{val_loss.get('non_dca_action', 0):.3f} "
+            f"val_cond=h{val_loss.get('hist_query_ratio', 0):.2f}/p{val_loss.get('plan_query_ratio', 0):.2f}/"
+            f"n{val_loss.get('next_query_ratio', 0):.2f}/d{val_loss.get('dca_query_ratio', 0):.2f}/"
+            f"k{val_loss.get('known_query_ratio', 0):.2f}/t{val_loss.get('type_prior_abs', 0):.2f} "
             f"val_out={val_acc.get('outcome_acc', 0):.3f}/{val_acc.get('outcome_brier', 0):.3f}/"
             f"{val_acc.get('outcome_pos_rate', 0):.2f}->{val_acc.get('outcome_pred_pos_rate', 0):.2f} "
             f"val_types=p{val_acc.get('play_top1', 0):.2f},at{val_acc.get('attach_top1', 0):.2f},"
@@ -708,8 +809,12 @@ def main() -> None:
             f"cur_gap={train_acc.get('cur_top1', 0) - val_acc.get('cur_top1', 0):.3f} "
             f"cur1_delta={val_acc.get('cur1_delta', 0):+.3f} "
             f"cur1_agree={val_acc.get('cur1_agree', 0):.3f} "
+            f"stateless_delta={val_acc.get('stateless_delta', 0):+.3f} "
+            f"stateless_agree={val_acc.get('stateless_agree', 0):.3f} "
             f"noact_delta={val_acc.get('noact_delta', 0):+.3f} "
             f"noact_agree={val_acc.get('noact_agree', 0):.3f} "
+            f"noknown_delta={val_acc.get('noknown_delta', 0):+.3f} "
+            f"noknown_agree={val_acc.get('noknown_agree', 0):.3f} "
             f"revhist_delta={val_acc.get('revhist_delta', 0):+.3f} "
             f"revhist_agree={val_acc.get('revhist_agree', 0):.3f} "
             f"noact_nextD={val_acc.get('noact_next_delta', 0):+.3f} "
@@ -727,6 +832,11 @@ def main() -> None:
             f"multi_weight_share={val_loss.get('multi_weight_share', 0):.3f} "
             f"current_weight_share={val_loss.get('current_weight_share', 0):.3f} "
             f"current_row_share={val_loss.get('current_row_share', 0):.3f} "
+            f"known_rate={val_acc.get('known_opp_rate', 0):.3f} "
+            f"known_slots={val_acc.get('known_opp_slots_mean', 0):.2f} "
+            f"cond=h{val_loss.get('hist_query_ratio', 0):.3f}/p{val_loss.get('plan_query_ratio', 0):.3f}/"
+            f"n{val_loss.get('next_query_ratio', 0):.3f}/d{val_loss.get('dca_query_ratio', 0):.3f}/"
+            f"k{val_loss.get('known_query_ratio', 0):.3f}/t{val_loss.get('type_prior_abs', 0):.3f} "
             f"warnings={','.join(warnings) if warnings else 'none'}",
             flush=True,
         )

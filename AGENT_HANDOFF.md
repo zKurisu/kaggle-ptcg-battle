@@ -158,6 +158,28 @@ New route mechanism:
     Dragapult ex evolution and retreating when Dragapult ex is benched behind
     a non-attacker active.
 
+Active route+count long run 2026-08-15:
+
+- Remote script: `ks:/tmp/run_v15_route_count_long_20260815.sh`.
+- Runner log: `logs/v15_route_count_long_20260815.nohup.log`.
+- Train logs/checkpoints/gates:
+  `logs/v15_route_count_long_20260815/`,
+  `checkpoints/v15_route_count_long_20260815/`.
+- Models:
+  - `dragapult_cc2e_route_count_w512.pt` on GPU 0.
+  - `alakazam_7f9_route_count_w512.pt` on GPU 1.
+- Corpus: `data/seq_corpus_v15_0812_0813`, all score bands.
+- Config: width 512, layers 4, heads 8, batch 1024, epochs 8,
+  `within_type_weight=0.45`, `route_weight=1.10`, `count_weight=0.45`.
+- After training, the script automatically runs 300-game random gates. Any
+  failure writes a readable trace plus `first_loss_random_script.json`.
+- First epoch Alakazam already showed the count/route fix is active:
+  `val_top1=0.705`, `val_route=0.895`, `val_count=0.978`,
+  `val_optCount=0.862`, `noHist=-0.039/0.855/0.13855`,
+  `revHist=-0.073/0.833/0.16523`, `noPlan=-0.064/0.819/0.19623`.
+  Remaining training warnings were attach/attack precision and weak known-card
+  use, not optional count failure.
+
 Important v15 interpretation:
 
 - v15 is not yet a submission candidate. It is a clean training/probe base.

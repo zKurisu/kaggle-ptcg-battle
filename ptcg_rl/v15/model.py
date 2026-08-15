@@ -19,6 +19,7 @@ from ptcg_rl.encoder import (
 from ptcg_rl.v15.constants import (
     DEFAULT_PLAN_STEPS,
     KNOWN_OPP_CARDS,
+    MAX_SELECT_COUNT,
     N_ACTION_TYPES,
     N_PLAN_MODES,
     TYPE_ABILITY,
@@ -37,6 +38,9 @@ NEG_INF = -1e4
 @dataclass
 class V15LossConfig:
     action_weight: float = 1.0
+    within_type_weight: float = 0.30
+    route_weight: float = 0.70
+    count_weight: float = 0.25
     multi_weight: float = 0.20
     type_weight: float = 0.12
     history_type_weight: float = 0.10
@@ -197,6 +201,7 @@ class V15PlanPolicyNet(nn.Module):
         self.known_type_head = nn.Linear(width, N_ACTION_TYPES)
         self.context_head = nn.Linear(width, 128)
         self.mode_head = nn.Linear(width, N_PLAN_MODES)
+        self.count_head = nn.Linear(width, MAX_SELECT_COUNT + 1)
         self.continue_head = nn.Linear(width, 1)
         self.outcome_head = nn.Linear(width, 1)
         self.plan_step_emb = nn.Embedding(self.plan_steps, width)
@@ -366,6 +371,7 @@ class V15PlanPolicyNet(nn.Module):
             "known_type_logits": known_type_logits,
             "context_logits": self.context_head(plan_latent),
             "mode_logits": self.mode_head(plan_latent),
+            "count_logits": self.count_head(plan_latent),
             "continue_logits": self.continue_head(plan_latent).squeeze(-1),
             "outcome_logits": self.outcome_head(plan_latent).squeeze(-1),
             "plan_latent": plan_latent,
@@ -389,6 +395,32 @@ def _masked_plan_ce(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tens
     return (ce * w).sum() / w.sum().clamp_min(1e-6)
 
 
+def _within_type_action_loss(outputs: dict[str, torch.Tensor], batch: V15Batch, weight: torch.Tensor) -> torch.Tensor:
+    valid = batch.target_first >= 0
+    if not bool(valid.any()):
+        return outputs["action_logits"].sum() * 0.0
+    target_type = batch.target_type.clamp(0, N_ACTION_TYPES - 1)
+    same_type = (batch.opt_type == target_type.unsqueeze(1)) & (batch.option_mask > 0)
+    same_count = same_type.sum(dim=1)
+    focus = valid & (same_count >= 2)
+    if not bool(focus.any()):
+        return outputs["action_logits"].sum() * 0.0
+    logits = outputs["action_logits"].masked_fill(~same_type, NEG_INF)
+    ce = F.cross_entropy(logits[focus], batch.target_first[focus], reduction="none")
+    return _weighted_mean(ce, weight[focus])
+
+
+def _route_loss(outputs: dict[str, torch.Tensor], batch: V15Batch, weight: torch.Tensor) -> torch.Tensor:
+    focus = batch.route_mask > 0
+    if not bool(focus.any()):
+        return outputs["action_logits"].sum() * 0.0
+    route = (batch.route_target_multi > 0) & (batch.option_mask > 0)
+    logp = torch.log_softmax(outputs["action_logits"], dim=-1)
+    route_log_mass = torch.logsumexp(logp.masked_fill(~route, NEG_INF), dim=-1)
+    loss = -route_log_mass[focus]
+    return _weighted_mean(loss, weight[focus])
+
+
 def v15_policy_loss(outputs: dict[str, torch.Tensor], batch: V15Batch, cfg: V15LossConfig) -> tuple[torch.Tensor, dict[str, float]]:
     weight = batch.sample_weight.float()
     valid = batch.target_first >= 0
@@ -397,6 +429,10 @@ def v15_policy_loss(outputs: dict[str, torch.Tensor], batch: V15Batch, cfg: V15L
         action_loss = _weighted_mean(action_ce, weight[valid])
     else:
         action_loss = outputs["action_logits"].sum() * 0.0
+    within_type_loss = _within_type_action_loss(outputs, batch, weight)
+    route_loss = _route_loss(outputs, batch, weight)
+    count_target = batch.target_multi.sum(dim=1).long().clamp(0, MAX_SELECT_COUNT)
+    count_loss = _weighted_mean(F.cross_entropy(outputs["count_logits"], count_target, reduction="none"), weight)
     bce = F.binary_cross_entropy_with_logits(outputs["multi_logits"], batch.target_multi, reduction="none")
     bce = (bce * batch.option_mask.float()).sum(dim=1) / batch.option_mask.sum(dim=1).clamp_min(1.0)
     multi_loss = _weighted_mean(bce, weight)
@@ -414,6 +450,9 @@ def v15_policy_loss(outputs: dict[str, torch.Tensor], batch: V15Batch, cfg: V15L
     outcome_loss = _weighted_mean(F.binary_cross_entropy_with_logits(outputs["outcome_logits"], batch.won.float(), reduction="none"), weight)
     total = (
         cfg.action_weight * action_loss
+        + cfg.within_type_weight * within_type_loss
+        + cfg.route_weight * route_loss
+        + cfg.count_weight * count_loss
         + cfg.multi_weight * multi_loss
         + cfg.type_weight * type_loss
         + cfg.history_type_weight * history_type_loss
@@ -430,6 +469,9 @@ def v15_policy_loss(outputs: dict[str, torch.Tensor], batch: V15Batch, cfg: V15L
     parts = {
         "loss": float(total.detach().item()),
         "action": float(action_loss.detach().item()),
+        "within_type": float(within_type_loss.detach().item()),
+        "route": float(route_loss.detach().item()),
+        "count": float(count_loss.detach().item()),
         "multi": float(multi_loss.detach().item()),
         "type": float(type_loss.detach().item()),
         "hist_type": float(history_type_loss.detach().item()),
@@ -455,10 +497,42 @@ def v15_accuracy(outputs: dict[str, torch.Tensor], batch: V15Batch) -> dict[str,
         out["top1"] = float((pred[valid] == batch.target_first[valid]).float().mean().item())
         top3 = outputs["action_logits"].topk(k=min(3, outputs["action_logits"].shape[-1]), dim=-1).indices
         out["top3"] = float((top3[valid] == batch.target_first[valid].unsqueeze(-1)).any(dim=-1).float().mean().item())
+        same_type = (batch.opt_type == batch.target_type.clamp(0, N_ACTION_TYPES - 1).unsqueeze(1)) & (batch.option_mask > 0)
+        same_count = same_type.sum(dim=1)
+        focus = valid & (same_count >= 2)
+        if bool(focus.any()):
+            same_pred = outputs["action_logits"].masked_fill(~same_type, NEG_INF).argmax(dim=-1)
+            out["within_type_top1"] = float((same_pred[focus] == batch.target_first[focus]).float().mean().item())
+            out["within_type_rate"] = float(focus.float().mean().item())
+        else:
+            same_pred = outputs["action_logits"].masked_fill(~same_type, NEG_INF).argmax(dim=-1)
+            out["within_type_top1"] = 0.0
+            out["within_type_rate"] = 0.0
     else:
         out["top1"] = 0.0
         out["top3"] = 0.0
+        same_pred = outputs["action_logits"].argmax(dim=-1)
+        same_type = batch.option_mask > 0
+        same_count = same_type.sum(dim=1)
+        out["within_type_top1"] = 0.0
+        out["within_type_rate"] = 0.0
     target_type = batch.target_type.clamp(0, N_ACTION_TYPES - 1)
+    route_focus = batch.route_mask > 0
+    route_target = (batch.route_target_multi > 0) & (batch.option_mask > 0)
+    if bool(route_focus.any()):
+        out["route_top1"] = float(route_target[torch.arange(route_target.shape[0], device=route_target.device), pred][route_focus].float().mean().item())
+        label_hit = route_target[torch.arange(route_target.shape[0], device=route_target.device), batch.target_first.clamp_min(0)]
+        out["route_label_hit"] = float(label_hit[route_focus].float().mean().item())
+        out["route_rate"] = float(route_focus.float().mean().item())
+    else:
+        out["route_top1"] = 0.0
+        out["route_label_hit"] = 0.0
+        out["route_rate"] = 0.0
+    count_target = batch.target_multi.sum(dim=1).long().clamp(0, MAX_SELECT_COUNT)
+    count_pred = outputs["count_logits"].argmax(dim=-1)
+    out["count_acc"] = float((count_pred == count_target).float().mean().item())
+    optional = batch.max_count > batch.min_count
+    out["optional_count_acc"] = float((count_pred[optional] == count_target[optional]).float().mean().item()) if bool(optional.any()) else 0.0
     out["type_acc"] = float((outputs["type_logits"].argmax(dim=-1) == target_type).float().mean().item())
     out["history_type_acc"] = float((outputs["history_type_logits"].argmax(dim=-1) == target_type).float().mean().item())
     out["known_type_acc"] = float((outputs["known_type_logits"].argmax(dim=-1) == target_type).float().mean().item())
@@ -497,6 +571,8 @@ def v15_accuracy(outputs: dict[str, torch.Tensor], batch: V15Batch) -> dict[str,
     ):
         mask = valid & (batch.target_type == typ)
         out[f"{name}_top1"] = float((pred[mask] == batch.target_first[mask]).float().mean().item()) if bool(mask.any()) else 0.0
+        focus = mask & (same_count >= 2)
+        out[f"{name}_within_top1"] = float((same_pred[focus] == batch.target_first[focus]).float().mean().item()) if bool(focus.any()) else 0.0
         out[f"{name}_n"] = float(mask.sum().item())
     return out
 

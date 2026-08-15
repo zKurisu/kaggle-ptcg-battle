@@ -90,10 +90,22 @@ def _signal_health(val: dict[str, float], stats: dict[str, float | int]) -> list
         warnings.append("known_type_weak")
     if val.get("attach_n", 0.0) > 20 and val.get("attach_top1", 0.0) < 0.45:
         warnings.append("attach_decision_weak")
+    if val.get("attach_n", 0.0) > 20 and val.get("attach_within_top1", 0.0) < 0.55:
+        warnings.append("attach_within_type_weak")
     if val.get("evolve_n", 0.0) > 20 and val.get("evolve_top1", 0.0) < 0.45:
         warnings.append("evolve_decision_weak")
+    if val.get("evolve_n", 0.0) > 20 and val.get("evolve_within_top1", 0.0) < 0.55:
+        warnings.append("evolve_within_type_weak")
     if val.get("attack_n", 0.0) > 20 and val.get("attack_top1", 0.0) < 0.55:
         warnings.append("attack_decision_weak")
+    if val.get("attack_n", 0.0) > 20 and val.get("attack_within_top1", 0.0) < 0.65:
+        warnings.append("attack_within_type_weak")
+    if val.get("route_rate", 0.0) > 0.02 and val.get("route_top1", 0.0) < 0.75:
+        warnings.append("route_top1_weak")
+    if val.get("route_rate", 0.0) > 0.02 and val.get("route_label_hit", 1.0) < 0.55:
+        warnings.append("route_labels_conflict_with_mainline")
+    if val.get("optional_count_acc", 1.0) < 0.65:
+        warnings.append("optional_count_weak")
     return sorted(set(warnings))
 
 
@@ -179,6 +191,8 @@ def main() -> None:
     p.add_argument("--type-prior-scale", type=float, default=1.50)
     p.add_argument("--history-type-prior-scale", type=float, default=0.35)
     p.add_argument("--known-type-prior-scale", type=float, default=0.25)
+    p.add_argument("--route-prior-scale", type=float, default=1.50,
+                   help="live inference prior added to explicit mainline route options")
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--epochs", type=int, default=4)
     p.add_argument("--lr", type=float, default=2e-4)
@@ -274,7 +288,9 @@ def main() -> None:
                 print(
                     f"epoch {epoch}/{args.epochs} batch {bi}/{total_batches} "
                     f"loss={_fmt(mp,'loss')} act={_fmt(mp,'action')} planT={_fmt(mp,'plan_type')} "
-                    f"top1={_fmt(ma,'top1')} top3={_fmt(ma,'top3')} type={_fmt(ma,'type_acc')} "
+                    f"top1={_fmt(ma,'top1')} top3={_fmt(ma,'top3')} within={_fmt(ma,'within_type_top1')} "
+                    f"route={_fmt(ma,'route_top1')} count={_fmt(ma,'count_acc')} optCount={_fmt(ma,'optional_count_acc')} "
+                    f"type={_fmt(ma,'type_acc')} "
                     f"histType={_fmt(ma,'history_type_acc')} knownType={_fmt(ma,'known_type_acc')} "
                     f"contF1={_fmt(ma,'continue_f1')} planType={_fmt(ma,'plan_type_acc')} "
                     f"multiF1={_fmt(ma,'multi_f1')} grad={float(grad):.2f}{_mem(device)} eta={eta:.0f}s",
@@ -298,6 +314,9 @@ def main() -> None:
             f"done epoch {epoch}/{args.epochs} "
             f"train_loss={_fmt(train,'loss')} train_top1={_fmt(train,'top1')} "
             f"val_loss={_fmt(val,'loss')} val_top1={_fmt(val,'top1')} val_top3={_fmt(val,'top3')} "
+            f"val_within={_fmt(val,'within_type_top1')} within_rate={_fmt(val,'within_type_rate')} "
+            f"val_route={_fmt(val,'route_top1')} route_label={_fmt(val,'route_label_hit')} route_rate={_fmt(val,'route_rate')} "
+            f"val_count={_fmt(val,'count_acc')} val_optCount={_fmt(val,'optional_count_acc')} "
             f"val_type={_fmt(val,'type_acc')} val_histType={_fmt(val,'history_type_acc')} "
             f"val_knownType={_fmt(val,'known_type_acc')} val_contF1={_fmt(val,'continue_f1')} "
             f"val_planType={_fmt(val,'plan_type_acc')} val_planCard={_fmt(val,'plan_card_acc')} "
@@ -319,6 +338,14 @@ def main() -> None:
             f"attack={_fmt(val,'attack_top1')} end={_fmt(val,'end_top1')}",
             flush=True,
         )
+        print(
+            "within_type "
+            f"play={_fmt(val,'play_within_top1')} attach={_fmt(val,'attach_within_top1')} "
+            f"evolve={_fmt(val,'evolve_within_top1')} ability={_fmt(val,'ability_within_top1')} "
+            f"retreat={_fmt(val,'retreat_within_top1')} attack={_fmt(val,'attack_within_top1')} "
+            f"end={_fmt(val,'end_within_top1')}",
+            flush=True,
+        )
         if warnings:
             print("signal_health warnings=" + ",".join(warnings), flush=True)
         if val.get("loss", float("inf")) < best:
@@ -337,6 +364,8 @@ def main() -> None:
                         "type_prior_scale": args.type_prior_scale,
                         "history_type_prior_scale": args.history_type_prior_scale,
                         "known_type_prior_scale": args.known_type_prior_scale,
+                        "archetype": args.archetype,
+                        "route_prior_scale": args.route_prior_scale,
                         "feature_version": FEATURE_VERSION,
                     },
                     "loss_config": dataclasses.asdict(cfg),

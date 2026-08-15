@@ -24,6 +24,7 @@ from ptcg_rl.v15.constants import (
     TYPE_ATTACK,
     TYPE_EVOLVE,
 )
+from ptcg_rl.v15.route import route_targets
 
 _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
@@ -80,6 +81,9 @@ class V15Batch:
     dca_mask: torch.Tensor
     dca_group_unique: torch.Tensor
     dca_group_focus: torch.Tensor
+    route_mask: torch.Tensor
+    route_stage: torch.Tensor
+    route_target_multi: torch.Tensor
     min_count: torch.Tensor
     max_count: torch.Tensor
     sample_weight: torch.Tensor
@@ -408,6 +412,7 @@ class V15RowCorpus:
         ):
             out[name] = int(data[name][i])
         out["dca_group_focus"] = float(data["dca_group_focus"][i])
+        out["archetype"] = str(data["archetype"][i]) if "archetype" in data else ""
         out["sample_weight"] = float(self.sample_weight_at(data, i))
         out["game_key"] = str(data["game_key"][i])
         return out
@@ -427,6 +432,9 @@ class V15RowCorpus:
         target_multi = np.zeros((b, max_options), dtype=np.float32)
         target_order = np.full((b, MAX_SELECT_COUNT), -1, dtype=np.int64)
         target_first = np.full(b, -1, dtype=np.int64)
+        route_target_multi = np.zeros((b, max_options), dtype=np.float32)
+        route_mask = np.zeros(b, dtype=np.float32)
+        route_stage = np.zeros(b, dtype=np.int64)
         for bi, row in enumerate(rows):
             n = min(len(row["ot"]), max_options)
             if n:
@@ -444,6 +452,17 @@ class V15RowCorpus:
                 for pos, a in enumerate(valid_action[:MAX_SELECT_COUNT]):
                     target_multi[bi, a] = 1.0
                     target_order[bi, pos] = a
+            route, stage = route_targets(
+                str(row.get("archetype", "")),
+                row["board"],
+                row["ot"],
+                row["oc"],
+                row["oc2"],
+                max_options=max_options,
+            )
+            route_target_multi[bi] = route
+            route_mask[bi] = 1.0 if route.sum() > 0 else 0.0
+            route_stage[bi] = int(stage)
 
         def stack(name: str, dtype=np.float32):
             return torch.as_tensor(np.stack([np.asarray(r[name]) for r in rows]), dtype=dtype)
@@ -499,6 +518,9 @@ class V15RowCorpus:
             dca_mask=torch.as_tensor([int(r["dca_mask"]) for r in rows], dtype=torch.float32),
             dca_group_unique=torch.as_tensor([int(r["dca_group_unique"]) for r in rows], dtype=torch.float32),
             dca_group_focus=torch.as_tensor([float(r["dca_group_focus"]) for r in rows], dtype=torch.float32),
+            route_mask=torch.as_tensor(route_mask, dtype=torch.float32),
+            route_stage=torch.as_tensor(route_stage, dtype=torch.long),
+            route_target_multi=torch.as_tensor(route_target_multi, dtype=torch.float32),
             min_count=torch.as_tensor([int(r["min_c"]) for r in rows], dtype=torch.long),
             max_count=torch.as_tensor([int(r["max_c"]) for r in rows], dtype=torch.long),
             sample_weight=torch.as_tensor([float(r["sample_weight"]) for r in rows], dtype=torch.float32),

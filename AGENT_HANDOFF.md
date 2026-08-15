@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-15 15:05 Asia/Shanghai.
+Last updated: 2026-08-15 16:20 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -75,17 +75,88 @@ Local smoke completed:
   Interpretation: history/order/plan paths now affect action logits on remote;
   known-info is wired but remains weak.
 
-Active remote pilot:
+Remote pilot completed:
 
 - Script: `ks:/tmp/run_v15_pilot_0812_0813_20260815.sh`.
 - Runner log: `logs/v15_pilot_0812_0813_20260815/nohup.log`.
-- Corpus target: `data/seq_corpus_v15_0812_0813`.
-- Checkpoints target: `checkpoints/v15_pilot_0812_0813_20260815`.
-- It extracts `2026-08-12..2026-08-13` with two workers, then trains
-  Dragapult, Alakazam, and Mega Lopunny in parallel on GPUs 0/1/2.
-- At `2026-08-15 15:00 CST`, extraction had reached roughly `500/4600`
-  episodes for each zip with zero bad actions/errors. Expected remaining
-  extraction time was on the order of 15-20 minutes, then training starts.
+- Corpus: `data/seq_corpus_v15_0812_0813`.
+- Checkpoints: `checkpoints/v15_pilot_0812_0813_20260815`.
+- It completed with `DONE_V15_PILOT fail=0`.
+- Artifacts were pulled locally to
+  `artifacts/ks_pull_20260815_v15_pilot/{logs,checkpoints}`.
+- Final training signals showed the new v15 paths are active but not enough:
+  Dragapult `val_top1=0.703`, `val_route` was not yet present at that time,
+  `noHist=-0.067/0.780/0.16160`,
+  `revHist=-0.073/0.767/0.17750`,
+  `noPlan=-0.019/0.875/0.07635`;
+  Alakazam `val_top1=0.765`,
+  `noHist=-0.072/0.816/0.15961`,
+  `revHist=-0.088/0.802/0.19024`,
+  `noPlan=-0.028/0.864/0.13289`.
+
+Hard random gate added 2026-08-15:
+
+- `tools/v15_random_gate.py` runs `tools/eval_bc.py` and only passes if
+  random win rate is exactly 100%. If any random loss occurs, it automatically
+  runs `tools/v15_scripted_random_trace.py` to find and write the first loss as
+  a readable step-by-step markdown trace plus
+  `first_loss_random_script.json`.
+- This is now a hard condition for Dragapult and Alakazam. Do not move to RR or
+  Kaggle-style analysis while random is below 100% unless the first-loss trace
+  has been read and its concrete decision errors have been recorded.
+- `tools/v15_trace_game.py` is intentionally human-readable: every candidate
+  decision prints turn/action-count, board, available action types, chosen
+  action, model top options/probabilities, target, and issue flags. This is the
+  "watch a whole losing game from setup" requirement, not just statistics.
+- `tools/v15_scripted_random_trace.py` can replay the recorded random opponent
+  script against a new policy:
+  `python3 tools/v15_scripted_random_trace.py NEW.pt --deck DECK.csv --script-in first_loss_random_script.json --out-md replay.md`.
+  Exact replay is only possible while the new policy keeps the game on the same
+  public branch. If it diverges, the replay markdown reports
+  `first_non_exact_script_step` and match counts (`exact`, `mapped`,
+  `fallback`) so the first behavioral divergence is visible.
+
+First-loss trace findings from v15 pilot:
+
+- Dragapult `cc2e995b5ad0` pilot random smoke was only `19/20`.
+  `logs/v15_trace_20260815/dragapult_first_random_loss.md` found a loss at
+  seed `25`. The policy opened Budew, used Poké Pad, then in the TO_HAND choice
+  declined available Dreepy/Drakloak/Munkidori cards. It then ended/attacked
+  with only Budew and never established the Dragapult line. This is a mainline
+  setup-route failure, not a DCA-only failure.
+- Alakazam `7f9a538936e3` pilot random smoke was only `19/20`.
+  `logs/v15_trace_20260815/alakazam_first_random_loss.md` found a loss at seed
+  `27`. The policy did set up Abra/Kadabra but repeatedly delayed/ignored
+  Alakazam evolution and attack opportunities, choosing resource cards,
+  retreat, or end over completing the main attacker route. This is an evolution
+  route/plan-priority failure.
+
+New route mechanism:
+
+- Added `ptcg_rl/v15/route.py` for explicit mainline route targets for
+  Dragapult and Alakazam.
+- `V15RowCorpus.make_batch` now computes `route_mask`, `route_stage`, and
+  `route_target_multi` from current board and legal options.
+- `V15LossConfig` now includes `route_weight` default `0.70`.
+- Training now prints `val_route`, `route_label`, and `route_rate`, and warns
+  on `route_top1_weak` or `route_labels_conflict_with_mainline`.
+- Route targets are not a replacement for single-game trace. They are the first
+  concrete fix for the two first-loss traces above.
+- The Dragapult trace also exposed a lower-level v15 inference/model bug:
+  there was no count/stop head. For optional `min=0,max=1` choices such as
+  Poké Pad `TO_HAND`, action logits ranked Dreepy highest but the policy used
+  an uncalibrated multi-sigmoid threshold and returned an empty action. This is
+  now fixed structurally:
+  - `V15PlanPolicyNet` has a `count_head`.
+  - `V15LossConfig` includes `count_weight`.
+  - training prints `val_count` and `val_optCount`.
+  - `TorchV15Policy` uses trained count logits when available.
+  - when an explicit route option exists, inference forces at least one route
+    pick even if `min_count=0`.
+  - Dragapult route no longer falls back to basic setup after the desired
+    line count is reached; it also prioritizes Drakloak ability before
+    Dragapult ex evolution and retreating when Dragapult ex is benched behind
+    a non-attacker active.
 
 Important v15 interpretation:
 

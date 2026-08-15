@@ -15,6 +15,11 @@ could learn labels without changing the live action logits.
   BC.
 - A run with `reverse_history_agree` near 1.0 means event order is not used,
   even if event counts are used.
+- Dragapult and Alakazam must pass random at exactly 100% before RR/Kaggle-style
+  interpretation. If random is below 100%, run `tools/v15_random_gate.py`; it
+  writes a first-loss step-by-step trace. The trace must be read and the
+  concrete failed setup/route/resource decisions must be recorded before the
+  next long training run.
 
 ## Design
 
@@ -31,6 +36,12 @@ could learn labels without changing the live action logits.
   - current type prior from plan latent;
   - history-conditioned type prior from event history.
   - known-card type prior from public reveal memory.
+- Explicit route targets:
+  - Dragapult mainline: Dreepy -> Drakloak -> Dragapult ex.
+  - Alakazam mainline: Abra -> Kadabra -> Alakazam.
+  - Training logs report `val_route`, `route_label`, and `route_rate`.
+    `route_label` below roughly `0.55` means raw BC labels often conflict with
+    the strategic mainline and route/rule supervision must override imitation.
 
 ## Smoke Result 2026-08-15
 
@@ -44,6 +55,18 @@ Local Dragapult smoke on 12 episodes from 2026-08-12:
   `no_plan` and `no_history`.
 - `reverse_history` still remains too weak. This is intentionally logged as
   `history_order_not_affecting_action`; do not hide it with RR-only evaluation.
+
+Remote v15 pilot after the smoke:
+
+- Dragapult and Alakazam both reached only `19/20` random in a small smoke.
+- Dragapult first-loss trace: active Budew, Poké Pad did not take Dreepy, no
+  Dragapult line established, then early end/attach misses. Root cause:
+  setup-route failure.
+- Alakazam first-loss trace: Abra/Kadabra route started, but Alakazam evolution
+  and attacks were repeatedly delayed by resource/retreat/end choices. Root
+  cause: evolution route priority failure.
+- Therefore v15 now adds route supervision and within-type action loss; random
+  100% plus readable first-loss trace is the hard loop.
 
 ## Starter Commands
 
@@ -75,4 +98,13 @@ CUDA_VISIBLE_DEVICES=0 python3 -u tools/v15_train_plan_policy.py \
   --known-type-prior-scale 0.25 \
   --progress-every 10 \
   --out checkpoints/v15_smoke/dragapult_v15_plan.pt
+```
+
+Random gate with first-loss trace:
+
+```bash
+python3 tools/v15_random_gate.py checkpoints/v15_smoke/dragapult_v15_plan.pt \
+  --deck logs/ladder_pool_0812_all_v13_20260813/decks/cc2e995b5ad0_dragapult_kh0a.csv \
+  --games 300 --workers 8 --progress-every 50 \
+  --out-dir logs/v15_gate/dragapult_smoke
 ```

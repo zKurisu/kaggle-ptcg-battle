@@ -1,8 +1,86 @@
 # Agent Handoff
 
-Last updated: 2026-08-16 18:10 Asia/Shanghai.
+Last updated: 2026-08-17 00:48 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
+
+## Update: Ogerpon Historical Submission Baselines 2026-08-17
+
+User asked whether local Ogerpon tarballs under
+`/home/jie/Do/0_PTCG/submission` should be uploaded and tested.  Yes: they are
+now imported on ks as historical online baselines, not ignored.
+
+Remote import path:
+
+```text
+/data/jie/ptcg_rl_git_v7_baseline_20260804/imported_submissions/ogerpon_history_20260817/
+```
+
+Uploaded and extracted tarballs:
+
+- `ogerpon_top2_v7sig.tar.gz`
+- `submission_ogerpon_v8_mixed.tar.gz`
+- `submission_ogerpon_v9_gameplan.tar.gz`
+- `ogerpon_top2_repro_v9_w2.tar.gz`
+- `submission_ogerpon_v10_fixed_top2.tar.gz`
+- `submission_ogerpon_v10_fixed_top3.tar.gz`
+- `pop_v11all_teal_mask_ogerpon_5899c772_2.tar.gz`
+- `shadow_teal_mask_ogerpon_5899c772_yan.tar.gz`
+- `ogerpon5899_w4legacy_0801_0810_b256.tar.gz`
+
+Random quick test:
+
+```text
+script: /tmp/run_ogerpon_random_quick_with_submissions_20260817.sh
+remote output:
+  logs/repro_alakazam_ogerpon_20260816/random_ogerpon_quick_20260817/
+local backup:
+  artifacts/repro_alakazam_ogerpon_20260816/logs/random_ogerpon_quick_20260817/
+games: 30
+workers: 3 per eval
+max_parallel evals: 6
+max_turns: 700
+```
+
+Completed random g30 results:
+
+```text
+100.0% hist_submission_ogerpon_v8_mixed                 30/30
+100.0% hist_submission_ogerpon_v10_fixed_top2           30/30
+100.0% hist_shadow_teal_mask_ogerpon_5899c772_yan       30/30
+100.0% hist_pop_v11all_teal_mask_ogerpon_5899c772_2     30/30
+100.0% hist_ogerpon_top2_repro_v9_w2                    30/30
+100.0% hist_ogerpon5899_w4legacy_0801_0810_b256         30/30
+100.0% current_top6_ab7e                                30/30
+100.0% current_top6_697                                 30/30
+ 96.7% hist_submission_ogerpon_v9_gameplan              29/30
+ 96.7% hist_submission_ogerpon_v10_fixed_top3           29/30
+ 96.7% hist_ogerpon_top2_v7sig                          29/30
+ 96.7% current_top6_723                                 29/30
+ 96.7% current_top2_85d                                 29/30
+ 93.3% current_top4_ab7e                                28/30
+ 93.3% current_top2_ab7e                                28/30
+ 90.0% current_top4_2a                                  27/30
+ 70.0% current_top4_2bd9                                21/30
+```
+
+Interpretation:
+
+- Historical local Ogerpon submissions remain useful baselines and should be
+  kept in all future Ogerpon comparisons.
+- The new 0801-0815 v10-style `current_top6` is the only current retrain that
+  passed this quick random screen on multiple strong deck CSVs: `697` and
+  `ab7e` both hit `30/30`; `723` was `29/30`.
+- `current_top4 + 2bd9` is not submission-worthy from this screen.  It lost
+  `9/30` to random, despite the corresponding training loss looking acceptable.
+  This is another example that Ogerpon deck-policy pairing matters and training
+  loss alone is insufficient.
+- The completed pointer Ogerpon training logs were backed up locally under
+  `artifacts/repro_alakazam_ogerpon_20260816/`.
+- Ogerpon lossopt/histplan w3 was still training at this update.  At epoch 3 it
+  was improving (`policy_raw` around `0.7666`, `first_acc` around `0.734` on
+  train), but its `set` loss was not clearly improving.  Test it separately
+  after completion before considering it for submission.
 
 ## Update: Final Submission Sprint 2026-08-16
 

@@ -13229,3 +13229,22 @@ ssh ks 'cd /data/jie/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/repro_alak
 ssh ks 'cd /data/jie/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "run_repro_alakazam_ogerpon_20260816|bc2_train.py.*repro_alakazam_ogerpon"'
 ssh ks 'cd /data/jie/ptcg_rl_git_v7_baseline_20260804 && nvidia-smi'
 ```
+
+Startup correction:
+
+- The first Alakazam job
+  `alakazam_7f9_900p_lossopt_histplan_w4_repro0812` failed before epoch 1 with
+  CUDA OOM because the runner capped GPU0 at `24GB`; the model needed about
+  `300MB` more during set-loss computation while GPU0 still had roughly `55GB`
+  physically free.
+- Restarted Alakazam on GPU0 with a dedicated script:
+  `/tmp/restart_alakazam_repro_mem48_20260816.sh`.
+- Restart log:
+  `logs/repro_alakazam_ogerpon_20260816/alakazam_restart_mem48.runner.log`.
+- New checkpoints:
+  - `bc2_alakazam_7f9_900p_lossopt_histplan_w4_repro0812_mem48.npz`
+  - `bc2_alakazam_7f9_highonly_lossopt_histplan_w4_current1200_mem48.npz`
+- Restart changes: `--cuda-memory-gb 48` and explicit
+  `--board-history-feat-dim 80`.  The original failed job used remote default
+  `board_history_feat_dim=32`, while the v13 corpus has
+  `board_hist_feats (..., 12, 80)`.

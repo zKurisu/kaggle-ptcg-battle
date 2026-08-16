@@ -13078,3 +13078,55 @@ Local backup created under
 `remote_backups/marnie_w3_baseline_family_20260816/` with checkpoints and logs
 from ks.  The backup includes epoch checkpoints and should not be added to git
 unless explicitly requested.
+
+## Update: Alakazam Historical Vs New Comparison 2026-08-16
+
+Jie online Alakazam history, queried with the `jie` Kaggle account only:
+
+- `submission_alakazam_v10pop`: `907.5` on 2026-08-04.
+- `submission_high1100_alakazam_7f9a5389`: `833.1` on 2026-08-12.
+- `submission_lossopt_alakazam_7f9_20260812`: `929.4` on 2026-08-12,
+  `922.6` on 2026-08-13, `890.0` on 2026-08-14, then `794.4` on
+  2026-08-15.
+- `submission_oldv14_alakazam_7f9a`: `804.5` on 2026-08-14.
+- `submission_alakazam_lossopt_7f9_histplan_w4_0801_0815`: `834.7` on
+  2026-08-16.
+
+New 0816 Alakazam random gates:
+
+- `v11aug_alakazam_7f_w4_900p_loss04`: `296/300 = 98.7%`.
+- `v11aug_alakazam_7f_w3_900p_loss04`: `296/300 = 98.7%`.
+- `v11aug_alakazam_7f_w4_all600_loss04`: `297/300 = 99.0%`.
+- `rebase_lossopt_7f_all600_histplan_w4`: `498/500 = 99.6%`.
+- `rebase_oldmethod_7f_high1100_aux900_w4`: `491/500 = 98.2%`.
+- `rebase_lossopt_5892_all600_histplan_w4`: `485/500 = 97.0%`.
+
+New rebase self-RR, `g120`:
+
+- `lossopt_7f_all600_histplan_w4` beats
+  `oldmethod_7f_high1100_aux900_w4` by `73-45-2`, WR `0.608`.
+- `lossopt_7f_all600_histplan_w4` beats `5892` by `117-3`, WR `0.975`.
+- Therefore `5892` is not a candidate; `oldmethod` is secondary.
+
+Existing 0812 coverage comparison still says `lossopt_alakazam_7f9` is locally
+better than the old high1100 baseline:
+
+- weighted WR `0.680` vs baseline `0.618`, delta `+0.062`;
+- simple mean `0.763` vs `0.712`;
+- key gains: TRM `0.412 -> 0.588`, mirror `0.738 -> 0.888`,
+  Festival `0.513 -> 0.613`, Crustle `0.663 -> 0.738`;
+- main current pressure remains Marnie b8f: only `0.488` against the 0810
+  current Marnie model.
+
+Interpretation:
+
+- The best Alakazam BC family remains the 7f9 lossopt/histplan line, not the
+  v11aug 900p/all600 line and not `5892`.
+- Online stability has degraded since 2026-08-13. Local RR/live-tail was too
+  optimistic for oldv14 Alakazam, so do not treat it as decisive submission
+  evidence.
+- A temporary broad historical key-pool RR was started then stopped because
+  Alakazam-vs-Marnie pairs were too slow for an ad-hoc comparison. Use existing
+  g80/g120 coverage plus targeted trace/RR instead.
+- Current v14seq Alakazam diagnostic model is not a submission candidate:
+  epoch 2 random smoke was only `35/40 = 87.5%`, despite high training top1.

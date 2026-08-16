@@ -12910,3 +12910,63 @@ First negative result:
 - `team477_luca_w4_winner` finished quickly but random g300 was only
   `68.0%`.  Treat sparse team winner-only for Crustle as dangerous unless
   random/RR says otherwise; it likely breaks basic play.
+
+## 2026-08-16 Submission Baseline Comparison And New-Model Priority
+
+User explicitly allowed uploading `/home/jie/Do/0_PTCG/submission` checkpoints
+to ks for comparison, but submission priority should remain on newly trained
+models because those saw the latest Kaggle episodes.  Historical submissions
+are now only a local baseline / regression oracle, not the preferred source for
+final submit tarballs.
+
+Local submission tarballs were extracted into lightweight policy/deck baselines
+and uploaded to ks:
+
+- Local extracted cache: `/tmp/submission_policy_baselines_20260816`
+- Remote extracted cache: `/data/jie/submission_policy_baselines_20260816`
+- Remote manifest dir:
+  `/data/jie/ptcg_rl_v11_recover_20260816/logs/submission_baselines_20260816/`
+- Key manifests:
+  - `all_submission_baselines.csv` rows=55
+  - `marnie_submission_baselines.csv` rows=14
+  - `alakazam_submission_baselines.csv` rows=7
+  - `crustle_submission_baselines.csv` rows=10
+  - `ogerpon_submission_baselines.csv` rows=9
+
+Important evaluator compatibility note: v11 recover's
+`tools/eval_round_robin.py` cannot read some newer attention/state-token
+checkpoints, failing with keys such as `state_fc2.bias`.  For mixed old/new
+checkpoint comparisons, use:
+
+```bash
+cd /data/jie/ptcg_rl_git_v7_baseline_20260804
+python3 tools/eval_round_robin.py ...
+```
+
+This main workspace evaluator can load both the newer state-token checkpoint
+format and old MLP submission policies.  A failed attempt under v11 recover
+skipped `new_crustle_3cd_cross_w3_900p_loss04`; ignore any RR file from
+`logs/v11_aug_historical_candidates_20260816/rr_arch_compare/` unless it was
+rerun with the main workspace evaluator.
+
+Backed up locally under this repo:
+
+- `remote_backups/crustle_grid_0815_20260816/bc2_crustle_3cd_cross_w3_900p_loss04.npz`
+- `remote_backups/v10_aug_ogerpon_recover_20260816/bc2_v10aug_ogerpon_697_w2_900p.npz`
+- `remote_backups/v10_aug_ogerpon_recover_20260816/bc2_v10aug_ogerpon_fixed_top2_w3_900p.npz`
+- `remote_backups/v11_aug_historical_candidates_20260816/checkpoints/`
+  contains completed new Marnie candidates:
+  - `bc2_v11aug_marnie_2c22_w4_900p_loss04.npz`
+  - `bc2_v11aug_marnie_b8f_w3_900p_loss04.npz`
+  - `bc2_v11aug_marnie_b8f_w4_all600_loss04.npz`
+
+Current random results for completed new Marnie candidates:
+
+- `v11aug_marnie_b8f_w3_900p_loss04`: 100.0% random g300.
+- `v11aug_marnie_b8f_w4_all600_loss04`: 99.7% random g300.
+- `v11aug_marnie_2c22_w4_900p_loss04`: 99.7% random g300.
+
+As of this note, Marnie is still a poor current-environment archetype because
+0815 episode matchups show it is severely weak into Ogerpon and weak into many
+top-population decks.  Do not recommend a Marnie submit unless a new candidate
+dominates both current-environment RR and historical Marnie baselines.

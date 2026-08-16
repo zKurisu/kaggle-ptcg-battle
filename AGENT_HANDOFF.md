@@ -12659,3 +12659,71 @@ Important negative result:
   submission.  Strict serial g20 vs Marnie got worse:
   default/no rules `6-14`, with `churn_cap` `2-18`.  Treat it as a trace probe
   and a warning against guessed rules.  New rules must be teacher-derived.
+
+## 2026-08-16 Final-Sprint Historical BC Recovery
+
+User pivoted the last-submission sprint back toward historical strong BC
+recipes, because later v14/v15 rule/sequence work has not yet produced reliable
+ladder submissions.  Current remote repo:
+
+`/data/jie/ptcg_rl_git_v7_baseline_20260804`
+
+Important state:
+
+- Local historical submissions under `/home/jie/Do/0_PTCG/submission` often
+  contain `policy.npz`; these are useful for recovered baselines and packaging
+  checks, but retraining on `0801-0815` is preferred when the result is healthy.
+- Uploaded recovered references to remote:
+  - `artifacts/init_recover/w4_marnie_sig1_b8f251a4_policy.npz`
+  - `artifacts/init_recover/w4_crustle_sig1_3cd5039c_policy.npz`
+- Current 0814-0815 ladder pool:
+  `logs/ladder_pool_0814_0815_current_20260816/pool_manifest.csv`
+  and fixed-name eval manifest:
+  `logs/ladder_pool_0814_0815_current_20260816/pool_manifest_evalnames.csv`
+- For all local evals with many workers, set:
+  `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1`.
+  Without this, each worker starts too many BLAS threads and eval appears
+  stuck while burning CPU.
+
+Active/important training:
+
+- `logs/0815_retrain_sprint/runner.log`
+  - Marnie b8f scratch old-w4 on `0801-0815`, score bands `1000+`, plus
+    high900 winner aux.  Checkpoint:
+    `checkpoints/0815_retrain_sprint/bc2_marnie_b8f_w4scratch_high900aux_0801_0815.npz`
+  - Crustle 477 scratch old-w4 on `0801-0815`, score bands `1000+`, plus
+    high900 winner aux.  Checkpoint:
+    `checkpoints/0815_retrain_sprint/bc2_crustle_477_w4scratch_high900aux_0801_0815.npz`
+    This finished but random g500 was only `90.8%`; do not submit this version
+    without stronger evidence.
+
+Early results:
+
+- Marnie ep001 random g300 on current b8f deck: `100.0%`.
+  Historical w4 b8f reference random g300 on same current deck: `99.3%`.
+- Crustle current 477 scratch random g500: `90.8%`.
+- Crustle historical w4 3cd reference random g300 on current 3cd deck:
+  `97.3%`.
+- Crustle 0812 shadow/cross-attn variants were weaker on random:
+  477 s1078 `84.3%`, 477 s1218 `88.3%`, b141 `89.3%`, 96d `76.7%`.
+  Interpretation: current 477 sig is not automatically better locally; the
+  historical 3cd old-w4 policy is the only recovered Crustle candidate that
+  currently clears the random sanity bar.
+
+Current Crustle grid:
+
+- Script: `/tmp/run_crustle_grid_0815.sh`
+- Output: `logs/crustle_grid_0815_20260816/`
+- Checkpoints: `checkpoints/crustle_grid_0815_20260816/`
+- Status: `logs/crustle_grid_0815_20260816/status.csv`
+- It runs 10 configs on GPU2/GPU3:
+  - 3cd w4 `900+` non-winner, 3cd w4 `1000+` non-winner
+  - 3cd w4 `900+` winner-only
+  - 3cd cross-attn w3 `900+`
+  - 477 w4 `900+` low loss-weight, 477 w4 `900+` winner-only
+  - 477 M Sato all-600 non-winner and winner-only
+  - b141 w4 `900+`
+  - 7ee w4 `900+`
+- Each config trains 10 epochs, then runs random g300.  First filtering rule:
+  `>=96%` random moves to current-pool/shadow RR, `93%-96%` is observation,
+  `<93%` is rejected for submission.

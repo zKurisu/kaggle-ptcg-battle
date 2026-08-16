@@ -13483,3 +13483,30 @@ Packaged submission candidate:
   `checkpoints/alakazam_rebase_0801_0815_20260816/bc2_lossopt_alakazam_7f9_all600_histplan_w4_0801_0815.npz`
 - Deck:
   `logs/ladder_pool_0812_all_v13_20260813/decks/7f9a538936e3_alakazam_yushin_ito.csv`
+
+Correction after user questioned the timestamp:
+
+- The package above uses the `alakazam_rebase_0801_0815_20260816` checkpoint
+  with mtime `2026-08-16 16:56`; it is **not** the overnight reproduction job
+  started at `2026-08-17T00:10`.
+- Actual overnight reproduction checkpoint:
+  `checkpoints/repro_alakazam_ogerpon_20260816/bc2_alakazam_7f9_900p_lossopt_histplan_w4_repro0812_mem48.npz`
+  with mtime `2026-08-17 04:16`, corresponding to best epoch 3.
+- The two policies are different:
+  - rebase package policy sha256:
+    `259df4e2485d0ef032dccae641a618193a455580898b786f27d41bc85c60d4c8`
+  - overnight repro policy sha256:
+    `169281027e2237724b4eea3d253982ea81d6532f53030138e1c4aa97f577778f`
+- The 7f9 deck CSVs in the 0812 and current pool directories have no diff.
+- Quick random for the actual overnight repro checkpoint:
+  `297/300`, WR `99.0%`.
+- Packaged actual overnight repro checkpoint:
+  - Remote:
+    `/data/jie/submission/alakazam_20260817/submission_repro0812_alakazam_7f9_900p_lossopt_histplan_w4_mem48.tar.gz`
+  - Local:
+    `/home/jie/Do/0_PTCG/submission/alakazam_20260817/submission_repro0812_alakazam_7f9_900p_lossopt_histplan_w4_mem48.tar.gz`
+  - Size: `93.1 MiB` from packaging output (`94M` on disk).
+- Current recommendation after this correction: the afternoon rebase package
+  has stronger local evidence (`99.6-100.0%` random and strong RR), while the
+  actual overnight repro package is useful as an ablation/correction package
+  but is **not** better on quick random.

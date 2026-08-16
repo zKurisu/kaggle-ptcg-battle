@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-08-16 14:15 Asia/Shanghai.
+Last updated: 2026-08-16 18:10 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
 
@@ -31,6 +31,126 @@ User pivot after the rule-fusion loop:
   change that removed Iono Bellibolt, N's Zoroark, and Raging Bolt from default
   archetype lists was intentionally not synced locally because it conflicts
   with the broader ladder-pool coverage requirement.
+
+### 2026-08-16 Historical Code Recovery For August-Only Retrains
+
+User clarified the data window for the final BC recovery sprint:
+
+- Use **August data only**, currently `2026-08-01` through `2026-08-15`.
+- Do not use July data for this sprint.  July is older and August volume is
+  sufficient.
+- Find historical code through `git log` and train with the matching pipeline
+  rather than assuming the current v15/v14 code is best.
+
+Historical code points selected:
+
+- `4283236` (`Interleave deck specialist training plans`) is the v11
+  deck-sig specialist era.  It has `STATE_FEAT_DIM=80`,
+  `OPT_FEAT_DIM=64`, and `feature_version=v11_matchup_mechanic`.  This is the
+  closest code path to the old `v11all35` w3/w4 deck-sig specialists.
+- `9d35f0f` (`Add CUDA memory caps to BC training`) is the v10 64/48 era before
+  v11 matchup features.  It has `STATE_FEAT_DIM=64`, `OPT_FEAT_DIM=48`, and is
+  the best match for the historical Ogerpon fixed-top2 run.
+
+Recovered v11 workspace on ks:
+
+```text
+root: /data/jie/ptcg_rl_v11_recover_20260816
+source commit: 4283236
+raw links: data/episodes_aug_0801_0815_links
+corpus: data/bc_corpus_banded_v11_0801_0815
+extract runner: /tmp/run_v11_aug_crustle_recover.sh
+extract log: logs/v11_aug_crustle_recover_20260816/extract_v11_0801_0815.log
+```
+
+The v11 extractor uses only `/data/jie/episodes_raw/pokemon-tcg-ai-battle-episodes-2026-08-*.zip`.
+It was running normally at the last check, with no `bad` or `err` rows, and was
+near the end of processing the first 12 zip files.  `npz=0` during extraction is
+normal because this extractor writes per zip only after each zip completes.
+
+Active v11 Crustle grid:
+
+- Script: `/tmp/run_v11_aug_crustle_recover.sh`
+- Runner PID at start: `1469061`
+- Output:
+  `logs/v11_aug_crustle_recover_20260816/`
+- Checkpoints:
+  `checkpoints/v11_aug_crustle_recover_20260816/`
+- It trains Crustle-only variants after extraction:
+  `3cd`, `477`, `7ee`, `848`, `250`, `b141`, and `mix3`, with 900+ and
+  all-600 variants.  This grid is intended to recover the historical Crustle
+  `3cd5039c` strength and test current high-score team/sig alternatives.
+
+Active v11 historical non-Crustle runner:
+
+```text
+script: /tmp/run_v11_aug_historical_candidates_20260816.sh
+remote nohup: /tmp/run_v11_aug_historical_candidates_20260816.nohup.log
+root: /data/jie/ptcg_rl_v11_recover_20260816
+output: logs/v11_aug_historical_candidates_20260816/
+checkpoints: checkpoints/v11_aug_historical_candidates_20260816/
+```
+
+This runner waits for v11 extraction and, by default, waits for the Crustle grid
+to write `,ALL,done,` before starting.  It then trains/evaluates these historical
+families with the old w4/w3 deck-sig recipe:
+
+- Marnie Grimmsnarl: `b8f251a476e7` w4/w3 900+, `2c22fa761816` w4 900+,
+  and `b8f251a476e7` all-600.
+- Alakazam: `7f9a538936e3` w4/w3 900+ and all-600.
+- Teal Mask Ogerpon: `5899c772bace`, `697a82e582d5`, `2a5072194fdf`, and
+  v11 top2 `697a82e582d5 + 2a5072194fdf`.
+- Festival Lead: `e82dcbe62260` and `41ffa7894f40`.
+- Mega Lopunny: `f1445356c3a7` and `276707c0fdb4`.
+- Mega Lucario: `43d6d8b0fce9`.
+- Team Rocket Mewtwo: `06f0b265154c`.
+
+It runs random g300 after each checkpoint and writes:
+
+```text
+logs/v11_aug_historical_candidates_20260816/random_results.csv
+logs/v11_aug_historical_candidates_20260816/random_ranked.csv
+logs/v11_aug_historical_candidates_20260816/candidate_manifest_random_ge097.csv
+```
+
+Recovered v10 workspace on ks:
+
+```text
+root: /data/jie/ptcg_rl_v10_recover_20260816
+source commit: 9d35f0f
+corpus target: data/bc_corpus_banded_v10_0801_0815
+script: /tmp/run_v10_aug_ogerpon_recover_20260816.sh
+remote nohup: /tmp/run_v10_aug_ogerpon_recover_20260816.nohup.log
+output: logs/v10_aug_ogerpon_recover_20260816/
+checkpoints: checkpoints/v10_aug_ogerpon_recover_20260816/
+```
+
+The v10 workspace was verified as `STATE_FEAT_DIM=64`, `OPT_FEAT_DIM=48`.
+The Ogerpon runner waits for v11 extraction to finish before doing its own v10
+64/48 extraction over the same August-only raw zips.  It then trains:
+
+- `v10aug_ogerpon_fixed_top2_w2_1000p`: `697a82e582d5 + 2a5072194fdf`,
+  1000+ bands, width 2.
+- `v10aug_ogerpon_fixed_top2_w2_900p`: same top2, 900+ bands, width 2.
+- `v10aug_ogerpon_697_w2_900p`: single 697 control.
+- `v10aug_ogerpon_5899_w2_900p`: single 5899 control.
+- `v10aug_ogerpon_fixed_top2_w3_900p`: larger width-3 top2 control.
+
+Each v10 Ogerpon checkpoint is random-tested on three current Ogerpon deck CSVs:
+`697a82e582d5`, `2a5072194fdf`, and `5899c772bace`.
+
+Historical result basis for these choices:
+
+- v10 Ogerpon fixed-top2 (`697 + 2a`) had the strongest Ogerpon public result:
+  final around `951.8/956.3`, with a user-observed peak around `1040`.
+- v10 fixed-top3 (`697 + 2a + 5899`) fell to about `720.5`; do not treat
+  top3 mixing as safe.
+- v11all35 w4 historical RR top rows were Crustle `3cd5039c`, Marnie
+  `b8f251a4`, Alakazam `7f9a5389`, then Ogerpon `5899/697`.  Width 4 had the
+  best random stability, but structural hard counters remained.
+- Festival had strong random stability in old w4, but weaker RR; it is included
+  for archetype coverage and because a historical shadow Festival submission
+  existed, not because it was a top RR row.
 
 ### 2026-08-16 0815 Historical-BC Retrain Sprint
 
@@ -12727,3 +12847,66 @@ Current Crustle grid:
 - Each config trains 10 epochs, then runs random g300.  First filtering rule:
   `>=96%` random moves to current-pool/shadow RR, `93%-96%` is observation,
   `<93%` is rejected for submission.
+
+## 2026-08-16 Crustle Team/Encoder Recovery Grid
+
+User pointed out that data volume is not the main issue for Crustle if we use
+high-score Crustle teams and include their full team/deck-sig data instead of
+only narrow final score bands.  A team/deck-sig audit was added via
+`/tmp/analyze_crustle_team_candidates.py` on ks:
+
+```bash
+python3 /tmp/analyze_crustle_team_candidates.py \
+  --corpus data/bc_corpus_banded_v13_0801_0815_state_token_20260816 \
+  --archetype "Crustle Wall" \
+  --out-csv logs/crustle_grid_0815_20260816/crustle_team_candidates_all600.csv \
+  --top 120
+```
+
+Important audit result: for top Crustle teams in the current extracted corpus,
+`climb600_899_decisions` is `0`.  This suggests the `score_band` metadata is a
+final/day-level team/submission score label, not a reliable per-game live climb
+score.  Therefore "from 600 upward" cannot be reconstructed purely from
+score_band for public high teams; the practical proxy is team/deck-sig specific
+all-available data.
+
+Top Crustle candidates from `0801-0815`:
+
+- `47756cdfd20f` / `flg`: 33,890 decisions, 623 games, avg score 1214.9.
+- `3cd5039c59d2` / `Oshbocker`: 33,261 decisions, 597 games, avg score 1165.9.
+- `47756cdfd20f` / `M Sato`: 21,121 decisions, 384 games, avg score 1112.3.
+- `7ee600c6f769` / `MissingNo.`: 18,583 decisions, 294 games, avg score 1089.7.
+- `96d572411df0` / `da da`: 13,333 decisions, 261 games, avg score 1011.1.
+- `7ee600c6f769` / `LiamK`: 12,519 decisions, 219 games, avg score 1034.9.
+- `848063691cdf` / `goonew`: 7,276 decisions, 139 games, avg score 1218.1.
+- `3cd5039c59d2` / `ANDPAD kaggler team`: 6,027 decisions, avg score 1220.3.
+
+Started a second Crustle grid:
+
+- Script: `/tmp/run_crustle_team_encoder_grid_0815.sh`
+- Runner log:
+  `logs/crustle_team_encoder_grid_0815_20260816.runner.log`
+- Output dir:
+  `logs/crustle_team_encoder_grid_0815_20260816/`
+- Checkpoints:
+  `checkpoints/crustle_team_encoder_grid_0815_20260816/`
+- RR watcher:
+  `/tmp/watch_crustle_team_encoder_rr.sh`
+  waiting on `random_results.csv`; it filters random `>=0.96` before RR.
+
+The second grid covers team-specific, deck-sig-specific proxy, larger model,
+encoder, winner-only, and historical-init settings:
+
+- `477/flg`: pointer w4 loss, pointer w5 policy_raw, cross-attn w4 policy_raw.
+- `477/Luca`: pointer w4 winner-only.
+- `3cd/Oshbocker`: pointer w4 loss, pointer w5 policy_raw, cross-attn w4
+  policy_raw, and historical `w4_crustle_sig1_3cd5039c` init with low LR.
+- `7ee/MissingNo.`: pointer w4 loss, cross-attn w4 policy_raw, winner-only.
+- `7ee/LiamK`, `848/goonew`, `250/Unown Gradiant`, `b141/Petit Canard`,
+  `b141/KantoRegionMaster`: pointer w4 loss.
+
+First negative result:
+
+- `team477_luca_w4_winner` finished quickly but random g300 was only
+  `68.0%`.  Treat sparse team winner-only for Crustle as dangerous unless
+  random/RR says otherwise; it likely breaks basic play.

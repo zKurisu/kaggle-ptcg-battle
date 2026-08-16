@@ -13384,3 +13384,88 @@ Startup correction:
 - Verification after restart: the mem48 Alakazam job reached epoch 1
   (`epoch 01 25/960`, GPU0 about `29.9GB` used, `100%` util), so it cleared the
   previous OOM point and is training normally.
+
+## 2026-08-17 Follow-up Evaluation: current_top6_ab7e And Alakazam
+
+Remote workspace:
+
+- `/data/jie/ptcg_rl_git_v7_baseline_20260804`
+
+Important operational note:
+
+- When running RR/eval with multiple workers, always set
+  `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+  NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 TORCH_NUM_THREADS=1`.
+  A first follow-up runner without these limits overloaded the 54-core ks
+  machine (`load average > 1000`) and made no useful progress.
+
+Ogerpon direct historical matchup:
+
+- Output:
+  `logs/repro_alakazam_ogerpon_20260816/followup_eval_20260817c/rr_ogerpon_direct/current_top6_ab7e_vs_hist_ogerpon_g60.csv`
+- Local backup:
+  `artifacts/repro_alakazam_ogerpon_20260816/followup_eval_20260817c/current_top6_ab7e_vs_hist_ogerpon_g60.csv`
+- `current_top6_ab7e` vs historical Ogerpon versions, 60 games each:
+  - vs `hist_shadow_5899`: `31/60`, WR `0.517`
+  - vs `hist_pop_v11_5899`: `31/60`, WR `0.517`
+  - vs `hist_v7_top2`: `34/60`, WR `0.567`
+  - vs `hist_w4legacy_5899`: `29/60`, WR `0.483`
+  - vs `hist_v10_top2`: `38/60`, WR `0.633`
+  - vs `hist_v8_mixed`: `30/60`, WR `0.500`
+  - vs `hist_v9_w2`: `31/60`, WR `0.517`
+  - vs `hist_v9_gameplan`: `32/60`, WR `0.533`
+  - vs `hist_v10_top3`: `32/60`, WR `0.533`
+- Interpretation: `current_top6_ab7e` is roughly equal to the historical strong
+  Ogerpon submissions, slightly behind `w4legacy_5899`, and better than v7/v10
+  top2 in this direct local matchup. This is not a clear upgrade over the best
+  historical 5899 line.
+
+Alakazam training and eval:
+
+- Best current Alakazam checkpoint for local behavior:
+  `checkpoints/alakazam_rebase_0801_0815_20260816/bc2_lossopt_alakazam_7f9_all600_histplan_w4_0801_0815.npz`
+- `rebase_lossopt7f9` training:
+  - params `25.8M`
+  - best validation by `policy_raw`: epoch `4/8`, `policy_raw=0.6186`,
+    `first_action_acc=0.815`
+  - last logged epoch `5/8`: `policy_raw=0.6452`, `first_action_acc=0.821`
+    so the saved checkpoint is the best epoch, not the last epoch.
+- `repro_900p` training:
+  - params `25.8M`
+  - best validation by `policy_raw`: epoch `3/8`, `policy_raw=0.6660`,
+    `first_action_acc=0.804`
+  - later epochs overfit (`epoch 8 policy_raw=0.7176`).
+- `repro_highonly` training:
+  - params `25.8M`
+  - best validation by `policy_raw`: epoch `6/12`, `policy_raw=0.7818`,
+    `first_action_acc=0.755`
+  - substantially less data and weaker validation than broad 7f9.
+- Random g500:
+  - `lossopt_7f9_all600_histplan_w4`: `99.6%` in full eval and `100.0%` in an
+    earlier same-directory run.
+  - `oldmethod_7f9_high1100_aux900_w4`: `98.2%` full eval, `97.2%` earlier.
+  - `lossopt_5892_all600_histplan_w4`: `97.0%` full eval, `97.4%` earlier.
+- Alakazam self RR g120:
+  - `lossopt_7f9_all600_histplan_w4` beats
+    `oldmethod_7f9_high1100_aux900_w4`: `73/120`, WR `0.608`.
+  - `lossopt_7f9_all600_histplan_w4` beats
+    `lossopt_5892_all600_histplan_w4`: `117/120`, WR `0.975`.
+- Alakazam vs current historical model pool, g80, thread-limited rerun:
+  - Output:
+    `logs/alakazam_rebase_0801_0815_20260816/eval_after_train/threads1_20260817/rr_lossopt7f9_vs_current_models_g80.csv`
+  - Local backup:
+    `artifacts/alakazam_rebase_0801_0815_20260816/eval_after_train/threads1_20260817/rr_lossopt7f9_vs_current_models_g80.csv`
+  - vs `marnie_grimmsnarl_b8f251a4`: `41/80`, WR `0.512`
+  - vs `dragapult_cc2e995b`: `74/80`, WR `0.925`
+  - vs `mega_lopunny_f1445356`: `67/80`, WR `0.838`
+  - vs `alakazam_7f9a5389`: `70/80`, WR `0.875`
+  - vs `teal_mask_ogerpon_8bc67715`: `65/80`, WR `0.812`
+  - vs `mega_lucario_43d6d8b0`: `60/80`, WR `0.750`
+  - vs `crustle_wall_7ee600c6`: `70/80`, WR `0.875`
+  - vs `festival_lead_41ffa789`: `80/80`, WR `1.000`
+  - vs `team_rocket_mewtwo_f0bac971`: `79/80`, WR `0.988`
+- Interpretation: locally, the 7f9 lossopt model is clearly the strongest
+  Alakazam among the tested variants and looks very strong against the current
+  local model pool. The main caveat is that this is still a local pool result;
+  previous Alakazam submissions underperformed online when early ladder had
+  unmodeled signatures/decks.

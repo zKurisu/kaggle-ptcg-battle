@@ -13033,3 +13033,19 @@ same context/type/set-loss weights.  Active config family:
 Important: the runner's built-in `rr_summary.csv` double-counts the
 round-robin matrix because `eval_round_robin.py` writes both row and reverse
 rows.  Use `rr_summary_correct.csv` or manually filter `row == candidate`.
+
+Current checkpoint after inspection:
+
+- Finished and recorded: `seed11_loss04`, `seed23_loss04`, `lr7e5_seed7_loss04`,
+  `initbase_og4_lr1e5`.
+- Still running: `seed7_loss025` and `og2_seed7_loss04`.
+- Random results for completed jobs are all near-perfect:
+  `seed11` 99.0%, `seed23` 99.3%, `lr7e5` 100.0%, `initbase_og4` 99.7%.
+- Corrected historical non-Marnie RR ranking among completed jobs:
+  `seed23` best at mean 0.5923, then `lr7e5` 0.5865, `seed11` 0.5846,
+  `initbase_og4` 0.5827.  All are still below the submitted
+  `submission_marnie_b8f_w3_900p_v11aug_0815` baseline.
+- `seed7_loss025` is in epoch 7/10 and `og2_seed7_loss04` is in epoch 5/10.
+  With current timings, rough remaining wall time is about 15-20 min for
+  `seed7_loss025` and about 25-35 min for `og2_seed7_loss04` including random
+  and RR gate.

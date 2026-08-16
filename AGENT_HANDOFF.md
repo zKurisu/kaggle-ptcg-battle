@@ -32,6 +32,77 @@ User pivot after the rule-fusion loop:
   archetype lists was intentionally not synced locally because it conflicts
   with the broader ladder-pool coverage requirement.
 
+### 2026-08-16 0815 Historical-BC Retrain Sprint
+
+User noted that local `/home/jie/Do/0_PTCG/submission` contains packaged
+historical submissions.  Confirmed the tarballs include recoverable `policy.npz`
+files, but the active sprint treats them as reference baselines rather than as
+the main training init because the user expects true retraining on fresh
+0801-0815 data.
+
+Recovered local submission policies and uploaded them to ks:
+
+- Local source:
+  `/home/jie/Do/0_PTCG/submission/w4_marnie_sig1_b8f251a4.tar.gz`.
+  Historical submission record: `55302986`, score about `986.2` on 2026-08-06,
+  and later resubmits around `946-965`.
+  Uploaded policy:
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804/artifacts/init_recover/w4_marnie_sig1_b8f251a4_policy.npz`.
+- Local source:
+  `/home/jie/Do/0_PTCG/submission/w4_crustle_sig1_3cd5039c.tar.gz`.
+  Historical submission record: `55303028`, score about `903-915` on
+  2026-08-06.
+  Uploaded policy:
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804/artifacts/init_recover/w4_crustle_sig1_3cd5039c_policy.npz`.
+
+Recovered policy hash checks:
+
+```text
+w4_marnie_sig1_b8f251a4.tar.gz policy.npz sha256:
+074b3467d4bfe26a06b5bf9400cab822a1c0362fa167108a282c997edb615dc4
+w4_crustle_sig1_3cd5039c.tar.gz policy.npz sha256:
+6068ca3ff51007dbcd53d523e5e69a85038fbbdc456f13eb4a48c0787e1ce620
+```
+
+Built high900 winner aux corpora on ks from
+`data/bc_corpus_banded_v13_0801_0815_state_token_20260816`:
+
+- Marnie:
+  `data/bc_corpus_marnie_high900_winners_0801_0815_20260816`.
+  Output file:
+  `Marnie_Grimmsnarl/high900_winners/marnie_high900_winners_0801_0815.npz`.
+  Size/count: `1,503,522` rows, `14,690` games.
+- Crustle:
+  `data/bc_corpus_crustle_high900_winners_0801_0815_20260816`.
+  Output file:
+  `Crustle_Wall/high900_winners/crustle_high900_winners_0801_0815.npz`.
+  Size/count: `236,308` rows, `3,922` games.
+
+Started detached ks runner:
+
+```text
+script: /tmp/run_0815_retrain_sprint.sh
+runner log: /data/jie/ptcg_rl_git_v7_baseline_20260804/logs/0815_retrain_sprint/runner.log
+status csv: /data/jie/ptcg_rl_git_v7_baseline_20260804/logs/0815_retrain_sprint/train_status.csv
+checkpoint dir: /data/jie/ptcg_rl_git_v7_baseline_20260804/checkpoints/0815_retrain_sprint
+```
+
+Jobs launched:
+
+- GPU1 `marnie_b8f_w4scratch`: scratch old-w4 pointer recipe, width 4,
+  0801-0815 score bands `1000-1099 1100-1199 1200+`, deck sig
+  `b8f251a476e7`, plus high900 winner aux.  Save:
+  `checkpoints/0815_retrain_sprint/bc2_marnie_b8f_w4scratch_high900aux_0801_0815.npz`.
+- GPU2 `crustle_477_w4scratch`: scratch old-w4 pointer recipe, width 4,
+  0801-0815 score bands `1000-1099 1100-1199 1200+`, current 0815 front
+  Crustle sig `47756cdfd20f`, plus high900 winner aux.  Save:
+  `checkpoints/0815_retrain_sprint/bc2_crustle_477_w4scratch_high900aux_0801_0815.npz`.
+
+Why Crustle `47756cdfd20f`: current 0814-0815 ladder pool has Crustle front sig
+`47756cdfd20f` at about `1156.5` with far more games than `3cd5039c59d2`; the
+old `3cd` recovered policy is retained as reference, not the primary retrain
+target.
+
 ## Update: Hard Pivot To Alakazam Rule Work 2026-08-16 14:40
 
 User correction after context compaction:

@@ -13540,3 +13540,28 @@ Operational note:
 
 - The interrupted Alakazam epoch random audit was still running and was stopped
   before packaging Ogerpon to free CPU.
+
+Follow-up RR vs the v15 common historical/current matchup pool:
+
+- Remote CSV:
+  `logs/repro_alakazam_ogerpon_20260816/rr_vs_historical_other_arch_20260817/current_top6_ab7e_vs_v15_common_matchups_g80.csv`
+- Local backup:
+  `artifacts/repro_alakazam_ogerpon_20260816/rr_vs_historical_other_arch_20260817/current_top6_ab7e_vs_v15_common_matchups_g80.csv`
+- Pool entries are from
+  `logs/v15_common_matchups_20260816/eval_manifest_existing_models.csv`.
+  This is not every historical Kaggle submission; it is the compact local
+  historical/current archetype pool used for recent RR comparisons.
+- `current_top6_ab7e` g80 results:
+  - vs `marnie_grimmsnarl_b8f251a4`: `55/80`, WR `0.688`
+  - vs `dragapult_cc2e995b`: `66/80`, WR `0.825`
+  - vs `mega_lopunny_f1445356`: `53/80`, WR `0.662`
+  - vs `alakazam_7f9a5389`: `22/80`, WR `0.275`
+  - vs `teal_mask_ogerpon_8bc67715`: `33/80`, WR `0.412`
+  - vs `mega_lucario_43d6d8b0`: `39/80`, WR `0.487`
+  - vs `crustle_wall_7ee600c6`: `5/80`, WR `0.062`
+  - vs `festival_lead_41ffa789`: `77/80`, WR `0.963`
+  - vs `team_rocket_mewtwo_f0bac971`: `76/80`, WR `0.950`
+- Interpretation: the package is plausible only for a Marnie/Festival/TRMewtwo
+  heavy environment. It is heavily exposed to Crustle and Alakazam, is slightly
+  negative into Lucario, and loses the local Ogerpon mirror against the v14
+  `8bc67715` representative.

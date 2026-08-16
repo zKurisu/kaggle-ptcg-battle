@@ -13130,3 +13130,102 @@ Interpretation:
   g80/g120 coverage plus targeted trace/RR instead.
 - Current v14seq Alakazam diagnostic model is not a submission candidate:
   epoch 2 random smoke was only `35/40 = 87.5%`, despite high training top1.
+
+## 2026-08-16/17 Alakazam And Ogerpon Reproduction Runner
+
+User asked to start Alakazam reproduction training and new Ogerpon reproduction
+training in parallel.
+
+Remote workspace:
+
+- `/data/jie/ptcg_rl_git_v7_baseline_20260804`
+
+Remote runner:
+
+- Script: `/tmp/run_repro_alakazam_ogerpon_20260816.sh`
+- Main log: `logs/repro_alakazam_ogerpon_20260816/runner.log`
+- Nohup log: `logs/repro_alakazam_ogerpon_20260816/runner.nohup.log`
+- Checkpoints: `checkpoints/repro_alakazam_ogerpon_20260816/`
+- Corpus: `data/bc_corpus_banded_v13_0801_0815_state_token_20260816`
+
+Ogerpon high900 winner aux was built before training:
+
+- Root: `data/bc_corpus_ogerpon_high900_winners_0801_0815_20260816`
+- File:
+  `Teal_Mask_Ogerpon/high900_winners/ogerpon_high900_winners_all_sigs_0801_0815.npz`
+- Size: `491,581` decision rows, `6,801` games, from `893,045` raw high900+
+  Ogerpon rows.
+
+Current Ogerpon sig rationale from the 0801-0815 corpus:
+
+- `ab7e4b818773`: `1,611` games, WR `0.603`, max `1221.4`.
+- `85d941c82b94`: `663` games, WR `0.538`, max `1220.3`.
+- `7232316f9ca3`: `164` games, WR `0.640`, max `1218.1`.
+- `d17573abc0e3`: `565` games, WR `0.581`, max `1214.9`.
+- `2bd9da52c43a`: `1,079` games, WR `0.606`, max `1209.8`.
+- `2a5072194fdf`: `609` games, WR `0.570`, max `1209.8`.
+- Old `5899c772bace` is not a primary target here: `2,317` games but WR
+  `0.479`, max `1155.7` in the current 0801-0815 corpus.
+
+Started jobs at remote time `2026-08-17T00:05:32+08:00`:
+
+1. GPU0, Alakazam clean-ish 0812 reproduction:
+   `alakazam_7f9_900p_lossopt_histplan_w4_repro0812`
+   - Save:
+     `checkpoints/repro_alakazam_ogerpon_20260816/bc2_alakazam_7f9_900p_lossopt_histplan_w4_repro0812.npz`
+   - Recipe: `7f9a538936e3`, score bands `900+`, `lossopt + histplan + w4`,
+     `cross_attn`, `history_k=32`, `log_history_k=128`, `board_history_k=12`,
+     Alakazam high900 winner aux, `win/loss/draw=1.5/0.4/0.8`,
+     `raw_policy_loss_weight=0.35`, `best_metric=policy_raw`.
+   - This is closer to the 0812 lossopt family than the 0816 all600 broad run,
+     but still uses updated 0801-0815 data and current code.
+
+2. GPU0, queued after job 1:
+   `alakazam_7f9_highonly_lossopt_histplan_w4_current1200`
+   - Save:
+     `checkpoints/repro_alakazam_ogerpon_20260816/bc2_alakazam_7f9_highonly_lossopt_histplan_w4_current1200.npz`
+   - Recipe: `7f9a538936e3`, score bands `1200+ 1100-1199`, same lossopt
+     histplan family, smaller batch because the filtered set is much smaller.
+
+3. GPU1, Ogerpon current top2 v10-style:
+   `ogerpon_current_top2_ab7e85d_v10style_w2_900p`
+   - Save:
+     `checkpoints/repro_alakazam_ogerpon_20260816/bc2_ogerpon_current_top2_ab7e85d_v10style_w2_900p.npz`
+   - Sigs: `ab7e4b818773 + 85d941c82b94`.
+   - Recipe: pointer/legacy BC2 width 2, non-winner-only, score bands `900+`,
+     `win/loss/draw=1.5/0.4/0.8`.
+   - Started with `129,932` kept rows.
+
+4. GPU1, queued after job 3:
+   `ogerpon_current_top4_ab7e85d2bd92a_lossopt_histplan_w3_900p`
+   - Save:
+     `checkpoints/repro_alakazam_ogerpon_20260816/bc2_ogerpon_current_top4_ab7e85d2bd92a_lossopt_histplan_w3_900p.npz`
+   - Sigs: `ab7e4b818773 + 85d941c82b94 + 2bd9da52c43a + 2a5072194fdf`.
+   - Recipe: cross-attn/histplan width 3 with Ogerpon high900 winner aux.
+
+5. GPU3, Ogerpon current top4 v10-style:
+   `ogerpon_current_top4_ab7e85d2bd92a_v10style_w2_900p`
+   - Save:
+     `checkpoints/repro_alakazam_ogerpon_20260816/bc2_ogerpon_current_top4_ab7e85d2bd92a_v10style_w2_900p.npz`
+   - Sigs: `ab7e4b818773 + 85d941c82b94 + 2bd9da52c43a + 2a5072194fdf`.
+   - Recipe: pointer/legacy BC2 width 2, non-winner-only, score bands `900+`,
+     `win/loss/draw=1.5/0.4/0.8`.
+   - Started with `239,856` kept rows.
+
+6. GPU3, queued after job 5:
+   `ogerpon_current_top6_ab7e69785d723d1752bd9_v10style_w2_900p`
+   - Save:
+     `checkpoints/repro_alakazam_ogerpon_20260816/bc2_ogerpon_current_top6_ab7e69785d723d1752bd9_v10style_w2_900p.npz`
+   - Sigs:
+     `ab7e4b818773 + 697a82e582d5 + 85d941c82b94 + 7232316f9ca3 +
+     d17573abc0e3 + 2bd9da52c43a`.
+   - Recipe: pointer/legacy BC2 width 2, non-winner-only, score bands `900+`,
+     `win/loss/draw=1.5/0.4/0.8`.
+
+Monitoring commands:
+
+```bash
+ssh ks 'cd /data/jie/ptcg_rl_git_v7_baseline_20260804 && tail -f logs/repro_alakazam_ogerpon_20260816/runner.log'
+ssh ks 'cd /data/jie/ptcg_rl_git_v7_baseline_20260804 && pgrep -af "run_repro_alakazam_ogerpon_20260816|bc2_train.py.*repro_alakazam_ogerpon"'
+ssh ks 'cd /data/jie/ptcg_rl_git_v7_baseline_20260804 && nvidia-smi'
+```

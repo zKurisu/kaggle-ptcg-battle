@@ -82,6 +82,61 @@ Interpretation:
   train), but its `set` loss was not clearly improving.  Test it separately
   after completion before considering it for submission.
 
+Follow-up random g300 completed:
+
+```text
+script: /tmp/run_ogerpon_random_g300_with_submissions_20260817.sh
+remote output:
+  logs/repro_alakazam_ogerpon_20260816/random_ogerpon_g300_20260817/
+local backup:
+  artifacts/repro_alakazam_ogerpon_20260816/logs/random_ogerpon_g300_20260817/
+games: 300
+workers: 3 per eval
+max_parallel evals: 6
+max_turns: 700
+```
+
+Final random g300 ranking:
+
+```text
+100.0% hist_shadow_teal_mask_ogerpon_5899c772_yan       300/300
+100.0% hist_pop_v11all_teal_mask_ogerpon_5899c772_2     300/300
+ 99.7% current_top6_ab7e                                299/300
+ 99.3% hist_ogerpon_top2_v7sig                          298/300
+ 99.3% hist_ogerpon5899_w4legacy_0801_0810_b256         298/300
+ 99.0% current_top6_697                                 297/300
+ 98.3% hist_submission_ogerpon_v9_gameplan              295/300
+ 98.3% hist_submission_ogerpon_v8_mixed                 295/300
+ 98.3% hist_submission_ogerpon_v10_fixed_top2           295/300
+ 98.0% current_top2_ab7e                                294/300
+ 97.7% hist_ogerpon_top2_repro_v9_w2                    293/300
+ 97.3% hist_submission_ogerpon_v10_fixed_top3           292/300
+ 96.7% current_top4_ab7e                                290/300
+ 96.3% current_top6_723                                 289/300
+ 92.7% current_top2_85d                                 278/300
+ 82.0% current_top4_2bd9                                245/300
+ 78.7% current_top4_2a                                  236/300
+```
+
+Updated interpretation:
+
+- The g30 screen overstated several candidates.  g300 separates them clearly.
+- Best Ogerpon base behavior is still the historical 5899 v11 pair:
+  `hist_shadow_teal_mask_ogerpon_5899c772_yan` and
+  `hist_pop_v11all_teal_mask_ogerpon_5899c772_2`, both `300/300`.
+- Among current 0801-0815 retrains, only `current_top6_ab7e` looks close to the
+  historical baselines on random (`299/300`).  `current_top6_697` is acceptable
+  but weaker (`297/300`).
+- Avoid `current_top4_2a` and `current_top4_2bd9`.  Their failures are too
+  large for submission or RR use as strong Ogerpon policies.
+- The Ogerpon lossopt/histplan w3 run has now completed.  Best checkpoint:
+  `checkpoints/repro_alakazam_ogerpon_20260816/bc2_ogerpon_current_top4_ab7e85d2bd92a_lossopt_histplan_w3_900p.npz`.
+  Best metric was `policy_raw=0.7974`; epoch 7/8 and 8/8 had worse validation
+  (`0.8056`, `0.8107`), so it effectively early-stopped before the end.  Its
+  final validation first-action accuracy was about `0.728`, but `set` loss did
+  not improve much.  It was not included in the g300 run because training
+  finished after g300 started; test it separately before any use.
+
 ## Update: Final Submission Sprint 2026-08-16
 
 User pivot after the rule-fusion loop:

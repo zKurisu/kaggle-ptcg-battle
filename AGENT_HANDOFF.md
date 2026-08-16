@@ -13469,3 +13469,17 @@ Alakazam training and eval:
   local model pool. The main caveat is that this is still a local pool result;
   previous Alakazam submissions underperformed online when early ladder had
   unmodeled signatures/decks.
+
+Packaged submission candidate:
+
+- Remote:
+  `/data/jie/submission/alakazam_20260817/submission_lossopt_alakazam_7f9_all600_histplan_w4_0801_0815.tar.gz`
+- Local:
+  `/home/jie/Do/0_PTCG/submission/alakazam_20260817/submission_lossopt_alakazam_7f9_all600_histplan_w4_0801_0815.tar.gz`
+- Size: `93.1 MiB` from packaging output (`94M` on disk).
+- Contents checked: top-level `cg/`, `deck.csv`, `main.py`, `policy.npz`,
+  `ptcg_rl/`.
+- Policy:
+  `checkpoints/alakazam_rebase_0801_0815_20260816/bc2_lossopt_alakazam_7f9_all600_histplan_w4_0801_0815.npz`
+- Deck:
+  `logs/ladder_pool_0812_all_v13_20260813/decks/7f9a538936e3_alakazam_yushin_ito.csv`

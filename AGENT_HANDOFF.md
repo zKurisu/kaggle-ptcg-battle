@@ -13510,3 +13510,33 @@ Correction after user questioned the timestamp:
   has stronger local evidence (`99.6-100.0%` random and strong RR), while the
   actual overnight repro package is useful as an ablation/correction package
   but is **not** better on quick random.
+
+## 2026-08-17 Ogerpon Package For Marnie-heavy Environment
+
+User asked to package the best Ogerpon from the new reproduction training
+because the current environment appears to contain many Marnie decks.
+
+Selected package:
+
+- Candidate: `current_top6_ab7e`
+- Policy:
+  `checkpoints/repro_alakazam_ogerpon_20260816/bc2_ogerpon_current_top6_ab7e69785d723d1752bd9_v10style_w2_900p.npz`
+- Deck:
+  `logs/ladder_pool_0814_0815_current_20260816/decks/ab7e4b818773_teal_mask_ogerpon_rmy.csv`
+- Local evidence:
+  - New Ogerpon retrain random g300: `299/300`, WR `0.997`, best among the
+    current retrain Ogerpon candidates.
+  - Direct historical Ogerpon g60: roughly even to slightly favorable vs most
+    historical versions, but slightly behind `hist_w4legacy_5899` (`29/60`).
+- Remote package:
+  `/data/jie/submission/ogerpon_20260817/submission_ogerpon_current_top6_ab7e_v10style_w2_900p.tar.gz`
+- Local package:
+  `/home/jie/Do/0_PTCG/submission/ogerpon_20260817/submission_ogerpon_current_top6_ab7e_v10style_w2_900p.tar.gz`
+- Size: `9.3 MiB` from packaging output (`9.4M` on disk).
+- Contents checked: top-level `cg/`, `deck.csv`, `main.py`, `policy.npz`,
+  `ptcg_rl/`.
+
+Operational note:
+
+- The interrupted Alakazam epoch random audit was still running and was stopped
+  before packaging Ogerpon to free CPU.

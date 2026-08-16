@@ -21,10 +21,22 @@ LINE_BY_ARCHETYPE: dict[str, dict[str, set[int] | int]] = {
 }
 
 ROUTE_OPTION_TYPES = {TYPE_CARD, TYPE_PLAY, TYPE_EVOLVE}
+ROUTE_BLOCKED_CONTEXTS = {
+    8,   # DISCARD
+    13,  # DAMAGE_COUNTER
+    14,  # DAMAGE_COUNTER_ANY
+    16,  # DAMAGE_COUNTER variants in older traces
+}
 
 
 def normalize_archetype(value: str) -> str:
     return str(value or "").strip().lower().replace("_", " ")
+
+
+def route_context_allowed(select_context: int | None) -> bool:
+    if select_context is None:
+        return True
+    return int(select_context) not in ROUTE_BLOCKED_CONTEXTS
 
 
 def route_targets(
@@ -34,6 +46,7 @@ def route_targets(
     opt_card,
     opt_card2,
     *,
+    select_context: int | None = None,
     max_options: int | None = None,
 ) -> tuple[np.ndarray, int]:
     """Return explicit main-line route targets and route stage.
@@ -47,6 +60,8 @@ def route_targets(
     n_opt = len(np.asarray(opt_type).reshape(-1))
     out_n = int(max_options) if max_options is not None else n_opt
     targets = np.zeros(out_n, dtype=np.float32)
+    if not route_context_allowed(select_context):
+        return targets, 0
     if not spec or n_opt <= 0:
         return targets, 0
     board = np.asarray(board_cards, dtype=np.int64).reshape(-1)

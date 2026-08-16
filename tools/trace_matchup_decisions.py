@@ -137,6 +137,7 @@ DECISION_FIELDS = [
     "top_option_card_names",
     "top1_type_name",
     "top1_card_name",
+    "policy_rule_hits",
     "chosen_first_rank",
     "chosen_first_prob",
     "chosen_target_id",
@@ -342,6 +343,12 @@ def cards_by_type(opt_types: list[int], opt_cards: list[int], opt_type: int) -> 
 
 
 def ranking_fields(policy, obs: dict, chosen: list[int], *, top_n: int = 8) -> dict:
+    rule_hits = ""
+    if policy is not None and hasattr(policy, "last_rule_hits"):
+        try:
+            rule_hits = "|".join(str(x) for x in policy.last_rule_hits())
+        except Exception as exc:
+            rule_hits = f"rule_hit_error:{exc}"
     if policy is None or not hasattr(policy, "first_step_ranking"):
         return {
             "top_option_indices": "",
@@ -350,11 +357,14 @@ def ranking_fields(policy, obs: dict, chosen: list[int], *, top_n: int = 8) -> d
             "top_option_card_names": "",
             "top1_type_name": "",
             "top1_card_name": "",
+            "policy_rule_hits": rule_hits,
             "chosen_first_rank": "",
             "chosen_first_prob": "",
         }
     try:
         ranking = policy.first_step_ranking(obs)
+        if hasattr(policy, "last_rule_hits"):
+            rule_hits = "|".join(str(x) for x in policy.last_rule_hits())
     except Exception as exc:
         return {
             "top_option_indices": "",
@@ -363,6 +373,7 @@ def ranking_fields(policy, obs: dict, chosen: list[int], *, top_n: int = 8) -> d
             "top_option_card_names": f"rank_error:{exc}",
             "top1_type_name": "",
             "top1_card_name": "",
+            "policy_rule_hits": rule_hits,
             "chosen_first_rank": "",
             "chosen_first_prob": "",
         }
@@ -378,6 +389,7 @@ def ranking_fields(policy, obs: dict, chosen: list[int], *, top_n: int = 8) -> d
         "top_option_card_names": " | ".join(card_name(int(row["card"])) for row in top),
         "top1_type_name": type_name(int(top1.get("type", 0))) if top1 else "",
         "top1_card_name": card_name(int(top1.get("card", 0))) if top1 else "",
+        "policy_rule_hits": rule_hits,
         "chosen_first_rank": rank_by_idx.get(chosen_idx, ""),
         "chosen_first_prob": f"{prob_by_idx[chosen_idx]:.4f}" if chosen_idx in prob_by_idx else "",
     }
@@ -464,6 +476,7 @@ def encode_decision(
         "max_count": safe_int(sel.get("maxCount")),
         "option_count": len(opt_types),
         "chosen_len": len(chosen),
+        "chosen_indices": " ".join(map(str, chosen)),
         "chosen_types": " ".join(map(str, chosen_types)),
         "chosen_type_names": " ".join(type_name(t) for t in chosen_types),
         "chosen_cards": " ".join(map(str, chosen_cards)),

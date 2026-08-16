@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import random
 import sys
@@ -29,6 +30,24 @@ from tools.trace_matchup_decisions import (
     safe_int,
     type_name,
 )
+
+
+AREA_NAMES = {
+    1: "deck",
+    2: "hand",
+    3: "discard",
+    4: "active",
+    5: "bench",
+    6: "prize",
+    7: "stadium",
+    8: "energy",
+    9: "tool",
+    10: "evolution_stack",
+    12: "look",
+    13: "playing",
+    14: "deck_bottom",
+    24: "temporary",
+}
 
 
 def load_deck(path: str) -> list[int]:
@@ -85,18 +104,191 @@ def board_line(cur: dict, side: int) -> str:
             return ""
         cid = safe_int(poke.get("id"))
         hp, max_hp, dmg = pokemon_hp(poke)
-        return f"{card_name(cid)}({cid}) hp={hp}/{max_hp} dmg={dmg}"
+        energies = []
+        for card in poke.get("energyCards") or []:
+            eid = safe_int(card.get("id"))
+            if eid:
+                energies.append(card_name(eid))
+        if not energies:
+            for eid in poke.get("energies") or []:
+                eid = safe_int(eid)
+                if eid:
+                    energies.append(card_name(eid))
+        energy_text = ",".join(energies) if energies else "-"
+        return f"{card_name(cid)}({cid}) hp={hp}/{max_hp} dmg={dmg} en=[{energy_text}]"
 
     active = poke_text((p.get("active") or [None])[0] if p.get("active") else None)
     opp_active = poke_text((opp.get("active") or [None])[0] if opp.get("active") else None)
-    bench = " | ".join(f"{card_name(c)}({c})" for c in bench_cards(p)) or "-"
-    opp_bench = " | ".join(f"{card_name(c)}({c})" for c in bench_cards(opp)) or "-"
+    bench = " | ".join(poke_text(c) for c in (p.get("bench") or []) if c) or "-"
+    opp_bench = " | ".join(poke_text(c) for c in (opp.get("bench") or []) if c) or "-"
+    stadium = ""
+    stadium_cards = cur.get("stadium") or []
+    if isinstance(stadium_cards, list) and stadium_cards:
+        sid = safe_int((stadium_cards[0] or {}).get("id"))
+        stadium = f" stadium={card_name(sid)}({sid})"
     return (
         f"me active={active or '-'} bench=[{bench}] prizes={len(p.get('prize') or [])} "
         f"deck={safe_int(p.get('deckCount'))} hand={len(p.get('hand') or []) if p.get('hand') is not None else safe_int(p.get('handCount'))}; "
         f"opp active={opp_active or '-'} bench=[{opp_bench}] prizes={len(opp.get('prize') or [])} "
-        f"deck={safe_int(opp.get('deckCount'))} hand={safe_int(opp.get('handCount'))}"
+        f"deck={safe_int(opp.get('deckCount'))} hand={safe_int(opp.get('handCount'))}{stadium}"
     )
+
+
+def area_name(area) -> str:
+    value = safe_int(area, -1)
+    return AREA_NAMES.get(value, str(area))
+
+
+def format_log_event(event: dict) -> str:
+    typ = safe_int(event.get("type"), -1)
+    pid = event.get("playerIndex")
+    prefix = f"p{pid} " if pid is not None else ""
+    cid = safe_int(event.get("cardId"))
+    cname = card_name(cid) if cid else ""
+    if typ == 0:
+        return f"{prefix}shuffle"
+    if typ == 4 and cid:
+        return f"{prefix}draw/reveal {cname}({cid}) serial={event.get('serial', '')}"
+    if typ == 5:
+        return f"{prefix}opponent_draw"
+    if typ == 6:
+        card = f"{cname}({cid}) " if cid else ""
+        return (
+            f"{prefix}move {card}{area_name(event.get('fromArea'))}"
+            f"->{area_name(event.get('toArea'))} serial={event.get('serial', '')}"
+        )
+    if typ == 7:
+        return f"{prefix}move/unknown {area_name(event.get('fromArea'))}->{area_name(event.get('toArea'))}"
+    if typ == 8:
+        active = card_name(safe_int(event.get("cardIdActive")))
+        bench = card_name(safe_int(event.get("cardIdBench")))
+        return f"{prefix}switch active={active} bench={bench}"
+    if typ == 9:
+        before = card_name(safe_int(event.get("cardIdBefore")))
+        after = card_name(safe_int(event.get("cardIdAfter")))
+        return f"{prefix}change {before}({event.get('cardIdBefore', '')}) -> {after}({event.get('cardIdAfter', '')})"
+    if typ == 10 and cid:
+        return f"{prefix}play/ability/effect {cname}({cid}) serial={event.get('serial', '')}"
+    if typ == 11 and cid:
+        target = card_name(safe_int(event.get("cardIdTarget")))
+        return f"{prefix}attach {cname}({cid}) -> {target}({event.get('cardIdTarget', '')})"
+    if typ == 12 and cid:
+        target = card_name(safe_int(event.get("cardIdTarget")))
+        return f"{prefix}evolve {target}({event.get('cardIdTarget', '')}) -> {cname}({cid})"
+    if typ == 13 and cid:
+        target = card_name(safe_int(event.get("cardIdTarget")))
+        return f"{prefix}devolve {target}({event.get('cardIdTarget', '')}) -> {cname}({cid})"
+    if typ == 14 and cid:
+        before = card_name(safe_int(event.get("cardIdBefore")))
+        after = card_name(safe_int(event.get("cardIdAfter")))
+        return (
+            f"{prefix}move_attached {cname}({cid}) "
+            f"{before}({event.get('cardIdBefore', '')})->{after}({event.get('cardIdAfter', '')})"
+        )
+    if typ == 15:
+        return f"{prefix}attack card={cname}({cid}) attackId={event.get('attackId', '')}"
+    if typ == 16 and cid:
+        value = event.get("value", "")
+        mode = "counter" if event.get("putDamageCounter") else "damage"
+        return f"{prefix}{mode} {cname}({cid}) value={value}"
+    if typ == 22:
+        return f"{prefix}coin head={event.get('head')}"
+    if typ == 23:
+        return f"result winner={event.get('result')} reason={event.get('reason')}"
+    if typ in (17, 18, 19, 20, 21):
+        names = {
+            17: "poisoned",
+            18: "burned",
+            19: "asleep",
+            20: "paralyzed",
+            21: "confused",
+        }
+        return f"{prefix}{names[typ]} recover={event.get('isRecover')} card={cname}({cid})"
+    if typ == 2:
+        return f"{prefix}turn_start"
+    if typ == 3:
+        return f"{prefix}turn_end"
+    if "hasBasicPokemon" in event:
+        return f"{prefix}hasBasicPokemon={event.get('hasBasicPokemon')}"
+    return json.dumps(event, ensure_ascii=False, sort_keys=True)[:220]
+
+
+def public_logs(obs: dict, limit: int = 5) -> list[str]:
+    logs = obs.get("logs") or []
+    if not isinstance(logs, list):
+        return []
+    out: list[str] = []
+    for item in logs[-limit:]:
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, dict):
+            text = item.get("message") or item.get("text") or item.get("log") or ""
+            out.append(str(text) if text else format_log_event(item))
+        else:
+            out.append(str(item))
+    return out
+
+
+def option_detail(obs: dict, idx: int) -> str:
+    sel = obs.get("select") or {}
+    options = sel.get("option") or []
+    if not (0 <= idx < len(options)):
+        return f"{idx}:<missing>"
+    opt = options[idx] or {}
+    parts = [str(idx)]
+    for key in (
+        "type",
+        "playerIndex",
+        "area",
+        "index",
+        "inPlayArea",
+        "inPlayIndex",
+        "cardId",
+        "attackId",
+        "skillId",
+        "param1",
+        "param2",
+        "damage",
+        "remainDamageCounter",
+        "remainEnergyCost",
+    ):
+        if key in opt and opt.get(key) is not None:
+            value = opt.get(key)
+            if key == "cardId":
+                value = f"{value}:{card_name(safe_int(value))}"
+            parts.append(f"{key}={value}")
+    target = ""
+    cur = obs.get("current") or {}
+    players = cur.get("players") or []
+    pid = safe_int(opt.get("playerIndex"), safe_int(cur.get("yourIndex")))
+    area = safe_int(opt.get("area"), safe_int(opt.get("inPlayArea"), -1))
+    pos = safe_int(opt.get("index"), safe_int(opt.get("inPlayIndex"), -1))
+    poke = None
+    if 0 <= pid < len(players):
+        player = players[pid]
+        if area == 4:
+            active = player.get("active") or []
+            poke = active[pos] if 0 <= pos < len(active) else None
+        elif area == 5:
+            bench = player.get("bench") or []
+            poke = bench[pos] if 0 <= pos < len(bench) else None
+    if poke:
+        cid = safe_int(poke.get("id"))
+        hp, max_hp, dmg = pokemon_hp(poke)
+        target = f" target={card_name(cid)}({cid}) hp={hp}/{max_hp} dmg={dmg}"
+    return " ".join(parts) + target
+
+
+def option_details(obs: dict, indices_text: str, *, limit: int = 8) -> str:
+    indices = []
+    for tok in str(indices_text or "").split():
+        try:
+            indices.append(int(tok))
+        except Exception:
+            continue
+    if not indices:
+        return ""
+    return " || ".join(option_detail(obs, i) for i in indices[:limit])
 
 
 def issue_tags(row: dict) -> list[str]:
@@ -134,12 +326,23 @@ def format_decision(row: dict, obs: dict) -> list[str]:
         f"  chosen: {row.get('chosen_type_names')} {row.get('chosen_card_names')}",
         f"  top: {row.get('top_option_type_names')} :: {row.get('top_option_card_names')} :: p={row.get('top_option_probs')}",
     ]
+    chosen_details = option_details(obs, row.get("chosen_indices", ""))
+    if chosen_details:
+        lines.append(f"  chosen_options: {chosen_details}")
+    top_details = option_details(obs, row.get("top_option_indices", ""))
+    if top_details:
+        lines.append(f"  top_options: {top_details}")
+    if row.get("policy_rule_hits"):
+        lines.append(f"  rules: {row.get('policy_rule_hits')}")
     if row.get("chosen_target_name"):
         lines.append(
             f"  target: {row.get('chosen_target_name')} hp={row.get('chosen_target_hp')}/"
             f"{row.get('chosen_target_max_hp')} dmg={row.get('chosen_target_damage')} "
             f"area={row.get('chosen_target_area')} owner={row.get('chosen_target_owner')}"
         )
+    logs = public_logs(obs, limit=5)
+    if logs:
+        lines.append("  public_logs: " + " || ".join(logs))
     if tags:
         lines.append("  flags: " + ", ".join(tags))
     return lines
@@ -214,6 +417,8 @@ def main() -> None:
     p.add_argument("--opponent-policy", default="")
     p.add_argument("--opponent-deck", default="")
     p.add_argument("--games", type=int, default=100)
+    p.add_argument("--start-game", type=int, default=0,
+                   help="first game index to scan; seed is computed as --seed + game")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--target-outcome", choices=["loss", "win", "draw", "any"], default="loss")
     p.add_argument("--max-turns", type=int, default=700)
@@ -229,12 +434,14 @@ def main() -> None:
     t0 = time.time()
     selected = None
     counts = {"win": 0, "loss": 0, "draw": 0}
-    for g in range(args.games):
+    start_game = max(0, int(args.start_game))
+    end_game = start_game + max(0, int(args.games))
+    for scanned, g in enumerate(range(start_game, end_game), 1):
         outcome, trace, steps = play_game(args, g, args.seed + g, encoder, policy, opp_policy)
         counts[outcome] += 1
-        if args.progress_every and (g == 0 or (g + 1) % args.progress_every == 0):
+        if args.progress_every and (scanned == 1 or scanned % args.progress_every == 0):
             print(
-                f"{g + 1}/{args.games} win={counts['win']} loss={counts['loss']} draw={counts['draw']} "
+                f"{scanned}/{args.games} game={g} win={counts['win']} loss={counts['loss']} draw={counts['draw']} "
                 f"elapsed={time.time() - t0:.0f}s",
                 flush=True,
             )

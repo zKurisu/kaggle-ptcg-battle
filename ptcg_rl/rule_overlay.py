@@ -70,7 +70,9 @@ TEAM_ROCKET_LINE = {
 }
 MEGA_LUCARIO_LINE = {333, 673, 674, 675, 676, 677, MEGA_LUCARIO_EX, 1141, 1142, 1152}
 DRAGAPULT_LINE = {119, 120, 121}
-ALAKAZAM_LINE = {109, 245, 742}
+# Current Alakazam lists use the 741/742/743 Abra-Kadabra-Alakazam line.
+# Keep 109/245 for older deck variants that still appear in archived episodes.
+ALAKAZAM_LINE = {109, 245, 741, 742, 743}
 MEGA_LOPUNNY_LINE = {65, 66, 306, 858, 849}
 MEGA_LOPUNNY_SIGNATURE = {306, 858, 849}
 FESTIVAL_LINE = {42, 89, 90, 93}

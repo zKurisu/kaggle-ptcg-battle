@@ -458,6 +458,7 @@ class V15RowCorpus:
                 row["ot"],
                 row["oc"],
                 row["oc2"],
+                select_context=int(row.get("act_context", -1)),
                 max_options=max_options,
             )
             route_target_multi[bi] = route

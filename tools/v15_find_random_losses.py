@@ -20,6 +20,18 @@ sys.path.insert(0, str(_REPO.parent))
 from tools.eval_bc import _init_worker, _worker_play_one, load_deck
 
 
+def _isolated_play_one(args, deck: list[int], game: int, seed: int) -> tuple[int, int]:
+    ex_kwargs = {
+        "max_workers": 1,
+        "initializer": _init_worker,
+        "initargs": (args.policy, deck, False, 48, 4.0, int(args.max_turns), ""),
+        "max_tasks_per_child": 1,
+    }
+    with ProcessPoolExecutor(**ex_kwargs) as ex:
+        fut = ex.submit(_worker_play_one, (int(game), int(seed)))
+        return fut.result()
+
+
 def _fmt_eta(done: int, total: int, t0: float) -> str:
     elapsed = time.time() - t0
     rate = done / max(elapsed, 1e-9)
@@ -40,6 +52,8 @@ def main() -> None:
     p.add_argument("--progress-every", type=int, default=25)
     p.add_argument("--fresh-workers", action="store_true",
                    help="start a fresh worker process for each game; slower but avoids engine state leakage")
+    p.add_argument("--recheck-losses", action="store_true",
+                   help="re-run each candidate loss as an isolated single game and only keep confirmed losses")
     p.add_argument("--out-csv", required=True)
     args = p.parse_args()
 
@@ -73,6 +87,20 @@ def main() -> None:
         for done, fut in enumerate(as_completed(futs), 1):
             game, seed = futs[fut]
             win, timeout = fut.result()
+            if not int(win) and args.recheck_losses:
+                re_win, re_timeout = _isolated_play_one(args, deck, int(game), int(seed))
+                if int(re_win):
+                    print(
+                        f"  unconfirmed loss game={game} seed={seed} -> win on isolated recheck",
+                        flush=True,
+                    )
+                    win, timeout = re_win, re_timeout
+                else:
+                    print(
+                        f"  confirmed loss game={game} seed={seed} timeout={int(re_timeout)}",
+                        flush=True,
+                    )
+                    timeout = re_timeout
             wins += int(win)
             if not int(win):
                 losses.append({"game": int(game), "seed": int(seed), "timeout": int(timeout)})

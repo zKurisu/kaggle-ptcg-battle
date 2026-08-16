@@ -1,8 +1,167 @@
 # Agent Handoff
 
-Last updated: 2026-08-15 16:20 Asia/Shanghai.
+Last updated: 2026-08-16 14:15 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
+
+## Update: Final Submission Sprint 2026-08-16
+
+User pivot after the rule-fusion loop:
+
+- Time is now tight and there are only **5 Kaggle submissions** left.  Do not
+  spend the remaining window mainly on rule fusion.  Another remote agent may
+  continue that line separately on ks.
+- This branch should first recover and archive ks changes, then use historical
+  high-performing BC pipelines to retrain fast 0801-0815 models.
+- Candidate pipelines should be chosen from v7 onward, with bias toward versions
+  that had real Kaggle high-water marks or robust local results.  Later v14/v15
+  changes often did not translate to ladder gains, so do not assume newer is
+  better.
+- Current likely candidate archetypes include Marnie Grimmsnarl, Crustle Wall,
+  Teal Mask Ogerpon, Alakazam, and Festival Lead/Festival Illama.  Mega Lucario
+  and Mega Lopunny are also fallback candidates if 0815 ladder distribution
+  favors them.
+- Selection must combine:
+  1. 0815 ladder score-band distribution;
+  2. jie historical Kaggle submission scores/high-water marks;
+  3. historical local random/RR quality;
+  4. whether the pipeline can retrain 0801-0815 quickly enough;
+  5. whether the deck has a common current hard counter.
+- Avoid deleting archetype coverage from population/shadow scripts.  A remote
+  change that removed Iono Bellibolt, N's Zoroark, and Raging Bolt from default
+  archetype lists was intentionally not synced locally because it conflicts
+  with the broader ladder-pool coverage requirement.
+
+## Update: Hard Pivot To Alakazam Rule Work 2026-08-16 14:40
+
+User correction after context compaction:
+
+- Current rule/strategy optimization target is **Alakazam / 胡地**, not
+  Dragapult / 多龙.
+- Reason: Dragapult bases remain too weak and too complex for rule overlays to
+  rescue in the current loop. Dragapult can stay as a reference opponent and as
+  a later long-horizon research target, but it is not the active rule target.
+- Do not drift back into Dragapult-first work after compaction. If reading
+  older sections below, treat the Dragapult trace/Crustle work as background
+  evidence for why the target changed.
+- Active near-term base for rule isolation is still
+  `checkpoints/v14_sequence_0808_0812/pop_top2_allbands_parallel3/v14seq_alakazam_7f9a5389_1.pt`
+  with deck `7f9a538936e3_alakazam_yushin_ito.csv`, unless the
+  `alakazam_rebase_0801_0815_20260816` jobs produce a clearly better base.
+- Hard loop remains unchanged: random 100% first, then isolated RR, then
+  stress RR. For weak RR pairs, close-read full-game traces and high-ladder
+  teacher games before writing rules.
+
+Current candidate-selection principle:
+
+- If Alakazam also proves unsuitable, choose the next target by combining:
+  1. current 0815 ladder prevalence and score bands;
+  2. whether v7-v15 produced a locally usable base, not just one lucky Kaggle
+     burst;
+  3. rule-overlay leverage, meaning the deck has clear recurring tactical
+     mistakes that can be corrected with engine-aligned state rules;
+  4. absence of a single extreme, common hard counter in the current ladder.
+- The first fallback candidates to assess are Mega Lucario, Mega Lopunny,
+  Crustle Wall, and Marnie. Ogerpon is deck-signature sensitive and should not
+  be chosen without fresh top-sig base confirmation. Dragapult should be
+  deprioritized despite high ladder prevalence until a stronger base exists.
+
+## Update: Rule Target Ranking Requirement 2026-08-16 14:55
+
+User explicitly asked not to forget the broader target-selection requirement:
+
+- Judge all relevant archetypes, not only Dragapult and Alakazam. Current list
+  includes Dragapult, Alakazam, Mega Lucario, Teal Mask Ogerpon, Crustle Wall,
+  Marnie Grimmsnarl, Mega Lopunny, Cynthia Garchomp, Team Rocket Mewtwo,
+  Mega Starmie, Festival Lead, N's Zoroark, Archaludon, and other current
+  ladder archetypes as they appear.
+- Ranking dimensions:
+  1. deck complexity;
+  2. suitability for base-plus-rule improvement;
+  3. absence of obvious structural hard counters;
+  4. current 0815 Kaggle ladder distribution;
+  5. whether v7-v15 produced a locally usable base.
+- The current detailed record is
+  `docs/16_rule_target_ranking_20260816.md`.
+- Current conclusion remains: active rule target is Alakazam. If Alakazam fails,
+  first fallback targets are Mega Lucario, Mega Lopunny, and Crustle Wall.
+  Dragapult remains a high-priority opponent/meta deck but not the active
+  rule-target until a stronger base exists.
+
+## Update: ks Live Recovery And Active Loop 2026-08-16
+
+Current environment:
+
+- Active cwd is `ks:/home/jie/Do/0_PTCG/bak/ptcg_rl_git`.
+- Persistent project mirror is `/data/jie/ptcg_rl_git_v7_baseline_20260804`.
+- `checkpoints`, `logs`, and `data` in cwd are symlinked to `/data/...`.
+- This checkout currently reports `not a git repository` despite `.git`
+  existing in the sandbox view, so critical state must be recorded here and
+  copied to `/data/jie/ptcg_rl_git_v7_baseline_20260804/AGENT_HANDOFF.md`.
+
+Hard operating rule from user:
+
+- Keep iterating without stopping for status-only replies.
+- Gate order is strict: random 100% first, then RR.
+- When a model fails random or a key RR matchup, inspect a fixed-seed
+  step-by-step trace, not only aggregate metrics.
+- When local reasoning stalls, mine and close-read high-ladder player episodes
+  for the same matchup and verify action legality/meaning against `cg`.
+
+Active jobs:
+
+- `tmux:alakazam_rebase_0815`
+  - script `/tmp/ptcg_job.sh`
+  - log `/data/jie/ptcg_rl_git_v7_baseline_20260804/logs/alakazam_rebase_0801_0815_20260816/runner.log`
+  - currently extracting BC2/v13 corpus from 0801-0815 zips with 16 workers.
+  - next stages are Alakazam all600/history-plan, oldmethod high1100+aux900,
+    5892 all600, and v14 sequence diagnostic training.
+- `tmux:alakazam_rebase_eval_0815`
+  - script `/tmp/ptcg_eval_job.sh`
+  - waits for the rebase runner, then runs random and RR checks.
+- `tmux:rr_probe_after_random100_20260816`
+  - script `/tmp/ptcg_rr_probe.sh`
+  - log `/data/jie/ptcg_rl_git_v7_baseline_20260804/logs/rr_probe_after_random100_20260816/runner.log`
+  - running isolated candidate-only RR for current Alakazam and Dragapult
+    random-100 candidates against the common model pool, then current ladder
+    deck-random pool.
+
+Random hard-gate status:
+
+- `logs/random_loss_probe_20260816/summary.txt` shows both selected candidates
+  passed confirmed 500-game random:
+  - Alakazam base
+    `/data/.../checkpoints/v14_sequence_0808_0812/pop_top2_allbands_parallel3/v14seq_alakazam_7f9a5389_1.pt`
+    with deck `7f9a538936e3_alakazam_yushin_ito.csv`: confirmed 500/500.
+  - Dragapult base
+    `/data/.../checkpoints/v15_route_count_long_20260815/dragapult_cc2e_route_count_w512.pt`
+    with deck `cc2e995b5ad0_dragapult_kh0a.csv`: confirmed 500/500.
+- Some concurrent-worker apparent random losses rechecked to wins. Treat
+  concurrent `cg` random loss artifacts as non-final unless reproduced with
+  `--fresh-workers` or fixed trace.
+
+Early RR signal at 14:10:
+
+- Alakazam v14seq 7f9 vs Marnie b8f after 120 games: 65-55, WR 0.542.
+- Dragapult v15 route/count cc2e vs Marnie b8f after 120 games: 20-100,
+  WR 0.167. This is currently the first clear weak matchup to trace once the
+  broader RR probe finishes or if it remains the worst pair.
+- Dragapult same-model mirror-like pair was running around WR 0.37-0.40 early;
+  wait for final CSV before treating it as a conclusion.
+
+Immediate next loop:
+
+1. Let `rr_probe_after_random100_20260816` finish unless CPU contention stalls
+   extraction badly.
+2. Parse its CSVs with `tools/summarize_round_robin.py` and
+   `tools/rr_archetype_matrix.py` if applicable.
+3. For the worst real RR pair, run `tools/v15_trace_game.py` with fixed seeds
+   and `--target-outcome loss` to produce readable full-game traces.
+4. Mine high-ladder episodes for the same matchup using existing tools such as
+   `tools/mine_top_player_strategy.py`, `tools/trace_teacher_episode.py`, and
+   `tools/close_read_teacher_trace.py`.
+5. Compare trace decisions against `cg/api.py`, `cg/game.py`, and available
+   action/select contexts before adding rules or route-plan changes.
 
 ## Update: v15 Rewrite Started 2026-08-15
 
@@ -11855,3 +12014,577 @@ Update 2026-08-15 07:45 CST:
 - Current trusted long check is running on ks:
   `logs/v15_route_count_long_20260815/gates/dragapult_cc2e_route_count_w512_serial_fresh/`
   It is intentionally slow because it uses one fresh worker at a time.
+
+## Update: v15 Dragapult Random/RR Trace Loop 2026-08-15 Night
+
+- Hard gate status:
+  - Dragapult `cc2e995b5ad0` route-count policy with the low-damage attack
+    readiness fix passed the authoritative random gate:
+    `300/300` wins, `0` confirmed losses.
+  - Gate file on ks:
+    `logs/v15_route_count_long_20260815/gates/dragapult_cc2e_default_low_attack_fix/random_losses.csv`.
+- Important trace tooling fix:
+  - `tools/trace_matchup_decisions.py` now records `chosen_indices`.
+  - `tools/v15_trace_game.py` now prints energies on active/bench Pokemon and
+    raw selected/top option details, including `attackId`.
+  - This is required for Dragapult debugging. Without energy and `attackId`,
+    `ATTACK` was ambiguous between `Jet Headbutt` (`attackId=153`, 70 damage)
+    and `Phantom Dive` (`attackId=154`, 200 + DCA).
+- Confirmed behavior bug from Alakazam RR traces:
+  - Some losses are not from failing to establish Dragapult. They are from an
+    established/attack-ready Dragapult remaining on bench while a support active
+    (often Fezandipiti ex or a line Pokemon) stays active.
+  - `ptcg_rl/v15/torch_policy.py` now has a narrow Dragapult pivot prior:
+    when bench has Dragapult ex with both Fire and Psychic energy and active is
+    not Dragapult ex, prefer attach-to-active to unlock retreat and prefer
+    RETREAT when legal.
+  - This rule is narrower than the previous default-disabled `support_retreat`
+    experiment and should be judged by both random gate and RR.
+- Another confirmed issue from enhanced traces:
+  - Active Dragapult ex with only Psychic energy repeatedly chooses
+    `attackId=153` (`Jet Headbutt`, 70 damage). The prior low-damage fix only
+    covers cases where an ATTACH option is available; if no attach is available,
+    the policy may still settle for 70 damage instead of digging for Fire.
+  - Next candidate fix, if RR remains weak: add an explicit active-Dragapult
+    "main attack readiness" rule that penalizes `attackId=153` under Alakazam
+    pressure and boosts Fire-energy search/draw options when they are legal.
+- Current running checks on ks:
+  - Pivot-rule random gate:
+    `logs/v15_route_count_long_20260815/gates/dragapult_cc2e_pivot_ready/random_losses.csv`
+    using `--workers 1 --fresh-workers --recheck-losses`.
+  - Pivot-rule Alakazam RR:
+    `logs/v15_route_count_long_20260815/rr/dragapult_v15_vs_alakazam5a5_g40_pivot_ready.csv`
+    using `--workers 1 --fresh-workers --seed 100017`.
+- Decision rule:
+  - Keep the pivot rule only if random remains `300/300` and Alakazam RR does
+    not fall below the previous low-attack-fix range (`13/40 = 0.325` on one
+    trusted serial run).
+  - If random fails, trace the first confirmed loss before changing more rules.
+  - If random passes but Alakazam RR is flat, trace RR losses and focus on
+    `attackId=153` vs `154` readiness and Fire-energy search.
+
+## Update: v15 Bidirectional Dragapult/Alakazam Loop 2026-08-15 Late Night
+
+- User asked to improve both sides of the Dragapult/Alakazam matchup instead of
+  only using Alakazam as a static opponent.
+- Trusted serial RR with v15 route-count models:
+  - Dragapult `cc2e995b5ad0`:
+    `checkpoints/v15_route_count_long_20260815/dragapult_cc2e_route_count_w512.pt`
+  - Alakazam `7f9a538936e3`:
+    `checkpoints/v15_route_count_long_20260815/alakazam_7f9_route_count_w512.pt`
+  - Decks:
+    `logs/ladder_pool_0812_all_v13_20260813/decks/cc2e995b5ad0_dragapult_kh0a.csv`
+    and
+    `logs/ladder_pool_0812_all_v13_20260813/decks/7f9a538936e3_alakazam_yushin_ito.csv`.
+  - Result: Dragapult only `7/40 = 0.175`, so Alakazam v15 is a strong
+    opponent and the active problem is still mostly Dragapult breaking Alakazam.
+- Alakazam random gate is running on ks:
+  `logs/v15_route_count_long_20260815/gates/alakazam_7f9_default/random_losses.csv`
+  with `--workers 1 --fresh-workers --recheck-losses`; at `225/300` it had no
+  confirmed loss. Several apparent losses disappeared on isolated recheck.
+- Engine/card definition notes:
+  - Dragapult ex `121`: `attackId=153` Jet Headbutt is only 70 damage;
+    `attackId=154` Phantom Dive is the real 200 + damage-counter attack.
+  - Current Alakazam line is `741 Abra -> 742 Kadabra -> 743 Alakazam`.
+    `743` attacks with `attackId=1072 Powerful Hand`, whose damage depends on
+    hand size and is not captured by static attack damage.
+  - Rare Candy is card `1079`. Card `1081` is Enhanced Hammer. Do not reuse old
+    planner assumptions that treat `1081` as Rare Candy.
+- New trace files:
+  - Alakazam loss vs v15 Dragapult:
+    `logs/v15_route_count_long_20260815/rr_trace/alakazam7f9_vs_dragapultcc2e_first_loss_v15_default.md`.
+    Alakazam showed avoidable delays: Rare Candy windows lost to Kadabra route,
+    active-line energy missed in high-pressure turns, and late attacks delayed
+    by low-value PLAY/ABILITY churn.
+  - Dragapult loss vs v15 Alakazam:
+    `logs/v15_route_count_long_20260815/rr_trace/dragapultcc2e_vs_alakazam7f9_first_loss_v15_default.md`.
+    Dragapult did reach Phantom Dive once, but DCA over-focused a bench Abra to
+    0 HP and later lacked a Fire+Psychic backup attacker, falling back to
+    `attackId=153`.
+- Code changes in `ptcg_rl/v15/torch_policy.py` after these traces:
+  - Added `743` to live primary attacker IDs and `741/742` to setup IDs.
+  - Added default Dragapult DCA safety prior: in `DAMAGE_COUNTER_ANY`, strongly
+    penalize selecting an opponent bench target that is already at 0 HP, and
+    prefer low-HP/KO-able Alakazam-line targets.
+  - Added default-disabled experiments:
+    `dragapult_backup_line_energy`,
+    `alakazam_fast_stage2`,
+    `alakazam_active_line_energy`,
+    `alakazam_attack_pressure`.
+    These require `V15_ENABLE_RULES=...`; they are not default submission logic.
+- Current ks A/B checks:
+  - Baseline with experimental rules disabled:
+    `logs/v15_route_count_long_20260815/rr_rules/dragapult_vs_alakazam_disable_all_g40.csv`
+  - Dragapult backup-line energy enabled:
+    `logs/v15_route_count_long_20260815/rr_rules/dragapult_vs_alakazam_drag_backup_g40.csv`
+  - Alakazam high-pressure rules enabled:
+    `logs/v15_route_count_long_20260815/rr_rules/dragapult_vs_alakazam_alakazam_rules_g40.csv`
+- Interpret those matrices carefully: row is Dragapult. Higher row win rate
+  means Dragapult got better; lower row win rate under Alakazam-only rules means
+  Alakazam got better. If Alakazam-only rules increase Dragapult WR, they are
+  hurting Alakazam and should remain disabled or be narrowed.
+
+## Update: ks-local session 2026-08-16
+
+- Codex is now running directly on ks. The visible cwd
+  `/home/jie/Do/0_PTCG/bak/ptcg_rl_git` initially contained only the sandbox
+  shell dirs and was not a real git repository.
+- Restored the working code into that cwd from
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804` with large dirs excluded, then
+  linked:
+  - `data -> /data/jie/ptcg_rl_git_v7_baseline_20260804/data`
+  - `logs -> /data/jie/ptcg_rl_git_v7_baseline_20260804/logs`
+  - `checkpoints -> /data/jie/ptcg_rl_git_v7_baseline_20260804/checkpoints`
+- Kaggle CLI was switched from the by account to the jie account. Do not print
+  or log the key. `~/.kaggle/kaggle.json` now reports username `jieorkarin`
+  and mode `0600`.
+- GPU status at session start: four A800 80GB GPUs idle.
+- Important permissions already granted in this ks session include:
+  `cp`, `mkdir`, `mv`, `tar`, `tmux`, `rsync`, `ln`, `chmod`, `tee`, `nohup`,
+  `nvidia-smi`, `ps -eo`, `pkill`, `kaggle competitions submit`, and concrete
+  Python entrypoints:
+  `tools/v15_train_plan_policy.py`, `tools/v15_random_gate.py`,
+  `tools/eval_round_robin.py`, `tools/v15_extract_blocks.py`,
+  `tools/v15_trace_game.py`, `tools/trace_teacher_episode.py`,
+  `tools/v15_find_random_losses.py`, `tools/v15_compare_random_loss.py`,
+  `tools/analyze_kaggle_replays.py`, `tools/build_ladder_pool.py`,
+  `tools/rr_archetype_matrix.py`, `tools/summarize_round_robin.py`.
+- Current active experiment:
+  `/tmp/ptcg_job.sh` runs a reproducible single-worker `--fresh-workers`
+  Dragapult `cc2e995b5ad0` vs Alakazam `7f9a538936e3` A/B:
+  - OFF: `V15_DISABLE_RULES=all`
+  - ON: `V15_ENABLE_RULES=dragapult_vs_alakazam_plan,alakazam_vs_dragapult_plan`
+  - Outputs under `logs/v15_rule_probe_20260816/`.
+- Earlier concurrent coarse A/B with the same checkpoints showed Dragapult row
+  WR improving from `8/40 = 0.200` to `17/40 = 0.425` when the matchup-plan
+  rules were enabled. Treat that as promising but not final until the serial
+  fresh run finishes.
+- Next mandatory loop:
+  1. Finish serial fresh A/B and record whether rule effect persists.
+  2. Trace at least one full model win and one full model loss with rule hits
+     visible in the markdown. Do not rely only on compressed counters.
+  3. Extend the same read-trace-rule-eval loop from Dragapult/Alakazam to
+     current ladder archetypes in `logs/ladder_pool_0812_all_v13_20260813`,
+     especially Marnie Grimmsnarl, Mega Lopunny, Mega Lucario, Ogerpon,
+     Crustle Wall, Team Rocket Mewtwo, Festival Lead, and other frequent
+     high-score decks.
+  4. For each matchup, use at least one full teacher markdown close-read before
+     promoting a rule to default. Compressed timelines are useful indexes but
+     not a substitute for reading the full sequence.
+
+## Update: 2026-08-16 v15 rule close-read checkpoint
+
+- Persistent storage rule: all critical checkpoints/logs/results must stay under
+  `/data`. In this working copy, `data`, `logs`, and `checkpoints` are symlinks
+  into `/data/jie/ptcg_rl_git_v7_baseline_20260804`; after code/doc edits sync
+  source back there with rsync.
+- Serial fresh-worker Dragapult `cc2e995b5ad0` vs Alakazam `7f9a538936e3`
+  before the latest patch:
+  - rules disabled: `8/60 = 13.3%`
+  - `dragapult_vs_alakazam_plan,alakazam_vs_dragapult_plan`: `25/60 = 41.7%`
+  - This is a real structural jump above the 30% non-noise target, not just a
+    random-gate fluctuation.
+- Full trace close-read:
+  - Win trace: `logs/v15_rule_probe_20260816/trace_rules_on_dragapult_win_vs_alakazam.md`
+    shows the intended sequence: find/play Dreepy, attach into line, evolve
+    Drakloak, use Drakloak ability before committing Dragapult, evolve
+    Dragapult ex, pivot active, use Phantom Dive, then DCA repeatedly removes
+    Abra/Kadabra roots.
+  - Loss trace: `logs/v15_rule_probe_20260816/trace_rules_on_dragapult_loss_vs_alakazam.md`
+    shows two remaining continuous-strategy failures:
+    1. At step 53 the model evolves active Drakloak into Dragapult before using
+       Drakloak ability (`drakloak_ability_before_dragapult_evolve_miss`).
+    2. It commits the only Dragapult as active attacker without a backup Dreepy /
+       Drakloak line; once KO'd, it has to rebuild from Munkidori/Fezandipiti
+       and loses the prize race.
+- Latest source patch in `ptcg_rl/v15/torch_policy.py`:
+  - Adds `dragapult_vs_alakazam_plan:drakloak_ability_before_stage2`.
+  - Adds `dragapult_vs_alakazam_plan:backup_line_before_trade`.
+  - These are intentionally visible as `policy_rule_hits` in traces so the
+    next run can prove whether the planned multi-step behavior changed.
+- Common RR with existing models/rules is running under
+  `logs/v15_common_matchups_20260816/rr_existing_models_rules_g30.log`. Early
+  rows show Dragapult still very weak into Ogerpon, Mega Lucario, and Crustle,
+  so the next trace loop must not stay only on Alakazam.
+
+## Update: 2026-08-16 v15 Dragapult/Alakazam rule iteration
+
+- Current source has been synced back to
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804`.  Continue syncing after edits
+  because the active cwd is not a real git checkout.
+- Current retained rules in `ptcg_rl/v15/torch_policy.py` are the patch5-style
+  DvA rules:
+  - Dreepy/Drakloak/Dragapult line setup.
+  - Drakloak ability before stage2 evolve when both are available.
+  - Backup line before first active Dragapult trade.
+  - R/P energy discipline on the Dragapult line, D is penalized on that line,
+    and extra attachments to an already `R+P` line are penalized.
+  - Prefer making Phantom Dive available before Jet Headbutt; if no readiness
+    action exists, Jet is allowed as temporary damage.
+- Important A/B results:
+  - Patch3 fresh DvA: rules off `12/60 = 20.0%`, rules on `34/60 = 56.7%`.
+  - Patch5 after fixing the overattach bug: rules on `52/100 = 52.0%`.
+  - Patch5 confirm with larger sample: rules on `94/200 = 47.0%`.
+  - Patch6 broad `drakloak_ability_before_support` / wider disruption defer:
+    `45/100 = 45.0%`; this was worse and has been removed from current source.
+- Interpretation:
+  - The rule/plan overlay has a real effect and lifts Dragapult vs Alakazam
+    from roughly 10-20% to roughly 47% in the larger fresh-worker run.
+  - Do not claim a stable 55% matchup; the 60-game patch3 result was optimistic.
+  - The next useful work is common-pool side-effect checking and then close-read
+    traces for the next Dragapult weak matchup, especially Crustle, Ogerpon, or
+    Mega Lucario.
+
+## Update: 2026-08-16 ks persistence / autonomous loop
+
+- The active ks working directory is `/home/jie/Do/0_PTCG/bak/ptcg_rl_git`, but
+  it is not a git checkout.  Treat `/data/jie/ptcg_rl_git_v7_baseline_20260804`
+  as the persistent source of truth for artifacts.
+- `data`, `logs`, and `checkpoints` in the active cwd are symlinks into
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804`.  Keep all new checkpoints,
+  random/RR CSVs, traces, runner logs, and handoff notes under those symlinked
+  paths so ks restarts do not erase them.
+- After source/doc edits in the active cwd, sync code back to `/data` with:
+  `rsync -a --exclude data --exclude logs --exclude checkpoints --exclude .git --exclude __pycache__ /home/jie/Do/0_PTCG/bak/ptcg_rl_git/ /data/jie/ptcg_rl_git_v7_baseline_20260804/`
+- A stale `/home/byer/PTCG/dsh_work` CPU-only Python process from an old
+  `marnie_daily` stats probe was killed on 2026-08-16 07:52.  Do not use the
+  by Kaggle account; use jie only.
+- `tmux` session `v15_common_rr` is running a current-rule common-pool RR:
+  `logs/v15_common_matchups_20260816/rr_existing_models_current_rules_g50.*`.
+  If it is too slow, replace it with Dragapult candidate-only scans first, then
+  full common RR after the next rule checkpoint.
+- `tools/v15_trace_game.py` now includes top-level public log tails under each
+  candidate decision.  Smoke checks are in
+  `logs/v15_rule_probe_20260816/smoke_trace_public_logs*.md`.
+- `tools/v15_rr_log_progress.py` parses in-progress RR logs from stdout, so
+  long RR jobs can be monitored before their final CSV is written.  If run from
+  an unapproved/sandboxed prefix it may be unable to write CSVs under `logs`,
+  but it still prints summary to stdout.
+- Two random-loss gates were started in tmux on 2026-08-16 08:04:
+  - `v15_rand_dragapult`:
+    `logs/v15_random_gate_20260816/dragapult_random_losses_g500_seed160001.*`
+  - `v15_rand_alakazam`:
+    `logs/v15_random_gate_20260816/alakazam_random_losses_g500_seed260001.*`
+  Both use `--recheck-losses`; confirmed losses should be followed with
+  `tools/v15_trace_game.py --start-game <game>` and, when comparing behavior
+  changes, `tools/v15_scripted_random_trace.py` / `tools/v15_compare_random_loss.py`.
+
+## Update: 2026-08-16 v15 common RR / Crustle close-read
+
+- `logs/v15_common_matchups_20260816/rr_existing_models_current_rules_g50.csv`
+  completed.  Matrix highlights:
+  - Dragapult `cc2e995b`: Crustle `4/50 = 0.080`, Ogerpon 0.200, Lucario
+    0.240, Alakazam 0.400, Lopunny 0.420, Marnie 0.120.
+  - Crustle `7ee600c6`: beats Dragapult 0.920, Ogerpon 0.900, Lucario 0.700,
+    Lopunny 0.620, Marnie 0.580; loses to Alakazam 0.420.
+  - This confirms Crustle is a hard RR filter and Dragapult-vs-Crustle is the
+    next mandatory weak-matchup target after DvA.
+- Source changes in `ptcg_rl/v15/torch_policy.py` were synced to `/data`.
+  Active Crustle rules now include:
+  - generalized Dragapult R/P energy discipline beyond Alakazam;
+  - `crispin_pick_missing_rp` for deck/search selections;
+  - Boss-over-Hammer search priority when active Crustle has a non-wall bench
+    target;
+  - `single_wall` branch for active Crustle with no bench, where ex attack
+    damage is ineffective and Drakloak/energy denial is the only plausible
+    route.
+- Fixed-seed Crustle traces:
+  - patch2: `logs/v15_rule_probe_20260816/crustle_patch2/trace_dragapult_seed461001_rules_on.md`
+    still lost, but exposed Crispin/Boss search bugs.
+  - patch3: `logs/v15_rule_probe_20260816/crustle_patch3/trace_dragapult_seed461001_rules_on.md`
+    fixed R/P search, but lost because opponent stayed as single active
+    Crustle; Boss had no target and Dragapult ex attacks into the active wall
+    were no-ops (`damage Crustle value=0`).
+  - patch4 is running/next at
+    `logs/v15_rule_probe_20260816/crustle_patch4/trace_dragapult_seed461001_rules_on.md`.
+  - patch5:
+    `logs/v15_rule_probe_20260816/crustle_patch5/trace_dragapult_seed461001_rules_on.md`
+    confirms `dca_redirect` hits, but still loses.
+- Patch5 RR result:
+  `logs/v15_rule_probe_20260816/crustle_patch5/rr_dragapult_crustle_rules_on_g120.csv`
+  is `10/120 = 8.3%`, worse than the old off baseline `11/120 = 9.2%`.
+  Do not promote the current Crustle overlay as an improvement.  Treat it as a
+  diagnostic lens only.
+- Next Crustle work should not add more small action priors.  It needs either:
+  1. trace a patch5 win to see whether wins are mostly opponent/seed luck;
+  2. find a real non-ex / alternate attacker route for the Dragapult deck;
+  3. test a different Dragapult deck sig with a Crustle answer; or
+  4. explicitly modify decklist and then build a teacher/rule route for the new
+     tech card.  The current `cc2e995b` list appears structurally weak into
+     active Crustle because Dragapult ex attack damage is prevented.
+
+## Update: 2026-08-16 expert close-read rule
+
+- Hard working rule from the user: when local search/rules cannot find a
+  matchup solution, stop guessing from aggregate RR/random numbers and inspect
+  high-score games.  For the current meta, prefer current 1200+ teams from the
+  latest leaderboard, then 1100+ if the exact 1200+ sample is too sparse.
+  Close-read at least one complete win trace and one complete loss trace before
+  writing a rule or route overlay.
+- Latest leaderboard snapshot pulled at 2026-08-16 09:48 is stored under
+  `logs/info_pull_current_20260816/`.  Local complete episode zips existed up
+  through 2026-08-13; 2026-08-14 was previously partial.  A tmux downloader
+  `ptcg_download_0814_0815` was started to restore 2026-08-14 and 2026-08-15
+  into `/data/jie/episodes_raw`.
+- Current 1200+ leaderboard teams as of that snapshot include
+  `やる気元気ミワハルキ`, `ANDPAD kaggler team`, `goonew`, `flg`,
+  `James Cox & Henry Chao`, and `KawattaTaido`.  The 08-12/08-13 local pool can
+  only partially align these teams to deck sigs, so wait for 08-14/08-15
+  episode restore before treating their latest deck sigs as known.
+- Exact `cc2e995b5ad0` 1200+ Dragapult wins vs hard Crustle
+  `7ee600c6f769` are under
+  `logs/teacher_trace_20260816/dragapult_vs_crustle/cc2e_1200_win_vs_7ee/`.
+  The partial summary with four wins is
+  `cc2e_1200_win_vs_7ee_summary.md`.  Common route signal: Hammer 8-11 uses,
+  Jamming about 2 uses, Munkidori 5-9 uses, and no reliable fast KO route into
+  active Crustle.  These wins are resource-denial games, not simple prize-race
+  games.
+- `7ac0181b46a0` LumenLiquidity is a different Dragapult route that looks much
+  better into Crustle in 08-08 to 08-13 stats.  Its key win vs `7ee600c6f769`
+  uses Chi-Yu active to KO early Dwebble, then Torchic/Rare Candy/Blaziken ex
+  to build an energy engine, and later Dragapult DCA targets Dwebble instead of
+  trying to break active Crustle.  This should be treated as a deck-route
+  candidate, not as a generic `cc2e` rule.
+
+## Update: 2026-08-16 1200+ Dragapult vs Crustle close-read lesson
+
+- Added `docs/15_expert_close_read_playbooks.md`.  This is now the required
+  place to record high-score full-game lessons before writing matchup rules.
+- The key exact current win is
+  `logs/teacher_trace_20260816/current_1200_dragapult_vs_crustle/close_read/2026-08-14_52c825f8-97dc-11f1-9286-0242ac130203_p0_cc2e995b5ad0_vs_7ee600c6f769_close_read.md`.
+- Full-game lesson from that win:
+  1. open/build Dreepy first when possible;
+  2. use Poffin/Poke Pad to create multiple Drakloak lines;
+  3. use Drakloak ability before stage-2/search commitment;
+  4. reserve R/P for the Dragapult line;
+  5. reserve Dark for Munkidori once Dragapult is online;
+  6. use Hammer/Jamming as a resource-war plan, not as optional small value;
+  7. Boss Dwebble or non-wall targets when active wall prevents progress;
+  8. use DCA plus Munkidori ability/attack to convert damage into
+     Dwebble/Crustle KOs.
+- Current suspected code gap: `dragapult_vs_crustle_plan` mostly covers setup
+  and bench DCA.  It likely under-covers active-Crustle Munkidori conversion and
+  Dark-to-Munkidori timing, which are visible in expert wins.
+## 2026-08-16 Alakazam Base/Rule Isolation Note
+
+Important correction: the earlier Dragapult/Alakazam `rule on` drop toward
+roughly `0.5` was not evidence that Alakazam became weaker.  That probe enabled
+Dragapult-side anti-Alakazam experimental rules, so it measured mixed rule
+interference.  Future Alakazam probes must isolate rule ownership: do not use
+`V15_ENABLE_RULES=all` for Alakazam base comparisons.
+
+User correction: enabling opponent rules is still useful when the goal is a
+Kaggle-ladder stress test, because stronger shadow opponents can better mimic
+the current ladder.  The issue is attribution, not the practice itself.  Keep
+two result buckets:
+
+- `isolated`: only the candidate-side rule/model change is active; use this to
+  decide whether a rule improved that candidate.
+- `stress`: opponent-side rules and stronger shadow policies may be active; use
+  this to estimate ladder robustness, but do not report a stress drop as proof
+  that the candidate base weakened.
+
+Code fix applied locally: `ptcg_rl/rule_overlay.py` now recognizes the current
+Alakazam line `{741,742,743}` while keeping old `{109,245}` ids.  The v15 torch
+overlay already mostly used new ids, but submission/resource-planner overlay
+could previously miss current Alakazam boards.
+
+Current Alakazam base probe outputs:
+
+- `/tmp/alakazam_rule_probe_20260816/base_v15_route_vs_current_common_g60.csv`
+- `/tmp/alakazam_rule_probe_20260816/base_v14seq_vs_current_common_no_mirror_g60.csv`
+- `/tmp/alakazam_rule_probe_20260816/README.md`
+
+Isolated current-common RR, g60:
+
+- `v15_route_count`: macro `0.637`, weighted `0.509`; weak into Marnie `0.417`
+  and Lopunny `0.433`.
+- `v14seq_alakazam_7f9a5389_1`: macro `0.775`, weighted `0.631`; weak point is
+  Marnie `0.483`, but it is strong into Dragapult `0.867`, Lopunny `0.733`,
+  Ogerpon `0.733`, Lucario `0.717`, Crustle `0.750`, TRM `0.917`, Festival
+  `1.000`.
+
+Conclusion: Alakazam is a better near-term rule-strengthening target than
+Dragapult.  Dragapult remains difficult because setup, DCA allocation,
+Munkidori conversion, energy discipline, and switching all have to work
+together; current Dragapult bases still fail too much before rules can reliably
+help.  Start Alakazam rule work from `v14seq_alakazam_7f9a5389_1.pt`, target
+Marnie first, and keep opponent-side experimental rules disabled during
+Alakazam-specific isolated eval.  Re-enable opponent rules deliberately in a
+separate stress eval after the isolated effect is measured.
+
+Implementation update: `ptcg_rl/seq/torch_policy.py` now supports traceable
+sequence-policy tactical rules via `SEQ_ENABLE_RULES` or `V15_ENABLE_RULES`.
+It also exposes `first_step_ranking()` and `last_rule_hits()` for v14 `.pt`
+checkpoints, so trace markdown can show whether a rule actually fired.
+Currently implemented rule: `alakazam_vs_marnie_plan`, disabled by default.
+
+## 2026-08-16 Alakazam Rebase 0801-0815 Runner
+
+User asked to use idle GPUs to extract a fresh `0801..0815` corpus and train a
+few Alakazam bases, while leaving spare GPU capacity for ongoing optimization.
+
+Runner:
+
+- Script: `/tmp/ptcg_job.sh`
+- tmux session: `alakazam_rebase_0815`
+- Persistent log dir:
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804/logs/alakazam_rebase_0801_0815_20260816`
+- Persistent checkpoint dir:
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804/checkpoints/alakazam_rebase_0801_0815_20260816`
+- Episode link dir:
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804/data/episodes_0801_0815_links_20260816`
+- BC2/v13 corpus target:
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804/data/bc_corpus_banded_v13_0801_0815_state_token_20260816`
+- v14 sequence corpus target:
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804/data/seq_corpus_v14_0801_0815_hq_20260816`
+- Aux winner corpus target:
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804/data/bc_corpus_alakazam_high900_winners_0801_0815_20260816`
+
+Key design choices:
+
+- The runner links only `2026-08-01` through `2026-08-15` episode zips before
+  extraction, to avoid accidentally sweeping restored July zips.
+- It saves jie submission history to
+  `jie_submissions_20260816.csv` and writes
+  `alakazam_submission_summary.md`.
+- Time-aware submission read:
+  `submission_lossopt_alakazam_7f9_20260812` was the best relevant Alakazam
+  family in jie submissions (`929.4` on 08-12, `922.6` on 08-13, `890.0` on
+  08-14, then `794.4` on 08-15). Treat this as a recipe clue, not as proof that
+  the same tarball fits the current ladder.
+- Because extracted `score_band` is a static leaderboard snapshot label, not a
+  real per-game ladder score, the new 7f9 lossopt run uses all `600+` bands to
+  retain climb/opponent coverage. A separate old-method run keeps the historical
+  `1100+` main plus `900+` winner aux recipe for contrast.
+- The runner keeps GPU3 free during the main BC2 phase.
+
+Training queue in that runner:
+
+1. `bc2_lossopt_alakazam_7f9_all600_histplan_w4_0801_0815.npz`
+   - GPU0, cross-attn, history/log/board history, step-plan, raw policy loss,
+     all `600+` score bands, deck sig `7f9a538936e3`, plus Alakazam high900
+     winner aux.
+2. `bc2_oldmethod_alakazam_7f9_high1100_aux900_w4_0801_0815.npz`
+   - GPU1, legacy pointer/no history, batch 512, main `1100+`, same high900
+     winner aux. This reproduces the old high900-winner method more faithfully.
+3. `bc2_lossopt_alakazam_5892_all600_histplan_w4_0801_0815.npz`
+   - GPU2, cross-attn history/step-plan, deck sig `589269aab27e`, all `600+`,
+     plus high900 winner aux.
+4. After BC2 jobs and v14 extraction finish:
+   `v14seq_alakazam_7f9_0801_0815_diag.pt`
+   - GPU2, v14 sequence policy, diagnostic ablations and per-epoch random
+     smoke enabled.
+
+Monitor:
+
+```bash
+tmux ls
+tail -f /data/jie/ptcg_rl_git_v7_baseline_20260804/logs/alakazam_rebase_0801_0815_20260816/runner.log
+nvidia-smi
+ps -eo pid,ppid,stat,etime,pcpu,pmem,rss,cmd | grep -E 'ptcg_job|bc_extract_v2|v14_extract_sequences|bc2_train|v14_train_sequence' | grep -v grep
+```
+
+Eval watcher:
+
+- Script: `/tmp/ptcg_eval_job.sh`
+- tmux session: `alakazam_rebase_eval_0815`
+- Output dir:
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804/logs/alakazam_rebase_0801_0815_20260816/eval_after_train`
+- It waits for the main runner end marker or tmux exit, then evaluates:
+  - random 500 for all produced Alakazam checkpoints.
+  - candidate-only RR g80 against
+    `logs/v15_common_matchups_20260816/eval_manifest_existing_models.csv`.
+  - candidate-only g40 against current `0814_0815` ladder deck pool using
+    random policies, mainly as broad legal/deck coverage stress rather than a
+    strong-ladder estimate.
+- It deliberately runs with rule overlays disabled; use this as an isolated
+  base-quality check. Run separate stress evals later with opponent rules or
+  stronger shadows enabled.
+
+## 2026-08-16 Random-Loss Probe Loop
+
+User restated the hard loop: first push the base to random `100%`, then run RR;
+when stuck, read high-ladder games step-by-step and compare against the `cg`
+engine interface/source.
+
+Started lightweight probe while the 0801-0815 extraction runs:
+
+- Script: `/tmp/ptcg_random_loss_probe.sh`
+- tmux session: `random_loss_probe_20260816`
+- Output dir:
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804/logs/random_loss_probe_20260816`
+- Candidates:
+  - Alakazam base:
+    `checkpoints/v14_sequence_0808_0812/pop_top2_allbands_parallel3/v14seq_alakazam_7f9a5389_1.pt`
+    with deck `logs/ladder_pool_0812_all_v13_20260813/decks/7f9a538936e3_alakazam_yushin_ito.csv`
+  - Dragapult base:
+    `checkpoints/v15_route_count_long_20260815/dragapult_cc2e_route_count_w512.pt`
+    with deck `logs/ladder_pool_0812_all_v13_20260813/decks/cc2e995b5ad0_dragapult_kh0a.csv`
+- The probe uses `tools/v15_find_random_losses.py --games 500 --workers 8
+  --recheck-losses`, then traces the first confirmed loss with
+  `tools/v15_trace_game.py`.
+- Purpose: do not wait for RR to discover random/legal play issues; turn every
+  confirmed random loss into a reproducible trace and either fix a rule/overlay
+  or mark it as a base-model/deck issue.
+
+Probe result:
+
+- Alakazam `v14seq_alakazam_7f9a5389_1.pt`: `500/500` confirmed random wins.
+- Dragapult `dragapult_cc2e_route_count_w512.pt`: `500/500` confirmed random
+  wins.
+- Some concurrent-worker losses appeared during the search, but every one
+  rechecked as a win in isolated single-game replay. Treat them as concurrent
+  cg-eval artifacts unless reproduced with `--fresh-workers`.
+
+RR probe after random gate:
+
+- Script: `/tmp/ptcg_rr_probe.sh`
+- tmux session: `rr_probe_after_random100_20260816`
+- Output dir:
+  `/data/jie/ptcg_rl_git_v7_baseline_20260804/logs/rr_probe_after_random100_20260816`
+- It runs candidate-only isolated RR for the same two bases:
+  - current existing-model manifest
+    `logs/v15_common_matchups_20260816/eval_manifest_existing_models.csv`
+    with `games=120`.
+  - current `0814_0815` ladder deck pool as random policies, manifest-limit 80
+  and `games=50`, as a broad deck legality/coverage stress test.
+
+## 2026-08-16 Alakazam Rule Fusion Evidence Loop
+
+Current active target is Alakazam / 胡地 rule and strategy fusion.  Dragapult
+is still useful as an opponent/reference, but do not drift back to Dragapult as
+the main target unless Alakazam is explicitly judged unsuitable.
+
+Use two evidence tracks in parallel:
+
+1. Local failure trace:
+   - Reproduce deterministic losses with `tools/v15_trace_game.py`.
+   - Read every turn/action, not just aggregate counters.
+   - Identify concrete bad actions: premature prize taking, late engine churn,
+     missed attacker rebuild, wrong disruption timing, wrong target, retreat or
+     attach that breaks next-turn continuity.
+2. High-score teacher close-read:
+   - Find real high-ladder wins in the same matchup.
+   - Do not trust easy wins where the opponent bricked.  Prefer games where the
+     opponent actually established or attacked with the key engine.
+   - For Alakazam vs Marnie, filter teacher wins where Marnie Grimmsnarl ex
+     card `648` appears in logs, especially `attack` events.
+
+Tool changes:
+
+- `tools/trace_teacher_episode.py` now supports `--episode-id` so a scanner can
+  select an exact candidate game and export only that game for close reading.
+- Temporary scanner:
+  `/tmp/find_alakazam_marnie_real_wins.py`
+  scans 0813-0815 episodes for Alakazam wins over Marnie, ranks candidates by
+  opponent Grimmsnarl events/attacks, and writes
+  `/tmp/alakazam_vs_marnie_real_wins_1100_0813_0815.csv`.
+
+Important negative result:
+
+- The experimental rule `alakazam_vs_marnie_churn_cap` in
+  `ptcg_rl/seq/torch_policy.py` is opt-in only and should not be enabled for
+  submission.  Strict serial g20 vs Marnie got worse:
+  default/no rules `6-14`, with `churn_cap` `2-18`.  Treat it as a trace probe
+  and a warning against guessed rules.  New rules must be teacher-derived.

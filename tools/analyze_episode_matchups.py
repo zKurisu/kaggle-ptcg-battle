@@ -335,7 +335,14 @@ def process_episode_zip(
     counters = Counter()
     t0 = time.time()
 
-    with zipfile.ZipFile(zip_path) as zf:
+    try:
+        zf_obj = zipfile.ZipFile(zip_path)
+    except zipfile.BadZipFile:
+        counters["bad_zip"] += 1
+        print(f"{zip_path.name}: bad zip skipped", flush=True)
+        return arch_stats, deck_stats, dict(counters)
+
+    with zf_obj as zf:
         names = [n for n in zf.namelist() if n.endswith(".json")]
         counters["episode_files"] += len(names)
         for i, name in enumerate(names, 1):

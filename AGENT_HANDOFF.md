@@ -12994,3 +12994,42 @@ RR versus balanced historical non-Marnie pool, 26 opponents, g40:
 Current conclusion: keep `submission_marnie_b8f_w3_900p_v11aug_0815` as the
 best available new Marnie candidate.  None of the other newly trained Marnie
 models beat it on this historical non-Marnie RR pool.
+
+Follow-up action: current Marnie continuation
+`bc2_v11aug_marnie_b8f_w4_all600_loss04_cont4_lr3e5` was tested against the
+same 26 historical non-Marnie pool and then stopped.  Correctly parsed
+candidate-only result:
+
+- mean 0.583, median 0.650, avg_delta -0.026 vs
+  `submission_marnie_b8f_w3_900p_v11aug_0815`, worse on 14/26.
+- Main regressions: `crustle_wall_v10pop_b141ae29` 0.550 vs baseline 0.775,
+  `shadow_crustle_wall_96d57241_liamk` 0.600 vs 0.800,
+  `final_submission_crustle_3cd_cross_w3_900p_loss04` 0.600 vs 0.775.
+
+Do not continue from the all600/w4 branch for Marnie.
+
+New Marnie baseline-family runner launched on ks:
+
+- Script: `/tmp/run_marnie_w3_baseline_family_20260816.sh`
+- Workdir: `/data/jie/ptcg_rl_v11_recover_20260816`
+- Logs: `logs/marnie_w3_baseline_family_20260816/`
+- Checkpoints: `checkpoints/marnie_w3_baseline_family_20260816/`
+- Corrected RR summary: `logs/marnie_w3_baseline_family_20260816/rr_summary_correct.csv`
+- Watcher: `/tmp/watch_marnie_w3_correct_summary_20260816.sh`
+
+The new jobs use `submission_marnie_b8f_w3_900p_v11aug_0815` as the anchor
+configuration: `deck_sig=b8f251a476e7`, score bands `900+`, `width=3`,
+`epochs=10`, `lr=9e-5`, loss weights `win/loss/draw=1.5/0.4/0.8`, and the
+same context/type/set-loss weights.  Active config family:
+
+- same recipe seed 11
+- same recipe seed 23
+- lower LR 7e-5, 12 epochs, seed 7
+- same recipe with loss weight 0.25
+- same recipe with opponent archetype weight `Teal Mask Ogerpon=2.0`
+- init from submitted baseline, LR 1e-5, 3 epochs, loss weight 0.35,
+  opponent archetype weight `Teal Mask Ogerpon=4.0`
+
+Important: the runner's built-in `rr_summary.csv` double-counts the
+round-robin matrix because `eval_round_robin.py` writes both row and reverse
+rows.  Use `rr_summary_correct.csv` or manually filter `row == candidate`.

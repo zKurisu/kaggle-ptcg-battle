@@ -13248,3 +13248,6 @@ Startup correction:
   `--board-history-feat-dim 80`.  The original failed job used remote default
   `board_history_feat_dim=32`, while the v13 corpus has
   `board_hist_feats (..., 12, 80)`.
+- Verification after restart: the mem48 Alakazam job reached epoch 1
+  (`epoch 01 25/960`, GPU0 about `29.9GB` used, `100%` util), so it cleared the
+  previous OOM point and is training normally.

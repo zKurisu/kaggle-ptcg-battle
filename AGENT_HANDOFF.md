@@ -12970,3 +12970,27 @@ As of this note, Marnie is still a poor current-environment archetype because
 0815 episode matchups show it is severely weak into Ogerpon and weak into many
 top-population decks.  Do not recommend a Marnie submit unless a new candidate
 dominates both current-environment RR and historical Marnie baselines.
+
+Update after online observation: user submitted
+`submission_marnie_b8f_w3_900p_v11aug_0815`, and it reached 1000+, so this
+model is now the active Marnie baseline.  Stop historical Marnie mirror
+comparisons for now; compare new Marnie candidates against this baseline on
+historical non-Marnie archetype policies.
+
+RR versus balanced historical non-Marnie pool, 26 opponents, g40:
+
+- `base_submitted_b8f_w3_900p`: mean 0.609, median 0.700.
+  Archetype means: Alakazam 0.746, Crustle 0.729, Ogerpon 0.150,
+  Lucario 0.875, Lopunny 0.812, Festival 0.608.
+- `marnie_b8f_w4_all600`: mean 0.562, delta -0.046, worse on 16/26.
+  It loses too much Alakazam/Crustle coverage; do not replace baseline.
+- `marnie_b8f_w4_900p`: mean 0.593, delta -0.015, worse on 12/26.
+  It slightly improves Ogerpon/Lopunny/Festival but gives up Crustle/Lucario,
+  including a severe drop vs `crustle_wall_v10pop_b141ae29` from 0.775 to
+  0.425.  Not a better submit candidate.
+- `marnie_2c22_w4_900p`: mean 0.484, delta -0.125, worse on 19/26.
+  Clearly reject; it collapses against Alakazam and Crustle.
+
+Current conclusion: keep `submission_marnie_b8f_w3_900p_v11aug_0815` as the
+best available new Marnie candidate.  None of the other newly trained Marnie
+models beat it on this historical non-Marnie RR pool.

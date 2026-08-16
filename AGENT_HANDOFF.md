@@ -13049,3 +13049,32 @@ Current checkpoint after inspection:
   With current timings, rough remaining wall time is about 15-20 min for
   `seed7_loss025` and about 25-35 min for `og2_seed7_loss04` including random
   and RR gate.
+
+Final result: all six Marnie baseline-family jobs completed.  None beat
+`submission_marnie_b8f_w3_900p_v11aug_0815` on the historical non-Marnie
+balanced pool.
+
+Corrected RR results, 26 opponents, g40:
+
+- `seed23_loss04`: mean 0.5923, avg_delta -0.0163, lost 14/26.
+- `og2_seed7_loss04`: mean 0.5904, avg_delta -0.0183, lost 12/26.
+  It improves Ogerpon from baseline 0.150 to 0.188, but gives up Alakazam,
+  Crustle, and Lucario coverage; not a replacement submit candidate.
+- `lr7e5_seed7_loss04`: mean 0.5865, avg_delta -0.0221.
+- `seed11_loss04`: mean 0.5846, avg_delta -0.0240.
+- `seed7_loss025`: mean 0.5846, avg_delta -0.0240.
+- `initbase_og4_lr1e5`: mean 0.5827, avg_delta -0.0260.
+
+Random g300:
+
+- `seed11_loss04`: 297/300
+- `lr7e5_seed7_loss04`: 300/300
+- `seed23_loss04`: 298/300
+- `initbase_og4_lr1e5`: 299/300
+- `seed7_loss025`: 300/300
+- `og2_seed7_loss04`: 296/300
+
+Local backup created under
+`remote_backups/marnie_w3_baseline_family_20260816/` with checkpoints and logs
+from ks.  The backup includes epoch checkpoints and should not be added to git
+unless explicitly requested.

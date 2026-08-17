@@ -1,7 +1,7 @@
 # PTCG RL / BC Training Handbook
-这个仓库用于 kaggle Pokemon TCG AI Battle 的比赛记录, 包含数据抽取、BC 训练、本地评测、Kaggle replay 分析、submission 打包等, [AGENT_HANDOFF.md](AGENT_HANDOFF.md) 中包含长期实验细节、远端任务和临时判断的记录.
+这个仓库用于 kaggle Pokemon TCG AI Battle 的比赛记录, 包含数据抽取、BC 训练、离线评测、Kaggle replay 分析、submission 打包等, [AGENT_HANDOFF.md](AGENT_HANDOFF.md) 中包含长期实验细节、长任务和临时判断的记录.
 
-得益于另一个比赛提供了 4 张 A800, 能并行开展很多训练, 在前中期基本能稳定在银牌. 但那个比赛的平台运维出现失误, 更新时导致服务器关机, 前中期大部分日志和 checkpoint 都丢失 (太多了因此没有完全拉回本地), 尤其是 round robin 本地 ladder 测试池丢失了比较伤. 由于 kaggle 比赛到了后期, 后续几天我又急于尝试新的方法, 没有完全恢复以前的强版本, 最终可能无获而归了.
+README 默认你已经在一台有 GPU、Kaggle CLI、Python 环境和 PTCG simulator 的训练环境中工作。所有命令都从仓库根目录执行，不依赖特定用户名、机器名或外部目录布局。
 
 ## Kaggle 比赛信息
 
@@ -23,11 +23,11 @@
 - 提交资源限制很紧：2 vCPU、约 12.2 GiB RAM、约 11.8 GiB disk、submission 包大小上限约 197.7 MiB。因此提交侧推理必须轻量，不能依赖训练时的大规模 PyTorch pipeline。
 - Kaggle Simulation track 官方时间线是 2026-06-16 开始，2026-08-16 UTC final submission deadline；PTCGABC 官网以日本时间显示为 2026-08-17 08:59 JST。之后约两周继续跑最终评估直到 leaderboard 收敛。
 
-这些规则直接影响本项目的方法选择: 线下可以用 A800 训练大模型和做大量 RR，但线上只能提交轻量 agent；本地 random/RR 只是代理指标，最终仍要通过 Kaggle replay 和 active ladder 反馈验证。
+这些规则直接影响本项目的方法选择：训练阶段可以使用更大的模型和大量离线 RR，但 submission 侧只能保留轻量推理；random/RR 只是代理指标，最终仍要通过 Kaggle replay 和 active ladder 反馈验证。
 
 ## PTCG 背景资料和外部参考
 
-Kaggle episode 只能告诉我们某个 agent 在当前天梯中做了什么，不一定能解释为什么这样打、如何打弱势 matchup。需要把真实 PTCG 资料当作 strategy seed，再通过本地 trace/RR 验证。
+Kaggle episode 只能告诉我们某个 agent 在当前天梯中做了什么，不一定能解释为什么这样打、如何打弱势 matchup。需要把真实 PTCG 资料当作 strategy seed，再通过离线 trace/RR 验证。
 
 ### 资料源
 
@@ -38,7 +38,7 @@ Kaggle episode 只能告诉我们某个 agent 在当前天梯中做了什么，�
 | [Play Limitless](https://play.limitlesstcg.com/) | 线上赛 decklists、metagame、pairings、win rate | 找更接近线上玩家的构筑和 side tech | 线上赛样本质量参差，需要筛 top cut / 高胜率玩家 |
 | [Limitless Docs](https://docs.limitlesstcg.com/player/decklists.html) | decklist 文本格式、PTCGL/Limitless 导出说明 | 用来规范 PTCG Live/Limitless decklist 到本项目 `deck.csv` 的转换 | PTCGL ALT 卡号可能需要用普通版本替换或删掉编号再匹配 |
 | [Trainer Hill](https://trainerhill.com/) / [Trainer Hill GitHub](https://github.com/Trainer-Hill) | meta overview、matchup data、decklist analysis、skeleton list 思路 | 查某 archetype 的核心卡、tech cards、对局热图 | 部分功能可能需要账号/付费；只作为外部先验 |
-| [PokeDeck Architect](https://pokedeckarchitect.com/meta) | 基于 Limitless 的 meta、win rate、top-8 转化、tech trend | 快速确认近期 meta 和可疑 hard counter | 第三方聚合，需回到原 decklist 或本地测试验证 |
+| [PokeDeck Architect](https://pokedeckarchitect.com/meta) | 基于 Limitless 的 meta、win rate、top-8 转化、tech trend | 快速确认近期 meta 和可疑 hard counter | 第三方聚合，需回到原 decklist 或离线测试验证 |
 | [Pokemon.com TCG Live](https://www.pokemon.com/us/pokemon-video-games/pokemon-trading-card-game-live) | 官方线上客户端、Standard/Casual/Ranked/Test Deck | 人工测试卡组启动顺序、关键资源管理、常见误操作 | PTCG Live 与 Kaggle simulator 的接口和可见信息不同，不能直接导出训练数据 |
 | 官方/社区策略文章、YouTube、Reddit `r/pkmntcg` / `r/PTCGL`、Limitless Discord | matchup guide、pilot notes、tech 选择、对局思路 | 把自然语言打法拆成可验证规则: setup priority、attach priority、evolve timing、target priority、resource preserve | 讨论质量差异很大，不能只凭单帖改模型；必须用 trace 和 RR 验证 |
 
@@ -59,7 +59,7 @@ Kaggle episode 只能告诉我们某个 agent 在当前天梯中做了什么，�
    - `tools/mine_strategy_trajectories.py` / `tools/build_trajectory_targets.py`: 生成 strategy labels；
    - `tools/build_shadow_pool.py`: 为新 decklist 训练 shadow opponent；
    - `tools/v15_trace_game.py`: 对比规则前后同一 fixed seed 对局。
-5. 只有当规则/资料能在本地 trace 中改变坏决策，并在 random/RR 或 Kaggle replay loss pool 中改善，才进入 submission 候选。
+5. 只有当规则/资料能在离线 trace 中改变坏决策，并在 random/RR 或 Kaggle replay loss pool 中改善，才进入 submission 候选。
 
 ### PTCG Live 如何结合
 
@@ -76,7 +76,7 @@ PTCG Live 更适合做人类策略验证，不适合直接当训练数据来源�
    - 哪些攻击目标或 bench damage 分配是关键；
    - 哪些回合应该保留资源而不是立即打出。
 4. 把这些记录写入 handoff 或专门的 strategy markdown，再转成 rule/plan/teacher 任务。
-5. 在 Kaggle simulator 中复现同类局面。PTCG Live 看到的打法只有通过本地 engine trace 验证后，才算进入本项目 pipeline。
+5. 在 Kaggle simulator 中复现同类局面。PTCG Live 看到的打法只有通过离线 engine trace 验证后，才算进入本项目 pipeline。
 
 关键 caveat:
 
@@ -86,7 +86,7 @@ PTCG Live 更适合做人类策略验证，不适合直接当训练数据来源�
 
 ## 0. 提交历史和版本结论
 
-下面是 Kaggle submission 的部分提交历史，分数来自本地保存日志和 2026-08-17 通过 `kaggle competitions submissions pokemon-tcg-ai-battle -v` 刷新的 public/private score。Kaggle 分数会随天梯环境变化，表里的分数是对应时间点的有效记录，不代表模型绝对强度。
+下面是 Kaggle submission 的部分提交历史，分数来自项目保存日志和 2026-08-17 通过 `kaggle competitions submissions pokemon-tcg-ai-battle -v` 刷新的 public/private score。Kaggle 分数会随天梯环境变化，表里的分数是对应时间点的有效记录，不代表模型绝对强度。
 
 ### 0.1 关键提交历史
 
@@ -154,30 +154,17 @@ kaggle competitions submissions pokemon-tcg-ai-battle -v
 2. `v14_*` 和 `v15_*` 是连续决策/计划学习实验线，产物通常是 `.pt`，不能只看最终 random/RR，要先看训练期诊断信号。
 3. Kaggle 提交次数有限。提交候选至少要通过：训练指标正常、random gate、RR 或 baseline-delta、失败 trace 审查。
 4. `random 100%` 只说明基础执行稳定，不等于 Kaggle 强；但如果 random 都不稳，通常不应提交。
-5. 历史提交只作为本地比较基线，不再用于提交。
+5. 历史提交只作为离线比较基线，不再用于提交。
 
 ## 2. 目录和环境
 
-在 `ks` 上推荐使用：
+在仓库根目录设置少量相对路径变量。默认原始 episode zip 放在仓库上一级的 `episodes_raw/`，simulator 引擎放在仓库上一级的 `cg/`。
 
 ```bash
-export PTCG_ROOT=/data/jie
-export REPO=$PTCG_ROOT/ptcg_rl_git_v7_baseline_20260804
-export EPISODES=$PTCG_ROOT/episodes_raw
-export CG_DIR=$PTCG_ROOT/cg
-cd "$REPO"
+export REPO=${REPO:-$(pwd)}
+export EPISODES=${EPISODES:-$REPO/../episodes_raw}
+export CG_DIR=${CG_DIR:-$REPO/../cg}
 mkdir -p data logs checkpoints
-```
-
-在本机推荐使用：
-
-```bash
-export PTCG_ROOT=/home/jie/Do/0_PTCG
-export REPO=$PTCG_ROOT/bak/ptcg_rl_git
-export EPISODES=$PTCG_ROOT/raw_episode
-export CG_DIR=$PTCG_ROOT/cg
-cd "$REPO"
-mkdir -p data logs checkpoints artifacts
 ```
 
 确认引擎和 Kaggle CLI 可用：
@@ -216,7 +203,7 @@ nvidia-smi
 leaderboard CSV 用于给 episode 标记 score 和 score band。每次重建 corpus 前建议下载一份新的。
 
 ```bash
-export LB_DIR=$PTCG_ROOT/leaderboard_$(date +%Y%m%d)
+export LB_DIR=logs/leaderboard_$(date +%Y%m%d)
 mkdir -p "$LB_DIR"
 kaggle competitions leaderboard pokemon-tcg-ai-battle --download -p "$LB_DIR"
 unzip -o "$LB_DIR/pokemon-tcg-ai-battle.zip" -d "$LB_DIR"
@@ -243,12 +230,6 @@ ls -lh "$EPISODES"/pokemon-tcg-ai-battle-episodes-2026-08-*.zip
 
 ```bash
 kaggle datasets download kaggle/pokemon-tcg-ai-battle-episodes-2026-08-16 -p "$EPISODES"
-```
-
-本机下载后同步到 `ks`：
-
-```bash
-scp "$EPISODES"/pokemon-tcg-ai-battle-episodes-2026-08-*.zip ks:/data/jie/episodes_raw/
 ```
 
 ## 4. 构建稳定 BC corpus
@@ -516,7 +497,7 @@ python3 -u tools/train_bc_population.py \
 
 ## 7. Shadow / RR policy pool
 
-本地 RR 要用 policy pool，而不是只有 deck 的 ladder pool。低质量 shadow 会抬高候选胜率，所以必须先做 random 审计。
+离线 RR 要用 policy pool，而不是只有 deck 的 ladder pool。低质量 shadow 会抬高候选胜率，所以必须先做 random 审计。
 
 生成 shadow manifest：
 
@@ -879,7 +860,7 @@ python3 tools/analyze_kaggle_replays.py "$SUB_ID" \
 column -s, -t logs/kaggle_replay_$SUB_ID/summary_by_arch.csv | head -80
 ```
 
-如果某个新 opponent deck 反复击败我们，把它加入本地 deck pool：
+如果某个新 opponent deck 反复击败我们，把它加入项目内 deck pool：
 
 ```bash
 python3 tools/build_ladder_pool.py \
@@ -908,7 +889,7 @@ test -f "$DECK"
 打包：
 
 ```bash
-export SUB_DIR=$PTCG_ROOT/submission/$(date +%Y%m%d)
+export SUB_DIR=submission/$(date +%Y%m%d)
 mkdir -p "$SUB_DIR"
 python3 tools/package_submission.py \
   --policy "$POLICY" \
@@ -932,17 +913,16 @@ kaggle competitions submit pokemon-tcg-ai-battle \
 kaggle competitions submissions pokemon-tcg-ai-battle -v | head -20
 ```
 
-## 13. 远端长任务模板
+## 13. 长任务模板
 
-长脚本先在 `/tmp` 写好，再上传到 `ks` 执行。
+长训练建议写成脚本再用 `nohup` 或 `tmux` 运行，避免 SSH/终端断开导致任务退出。下面模板假设脚本在当前服务器执行。
 
 ```bash
-cat >/tmp/run_ptcg_job.sh <<'SH'
+cat >run_ptcg_job.sh <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-export PTCG_ROOT=/data/jie
-export REPO=$PTCG_ROOT/ptcg_rl_git_v7_baseline_20260804
-export EPISODES=$PTCG_ROOT/episodes_raw
+export REPO=${REPO:-$PWD}
+export EPISODES=${EPISODES:-../episodes_raw}
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
@@ -953,23 +933,23 @@ cd "$REPO"
 nvidia-smi
 python3 --version
 SH
-chmod +x /tmp/run_ptcg_job.sh
+chmod +x run_ptcg_job.sh
 ```
 
-上传并后台执行：
+后台执行并查看日志：
 
 ```bash
-scp /tmp/run_ptcg_job.sh ks:/tmp/run_ptcg_job.sh
-ssh ks 'nohup bash /tmp/run_ptcg_job.sh >/tmp/run_ptcg_job.nohup.log 2>&1 & echo $!'
-ssh ks 'tail -f /tmp/run_ptcg_job.nohup.log'
+nohup bash run_ptcg_job.sh >logs/run_ptcg_job.nohup.log 2>&1 &
+echo $!
+tail -f logs/run_ptcg_job.nohup.log
 ```
 
-拉回关键产物：
+关键产物建议复制到稳定备份目录：
 
 ```bash
-mkdir -p artifacts/ks_sync_$(date +%Y%m%d)
-scp -r ks:/data/jie/ptcg_rl_git_v7_baseline_20260804/checkpoints/bc_aug_0801_0815 artifacts/ks_sync_$(date +%Y%m%d)/
-scp -r ks:/data/jie/ptcg_rl_git_v7_baseline_20260804/logs/bc_aug_0801_0815 artifacts/ks_sync_$(date +%Y%m%d)/
+mkdir -p artifacts/backup_$(date +%Y%m%d)
+cp -a checkpoints/bc_aug_0801_0815 artifacts/backup_$(date +%Y%m%d)/ 2>/dev/null || true
+cp -a logs/bc_aug_0801_0815 artifacts/backup_$(date +%Y%m%d)/ 2>/dev/null || true
 ```
 
 ## 14. 结果记录和提交代码
@@ -997,7 +977,7 @@ git commit -m "Update reproducible training handbook"
 
 ## 15. 常见问题
 
-### 15.1 为什么本地 RR 高，Kaggle 低？
+### 15.1 为什么离线 RR 高，Kaggle 低？
 
 常见原因：
 

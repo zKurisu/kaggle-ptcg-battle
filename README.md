@@ -25,6 +25,65 @@
 
 这些规则直接影响本项目的方法选择: 线下可以用 A800 训练大模型和做大量 RR，但线上只能提交轻量 agent；本地 random/RR 只是代理指标，最终仍要通过 Kaggle replay 和 active ladder 反馈验证。
 
+## PTCG 背景资料和外部参考
+
+Kaggle episode 只能告诉我们某个 agent 在当前天梯中做了什么，不一定能解释为什么这样打、如何打弱势 matchup。需要把真实 PTCG 资料当作 strategy seed，再通过本地 trace/RR 验证。
+
+### 资料源
+
+| 来源 | 适合拿什么 | 使用方式 | 注意事项 |
+| --- | --- | --- | --- |
+| [Limitless TCG](https://limitlesstcg.com/) | 大赛结果、top decklists、meta share、卡组骨架 | 找真实高分构筑、确认 archetype 主流 engine、导出/改写 decklist | 真实 Standard 环境不等于 Kaggle ladder，先转成 `deck.csv` 后用引擎测合法性 |
+| [Limitless Labs](https://labs.limitlesstcg.com/) | 更细的 tournament standings、metagame analysis、matchup 信息 | 用来判断“现实中某弱势局是否仍有 30% 左右胜率”、找可参考胜局 | 官方页面也提示其统计是站外计算，可能有误差，不能直接当训练标签 |
+| [Play Limitless](https://play.limitlesstcg.com/) | 线上赛 decklists、metagame、pairings、win rate | 找更接近线上玩家的构筑和 side tech | 线上赛样本质量参差，需要筛 top cut / 高胜率玩家 |
+| [Limitless Docs](https://docs.limitlesstcg.com/player/decklists.html) | decklist 文本格式、PTCGL/Limitless 导出说明 | 用来规范 PTCG Live/Limitless decklist 到本项目 `deck.csv` 的转换 | PTCGL ALT 卡号可能需要用普通版本替换或删掉编号再匹配 |
+| [Trainer Hill](https://trainerhill.com/) / [Trainer Hill GitHub](https://github.com/Trainer-Hill) | meta overview、matchup data、decklist analysis、skeleton list 思路 | 查某 archetype 的核心卡、tech cards、对局热图 | 部分功能可能需要账号/付费；只作为外部先验 |
+| [PokeDeck Architect](https://pokedeckarchitect.com/meta) | 基于 Limitless 的 meta、win rate、top-8 转化、tech trend | 快速确认近期 meta 和可疑 hard counter | 第三方聚合，需回到原 decklist 或本地测试验证 |
+| [Pokemon.com TCG Live](https://www.pokemon.com/us/pokemon-video-games/pokemon-trading-card-game-live) | 官方线上客户端、Standard/Casual/Ranked/Test Deck | 人工测试卡组启动顺序、关键资源管理、常见误操作 | PTCG Live 与 Kaggle simulator 的接口和可见信息不同，不能直接导出训练数据 |
+| 官方/社区策略文章、YouTube、Reddit `r/pkmntcg` / `r/PTCGL`、Limitless Discord | matchup guide、pilot notes、tech 选择、对局思路 | 把自然语言打法拆成可验证规则: setup priority、attach priority、evolve timing、target priority、resource preserve | 讨论质量差异很大，不能只凭单帖改模型；必须用 trace 和 RR 验证 |
+
+### 如何把资料变成本项目可用信息
+
+1. 先从 Limitless/Trainer Hill/PokeDeck Architect 找 archetype、主流 decklist、tech cards 和 matchup 方向。
+2. 把 decklist 转成本项目可用 `deck.csv`，放入 `logs/.../decks/` 或 `artifacts/.../decks/`，再用 `tools/eval_bc.py` 或 `tools/eval_round_robin.py` 验证引擎能加载。
+3. 对外部资料中的打法写成结构化 notes，例如：
+   - 开局优先找哪些 Basic / engine card；
+   - 哪些牌不能过早 discard；
+   - 先 ability 后 evolve，还是先 evolve；
+   - 贴能优先级；
+   - 对某 archetype 的攻击目标和 bench damage 分配；
+   - 什么时候应该 stall、什么时候必须 race prize。
+4. 把 notes 映射到代码或数据:
+   - `ptcg_rl/deck_plans.py`: deck-specific card tags、主 engine、资源优先级；
+   - `ptcg_rl/rule_overlay.py`: 可以明确判断的强规则或 action rerank；
+   - `tools/mine_strategy_trajectories.py` / `tools/build_trajectory_targets.py`: 生成 strategy labels；
+   - `tools/build_shadow_pool.py`: 为新 decklist 训练 shadow opponent；
+   - `tools/v15_trace_game.py`: 对比规则前后同一 fixed seed 对局。
+5. 只有当规则/资料能在本地 trace 中改变坏决策，并在 random/RR 或 Kaggle replay loss pool 中改善，才进入 submission 候选。
+
+### PTCG Live 如何结合
+
+PTCG Live 更适合做人类策略验证，不适合直接当训练数据来源。
+
+推荐流程:
+
+1. 从 Limitless 或 Kaggle 高分 deck 导入/手动复刻到 PTCG Live。
+2. 用 Test Deck / Casual / Ranked 观察真实玩家或 AI 环境下的启动顺序，特别是 Dragapult、Alakazam、Marnie 这类依赖多回合资源规划的卡组。
+3. 记录关键局面，不要只记录胜负:
+   - 第几回合开始攻击；
+   - 哪张 engine card 没启动会导致崩盘；
+   - 哪些 card reveal 暴露了对手手牌/计划；
+   - 哪些攻击目标或 bench damage 分配是关键；
+   - 哪些回合应该保留资源而不是立即打出。
+4. 把这些记录写入 handoff 或专门的 strategy markdown，再转成 rule/plan/teacher 任务。
+5. 在 Kaggle simulator 中复现同类局面。PTCG Live 看到的打法只有通过本地 engine trace 验证后，才算进入本项目 pipeline。
+
+关键 caveat:
+
+- PTCG Live 当前 Ranked 主要是 Standard format；Kaggle simulator 的可用卡池、bug、行动接口和计时约束可能不同。
+- PTCG Live 对局不能自动导出逐步训练标签。它的价值是帮助人理解“正确连续策略”，然后人工转成规则、plan label 或测试用 trace。
+- 外部资料中的真实 TCG matchup win rate 不能直接替代 Kaggle RR，因为 Kaggle agent 的错误分布和真实玩家不同。
+
 ## 0. 提交历史和版本结论
 
 下面是 Kaggle submission 的部分提交历史，分数来自本地保存日志和 2026-08-17 通过 `kaggle competitions submissions pokemon-tcg-ai-battle -v` 刷新的 public/private score。Kaggle 分数会随天梯环境变化，表里的分数是对应时间点的有效记录，不代表模型绝对强度。

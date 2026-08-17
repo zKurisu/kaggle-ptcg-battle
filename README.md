@@ -3,6 +3,28 @@
 
 得益于另一个比赛提供了 4 张 A800, 能并行开展很多训练, 在前中期基本能稳定在银牌. 但那个比赛的平台运维出现失误, 更新时导致服务器关机, 前中期大部分日志和 checkpoint 都丢失 (太多了因此没有完全拉回本地), 尤其是 round robin 本地 ladder 测试池丢失了比较伤. 由于 kaggle 比赛到了后期, 后续几天我又急于尝试新的方法, 没有完全恢复以前的强版本, 最终可能无获而归了.
 
+## Kaggle 比赛信息
+
+官方入口:
+
+- Kaggle Simulation competition: <https://www.kaggle.com/competitions/pokemon-tcg-ai-battle>
+- PTCG AI Battle Challenge 官网: <https://ptcg-abc.pokemon.co.jp/>
+- simulator / cabt API 文档: <https://matsuoinstitute.github.io/cabt/>
+
+这个项目对应的是 PTCG AI Battle Challenge 的 Simulation track。参赛者提交一个能玩 Pokemon Trading Card Game 的 AI agent，Kaggle 会在自动天梯中持续安排 agent 对战，并用 skill rating 更新 leaderboard。另有 Strategy / Hackathon track，需要提交策略报告；Simulation track 的提交成绩会影响该方向的评估，但本仓库主要记录 Simulation ladder 的训练和提交。
+
+关键规则和约束:
+
+- Simulation track 的 Kaggle submission 是 `.tar.gz`，顶层需要有 `main.py` 和 `deck.csv`；本项目的 `tools/package_submission.py` 会把 policy、deck 和 `cg/` 引擎打成符合要求的包。
+- `main.py` 暴露 agent 函数。每个决策点收到 observation，其中包含 public game logs、当前 board state 和 legal options；agent 返回要选择的 legal option index 列表。引擎只会给合法动作，但 agent 仍必须有 fallback，不能崩溃。
+- 每个新 submission 会先跑 self-validation，对自己打验证局。验证失败会标记为 Error，可以下载 logs 排查；验证通过后从初始 rating 加入天梯。
+- 每天最多提交 5 次；Kaggle 只跟踪最近 2 个 active submissions 继续参与最终评估。leaderboard 显示最好分数，但 Submissions 页面可以看每个提交的分数变化。
+- rating 是带不确定性的 skill estimate。赢会提高 rating、输会降低 rating、平局会让双方 rating 靠近；单局赢多少分不直接影响 rating 更新。
+- 提交资源限制很紧：2 vCPU、约 12.2 GiB RAM、约 11.8 GiB disk、submission 包大小上限约 197.7 MiB。因此提交侧推理必须轻量，不能依赖训练时的大规模 PyTorch pipeline。
+- Kaggle Simulation track 官方时间线是 2026-06-16 开始，2026-08-16 UTC final submission deadline；PTCGABC 官网以日本时间显示为 2026-08-17 08:59 JST。之后约两周继续跑最终评估直到 leaderboard 收敛。
+
+这些规则直接影响本项目的方法选择: 线下可以用 A800 训练大模型和做大量 RR，但线上只能提交轻量 agent；本地 random/RR 只是代理指标，最终仍要通过 Kaggle replay 和 active ladder 反馈验证。
+
 ## 0. 提交历史和版本结论
 
 下面是 Kaggle submission 的部分提交历史，分数来自本地保存日志和 2026-08-17 通过 `kaggle competitions submissions pokemon-tcg-ai-battle -v` 刷新的 public/private score。Kaggle 分数会随天梯环境变化，表里的分数是对应时间点的有效记录，不代表模型绝对强度。

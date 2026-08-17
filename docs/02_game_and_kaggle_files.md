@@ -2,6 +2,8 @@
 
 这一章先把“游戏是什么”和“我们能从 Kaggle 下载到什么”讲清楚。
 
+开始本章命令前，先完成 [01 - 项目与环境](01_project_setup.md) 的最小环境变量设置。这里会用到 `$EPISODES` 和 `$LB_DIR`。
+
 ## 1. 一局 PTCG 的基本对象
 
 你只需要先记住这些词：
@@ -53,6 +55,7 @@ unzip -o data/kaggle_files/pokemon-tcg-ai-battle.zip -d data/kaggle_files
 下载 episode：
 
 ```bash
+export EPISODES=${EPISODES:-$(pwd)/raw_episode}
 mkdir -p "$EPISODES"
 kaggle datasets download kaggle/pokemon-tcg-ai-battle-episodes-2026-08-16 -p "$EPISODES"
 ```
@@ -60,6 +63,8 @@ kaggle datasets download kaggle/pokemon-tcg-ai-battle-episodes-2026-08-16 -p "$E
 建议把 leaderboard 也下载一份，后面抽 corpus 时要用：
 
 ```bash
+export LB_DIR=${LB_DIR:-logs/leaderboard_$(date +%Y%m%d)}
+mkdir -p "$LB_DIR"
 kaggle competitions leaderboard pokemon-tcg-ai-battle --download -p "$LB_DIR"
 unzip -o "$LB_DIR/pokemon-tcg-ai-battle.zip" -d "$LB_DIR"
 ```

@@ -2,6 +2,14 @@
 
 这一章回答：模型在对局时到底看到了什么，为什么输出必须是合法动作下标。
 
+开始本章代码前，先确认 submodule 已经拉取：
+
+```bash
+export CG_DIR=${CG_DIR:-$(pwd)/external/kaggle-environments/kaggle_environments/envs/cabt/cg}
+git submodule update --init --recursive external/kaggle-environments
+test -f "$CG_DIR/libcg.so"
+```
+
 ## 1. 运行时链路
 
 比赛提交的最短链路是：
@@ -46,25 +54,43 @@ Kaggle -> main.py -> ptcg_rl.numpy_policy.NumpyPolicy -> cg.game -> ptcg_engine
 
 ## 4. 最小对局循环
 
-先看一个最小例子：
+先看一个最小例子。这里用当前目录的 `deck.csv` 自战，并在每个选择点提交一个满足 `minCount/maxCount` 的最小合法下标列表；真实模型会把这个占位动作换成策略动作。
 
-```python
+```bash
+python3 - <<'PY'
+import os, sys
+cg_dir = os.environ.get("CG_DIR", "external/kaggle-environments/kaggle_environments/envs/cabt/cg")
+sys.path.insert(0, os.path.dirname(os.path.abspath(cg_dir)))
+
 from cg.game import battle_start, battle_select, battle_finish
 
-obs, sd = battle_start(deck, deck)
-assert obs is not None
-while True:
-    sel = obs.get("select")
-    cur = obs.get("current") or {}
-    if cur.get("result", -1) != -1:
-        break
-    if sel is None:
-        break
-    obs = battle_select([])
-battle_finish()
-```
+with open("deck.csv") as f:
+    deck = [int(x.strip()) for x in f if x.strip()]
 
-实际模型做的事情只是把上面的空动作换成策略动作。
+obs, sd = battle_start(deck, deck)
+assert obs is not None, (sd.errorPlayer, sd.errorType)
+
+try:
+    for step in range(50):
+        sel = obs.get("select")
+        cur = obs.get("current") or {}
+        if cur.get("result", -1) != -1:
+            print("finished:", cur["result"], "steps:", step)
+            break
+        if sel is None:
+            print("waiting for initial deck selection or no selectable action")
+            break
+        opts = sel.get("option", [])
+        mn = int(sel.get("minCount", 0))
+        mc = int(sel.get("maxCount", 0))
+        k = min(max(mn, 0), mc, len(opts))
+        obs = battle_select(list(range(k)))
+    else:
+        print("stopped after smoke-test step cap")
+finally:
+    battle_finish()
+PY
+```
 
 ## 5. 常见选择类型
 
@@ -99,8 +125,12 @@ battle_finish()
 
 ```bash
 python3 - <<'PY'
-from cg.api import all_card_data, all_attack
-print(len(all_card_data()), len(all_attack()))
+import os, sys
+cg_dir = os.environ.get("CG_DIR", "external/kaggle-environments/kaggle_environments/envs/cabt/cg")
+sys.path.insert(0, os.path.dirname(os.path.abspath(cg_dir)))
+
+from cg.game import battle_start, battle_select, battle_finish, visualize_data
+print("cg.game:", battle_start.__name__, battle_select.__name__, battle_finish.__name__, visualize_data.__name__)
 PY
 ```
 

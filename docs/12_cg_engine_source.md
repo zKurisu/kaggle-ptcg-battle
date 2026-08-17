@@ -139,7 +139,7 @@ kaggle competitions download pokemon-tcg-ai-battle \
 
 ## 3. Python `cg` 接口
 
-Kaggle sample submission 里的 `cg/` 是 Python wrapper，加上平台对应的动态库。当前项目把公开的 Kaggle environment 仓库作为 submodule：
+Kaggle sample submission 里的 `cg/` 是 Python wrapper，加上平台对应的动态库。当前项目把公开的 Kaggle environment 仓库作为 submodule，用它提供 submission 和本地对局所需的基础 runtime：
 
 ```bash
 git submodule update --init --recursive external/kaggle-environments
@@ -161,9 +161,14 @@ export CG_DIR=${CG_DIR:-$REPO/external/kaggle-environments/kaggle_environments/e
 
 本项目打包时 `tools/package_submission.py` 默认从上述 submodule 路径读取 `cg/` 并放进 submission。若你从 Kaggle competition files 解压了另一份 `cg/`，也可以用 `--cg-dir` 显式覆盖。
 
+注意这里有两个容易混淆的接口层：
+
+- `cg.game` / `cg.sim`：基础对局 runtime。submodule 内就有，submission 和 `eval_bc.py` 主要依赖它。
+- `cg.api` / `cg.utils`：Kaggle sample submission 的高级 Python wrapper，包含 card metadata、dataclass、search API 等。公开 `kaggle-environments` submodule 当前不包含 `api.py`；需要先下载 Kaggle competition files，或者在 Kaggle/远端比赛环境中提供一份包含 `api.py` 的 `cg/`。
+
 ### 3.1 最小 smoke test
 
-如果 `CG_DIR` 指向 `cg/` 目录本身，Python import 需要把它的父目录加入 `sys.path`。
+如果 `CG_DIR` 指向 `cg/` 目录本身，Python import 需要把它的父目录加入 `sys.path`。下面只验证 submodule 自带的基础 runtime。
 
 ```bash
 export CG_DIR=${CG_DIR:-$REPO/external/kaggle-environments/kaggle_environments/envs/cabt/cg}
@@ -171,6 +176,21 @@ python3 - <<'PY'
 import os, sys
 cg_dir = os.environ["CG_DIR"]
 sys.path.insert(0, os.path.dirname(cg_dir))
+
+from cg.game import battle_start, battle_select, battle_finish
+print("cg.game import ok:", battle_start.__name__, battle_select.__name__, battle_finish.__name__)
+PY
+```
+
+如果需要使用 `cg.api`，先确认 Kaggle 静态文件已经解压，并把包含 `api.py` 的 `cg/` 目录父级加入 `PYTHONPATH`：
+
+```bash
+export CG_API_DIR=${CG_API_DIR:-data/sample_submission/sample_submission/cg}
+test -f "$CG_API_DIR/api.py"
+python3 - <<'PY'
+import os, sys
+cg_api_dir = os.environ["CG_API_DIR"]
+sys.path.insert(0, os.path.dirname(os.path.abspath(cg_api_dir)))
 
 from cg.api import all_card_data, all_attack
 cards = all_card_data()
@@ -228,7 +248,7 @@ PY
 
 ### 3.3 Observation 结构
 
-`cg.api.py` 定义了 dataclass 和 enum。训练、trace、规则 overlay 主要读这些字段：
+如果当前环境提供 `cg.api.py`，它会定义 dataclass 和 enum。训练、trace、规则 overlay 主要读这些字段：
 
 - `Observation.select`
   - `type`：这次选择属于 main/card/energy/yes-no 等哪类。

@@ -1,14 +1,28 @@
 # PTCG RL / BC Training Handbook
 这个仓库用于 kaggle Pokemon TCG AI Battle 的比赛记录, 包含数据抽取、BC 训练、离线评测、Kaggle replay 分析、submission 打包等, [AGENT_HANDOFF.md](AGENT_HANDOFF.md) 中包含长期实验细节、长任务和临时判断的记录.
 
-README 默认你已经在一台有 GPU、Kaggle CLI、Python 环境和 PTCG simulator 的训练环境中工作。所有命令都从仓库根目录执行，不依赖特定用户名、机器名或外部目录布局。
+README 默认你已经在一台有 GPU、Kaggle CLI 和 Python 环境的训练机器中工作。所有命令都从仓库根目录执行，不依赖特定用户名、机器名或外部目录布局。
 
-如果你是第一次看这个仓库，先读这三篇：
+如果你是第一次看这个仓库，先在仓库根目录完成一次最小初始化，再按教程顺序阅读。后续文档中的 `cg` 引擎验证、submission 打包和本地对局都依赖这个 submodule。
+
+```bash
+export REPO=${REPO:-$(pwd)}
+export EPISODES=${EPISODES:-$REPO/raw_episode}
+export CG_DIR=${CG_DIR:-$REPO/external/kaggle-environments/kaggle_environments/envs/cabt/cg}
+mkdir -p raw_episode data logs checkpoints
+git submodule update --init --recursive external/kaggle-environments
+test -f "$CG_DIR/libcg.so"
+```
+
+如果 GitHub 下载很慢，可以临时给 `git submodule` 加代理，例如 `http://127.0.0.1:20171`。
+
+初始化后建议先读这些入口：
 
 1. [docs/00_tutorial_index.md](docs/00_tutorial_index.md) - 教程总目录，按顺序带你读完整个项目。
-2. [docs/12_cg_engine_source.md](docs/12_cg_engine_source.md) - PTCG 基础玩法、Kaggle files、`cg` 引擎和 Python wrapper。
-3. [docs/13_call_graph_submission.md](docs/13_call_graph_submission.md) - 数据、BC、RL、评测和 submission 的调用链。
-4. [docs/decks/00_deck_index.md](docs/decks/00_deck_index.md) - 本地 deck 模板、Kaggle ladder 强签名、卡组打法、视频和卡面素材来源。
+2. [docs/01_project_setup.md](docs/01_project_setup.md) - 项目目录、环境变量和最小健康检查。
+3. [docs/12_cg_engine_source.md](docs/12_cg_engine_source.md) - PTCG 基础玩法、Kaggle files、`cg` 引擎和 Python wrapper。
+4. [docs/13_call_graph_submission.md](docs/13_call_graph_submission.md) - 数据、BC、RL、评测和 submission 的调用链。
+5. [docs/decks/00_deck_index.md](docs/decks/00_deck_index.md) - 本地 deck 模板、Kaggle ladder 强签名、卡组打法、视频和卡面素材来源。
 
 ## Kaggle 比赛信息
 

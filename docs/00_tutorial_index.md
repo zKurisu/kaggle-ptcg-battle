@@ -4,6 +4,17 @@
 
 `Kaggle episode -> corpus -> BC -> evaluation -> RR -> rule/search/RL -> submission`
 
+先在仓库根目录做一次最小初始化。后续教程里的 `cg` import、episode 下载目录和 submission 打包都默认这些变量已经存在。
+
+```bash
+export REPO=${REPO:-$(pwd)}
+export EPISODES=${EPISODES:-$REPO/raw_episode}
+export CG_DIR=${CG_DIR:-$REPO/external/kaggle-environments/kaggle_environments/envs/cabt/cg}
+mkdir -p raw_episode data logs checkpoints
+git submodule update --init --recursive external/kaggle-environments
+test -f "$CG_DIR/libcg.so"
+```
+
 建议顺序：
 
 1. [01 - 项目与环境](01_project_setup.md)
@@ -38,11 +49,16 @@ python3 tools/eval_round_robin.py --help
 python3 tools/package_submission.py --help
 ```
 
-如果你想先验证引擎：
+如果你想先验证引擎，使用下面这个自包含 smoke test。不要直接 `from cg...`，因为 `CG_DIR` 指向的是 `cg/` 目录本身，Python import 需要把它的父目录加入 `sys.path`。
 
 ```bash
 python3 - <<'PY'
+import os, sys
+cg_dir = os.environ.get("CG_DIR", "external/kaggle-environments/kaggle_environments/envs/cabt/cg")
+sys.path.insert(0, os.path.dirname(os.path.abspath(cg_dir)))
+
 from cg.game import battle_start, battle_select, battle_finish
+print("cg.game import ok:", battle_start.__name__, battle_select.__name__, battle_finish.__name__)
 PY
 ```
 

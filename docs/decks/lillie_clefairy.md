@@ -41,6 +41,199 @@ support attacker / toolbox。常作为 Ogerpon/Box secondary route，也可能�
 
 Kaggle 当前没有稳定单独 archetype 统计；先从 deck sig 和 card counts 识别。
 
+## 单独训练
+
+目标是先训练一个 deck-sig specialist，而不是把多个不同 game plan 混在一起。当前没有稳定 ladder 强签名。先从最新 `pool_manifest.csv` / episode replay 中确认 `DECK_SIG`，或补 archetype classifier 后再训练。
+
+```bash
+export CORPUS=${CORPUS:-data/bc_corpus_banded_latest}
+export ARCHETYPE='Lillie'"'"'s Clefairy ex / 莉莉艾皮皮 ex'
+export DECK_SIG=REPLACE_WITH_DECK_SIG
+export DECK='decks/pool_326_lillie_s_clefairy_ex.csv'
+export OUT_DIR=checkpoints/decks
+export LOG_DIR=logs/deck_train
+mkdir -p "$OUT_DIR" "$LOG_DIR"
+
+CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} python3 -u tools/bc2_train.py \
+  --corpus "$CORPUS" \
+  --deck-sig "$DECK_SIG" \
+  --score-bands 900-999 1000-1099 1100-1199 1200+ \
+  --date-from 2026-08-01 \
+  --date-to 2026-08-15 \
+  --epochs 8 \
+  --batch-size 1024 \
+  --width 512 \
+  --arch pointer \
+  --win-weight 1.5 \
+  --loss-weight 0.4 \
+  --draw-weight 0.8 \
+  --split-by-game \
+  --load-progress-every 200000 \
+  --checkpoint-every 1 \
+  --save "$OUT_DIR/bc2_lillie_clefairy_${DECK_SIG}_single.npz" \
+  2>&1 | tee "$LOG_DIR/bc2_lillie_clefairy_${DECK_SIG}_single.log"
+```
+
+如果该 deck 是 Stage-2、control 或需要明显全局视角的卡组，可以追加一组对照，不覆盖上面的 baseline:
+
+```bash
+CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1} python3 -u tools/bc2_train.py \
+  --corpus "$CORPUS" \
+  --deck-sig "$DECK_SIG" \
+  --score-bands 900-999 1000-1099 1100-1199 1200+ \
+  --date-from 2026-08-01 \
+  --date-to 2026-08-15 \
+  --epochs 8 \
+  --batch-size 768 \
+  --width 768 \
+  --arch cross_attn \
+  --state-layers 2 \
+  --step-plan \
+  --step-plan-loss-weight 0.2 \
+  --win-weight 1.5 \
+  --loss-weight 0.4 \
+  --draw-weight 0.8 \
+  --split-by-game \
+  --load-progress-every 200000 \
+  --checkpoint-every 1 \
+  --save "$OUT_DIR/bc2_lillie_clefairy_${DECK_SIG}_cross_stepplan.npz" \
+  2>&1 | tee "$LOG_DIR/bc2_lillie_clefairy_${DECK_SIG}_cross_stepplan.log"
+```
+
+训练日志里要重点看: train/val 是否同步下降、best epoch 是否不是过早停止、`first_action`/`policy_raw` 是否恶化、样本数是否足够、是否过滤到目标 `deck_sig`。
+
+## Random 测试
+
+先用 300 局快速 gate，候选提交前再跑 500 或 1000 局。random 不能代表 Kaggle 强度，但如果这里明显不稳，通常说明基础启动、进化或攻击流程没学好。
+
+```bash
+export POLICY="$OUT_DIR/bc2_lillie_clefairy_${DECK_SIG}_single.npz"
+mkdir -p logs/deck_eval/lillie_clefairy
+
+python3 tools/eval_bc.py "$POLICY" \
+  --deck "$DECK" \
+  --games 300 \
+  --workers 16 \
+  --progress-every 50 \
+  --max-turns 700 \
+  2>&1 | tee logs/deck_eval/lillie_clefairy/random_g300.log
+```
+
+候选提交前:
+
+```bash
+python3 tools/eval_bc.py "$POLICY" \
+  --deck "$DECK" \
+  --games 500 \
+  --workers 32 \
+  --progress-every 50 \
+  --max-turns 700 \
+  2>&1 | tee logs/deck_eval/lillie_clefairy/random_g500.log
+```
+
+## 推荐 RR 测试
+
+优先测两类池:
+
+- `balanced` 池: 每个主流 archetype 至少 1-2 个高质量 shadow，避免低质量卡组拉高平均胜率。
+- `latest ladder` 池: 按最新 Kaggle 分段权重保留环境主流签名，模拟从 600 分往上爬时可能遇到的对手。
+
+该 deck 当前优先关注的低胜率/接近五五对手: 暂无足够样本；先用 balanced RR 池覆盖所有主流 archetype。
+
+先构建一个每类 top2 的轻量 RR 池:
+
+```bash
+export RR_MANIFEST=${RR_MANIFEST:-logs/rr_pool_latest/filtered_balanced.csv}
+export FOCUS_MANIFEST=logs/deck_eval/lillie_clefairy/rr_pool_top2_per_arch.csv
+mkdir -p logs/deck_eval/lillie_clefairy
+
+python3 tools/select_manifest_top_per_archetype.py \
+  --manifest "$RR_MANIFEST" \
+  --max-per-arch 2 \
+  --out "$FOCUS_MANIFEST"
+```
+
+candidate-only RR:
+
+```bash
+python3 tools/eval_round_robin.py \
+  --entry lillie_clefairy="$POLICY:$DECK" \
+  --manifest "$FOCUS_MANIFEST" \
+  --candidate-only \
+  --skip-bad-entries \
+  --games 100 \
+  --workers 32 \
+  --max-turns 700 \
+  --progress-every 20 \
+  --out-csv logs/deck_eval/lillie_clefairy/rr_top2_per_arch_g100.csv \
+  2>&1 | tee logs/deck_eval/lillie_clefairy/rr_top2_per_arch_g100.log
+```
+
+如果 RR 暴露出具体坏 matchup，再用 fixed-seed trace 复现。`OPP_ENTRY` 可以直接从 manifest 的 `eval_entry` 列复制:
+
+```bash
+export OPP_ENTRY='opponent_name=checkpoints/opponent.npz:logs/opponent_deck.csv'
+
+python3 tools/trace_matchup_decisions.py \
+  --candidate lillie_clefairy="$POLICY:$DECK" \
+  --opponent "$OPP_ENTRY" \
+  --games 20 \
+  --seed 20260817 \
+  --max-turns 700 \
+  --progress-every 1 \
+  --out-prefix logs/deck_eval/lillie_clefairy/trace_vs_bad_opp
+```
+
+## Kaggle episode 动态回放
+
+可以引入，但不要把它当成可离线复现的唯一记录。Kaggle 网页动态 replay 依赖登录态、网页脚本和当前 UI，静态 Markdown 里通常只能放 episode/submission 链接；真正可复现的材料应下载 replay JSON 并写入本地日志。
+
+人工查看流程:
+
+1. 打开 Kaggle 比赛页面的 Submissions 或 Episodes。
+2. 找到目标 `submission_id` 的 episode。
+3. 打开 episode detail / replay 页面，逐回合看 setup、attach、evolve、ability、attack、target 和最终 status。
+4. 把关键 episode id 写回本文件或 `AGENT_HANDOFF.md`，并下载 replay JSON 做本地 trace。
+
+本地 replay 分析:
+
+```bash
+export SUB_ID=REPLACE_WITH_KAGGLE_SUBMISSION_ID
+export REPLAY_DIR=logs/kaggle_replay_${SUB_ID}_lillie_clefairy
+mkdir -p "$REPLAY_DIR"
+
+python3 tools/analyze_kaggle_replays.py "$SUB_ID" \
+  --deck "$DECK" \
+  --known-decks-dir logs/ladder_pool_0805_all/decks \
+  --cache-dir "$REPLAY_DIR/cache" \
+  --out "$REPLAY_DIR/episodes.csv" \
+  --summary-out "$REPLAY_DIR/summary_by_opponent_deck_sig.csv" \
+  --group-by opponent_deck_sig \
+  --max-episodes 200 \
+  --write-opponent-decks \
+  --opponent-decks-dir "$REPLAY_DIR/opponent_decks" \
+  --progress-every 10
+```
+
+把 live replay 中遇到的新对手转成本地 RR:
+
+```bash
+python3 tools/make_kaggle_opp_round_robin_cmd.py \
+  --policy-name lillie_clefairy \
+  --policy "$POLICY" \
+  --deck "$DECK" \
+  --opp-dir "$REPLAY_DIR/opponent_decks" \
+  --games 100 \
+  --progress-every 20 \
+  --out-csv "$REPLAY_DIR/local_vs_live_opponents_g100.csv" \
+  > "$REPLAY_DIR/run_live_opponent_rr.sh"
+
+bash "$REPLAY_DIR/run_live_opponent_rr.sh"
+```
+
+这样动态 replay 的结论会落到 `episodes.csv`、`summary_by_opponent_deck_sig.csv`、opponent deck CSV 和本地 RR 结果里，后续才能比较“线上输在哪里”和“本地是否能复现”。
+
+
 评测时至少要覆盖:
 
 - random gate: 确认基础操作不会输给 legal random；

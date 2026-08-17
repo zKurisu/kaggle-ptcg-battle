@@ -4,7 +4,8 @@
 
 1. 先看本页的“强签名总表”，决定 RR/shadow 池要覆盖哪些 archetype。
 2. 再看具体卡组文件里的打法、关键 combo、视频和 matchup 先验。
-3. 最后回到 `tools/trace_matchup_decisions.py`、`ptcg_rl/deck_plans.py`、`ptcg_rl/rule_overlay.py` 把策略变成可验证规则或训练信号。
+3. 按每个卡组文件里的“单独训练 / Random 测试 / 推荐 RR 测试 / Kaggle episode 动态回放”跑完整验证链。
+4. 最后回到 `tools/trace_matchup_decisions.py`、`ptcg_rl/deck_plans.py`、`ptcg_rl/rule_overlay.py` 把策略变成可验证规则或训练信号。
 
 ## 强签名总表
 
@@ -46,6 +47,16 @@
 - [Pokémon TCG API card object](https://docs.pokemontcg.io/api-reference/cards/card-object/)：card metadata 与 card image URL。
 - [pokemon-tcg-data](https://github.com/PokemonTCG/pokemon-tcg-data)：Pokémon TCG API 对应原始 JSON 数据。
 - [PokemonCard.io](https://pokemoncard.io/)：decklist、deck primer、卡图下载入口；卡图版权需谨慎。
+
+## Kaggle 动态回放怎么接入
+
+Kaggle 网页 replay 可以作为人工逐回合检查入口，但它依赖登录态和网页脚本，不能直接作为本地可复现数据源。推荐做法是:
+
+1. 在 Kaggle Submissions / Episodes 页面打开动态 replay，人工定位关键输局。
+2. 记录 `submission_id` 和 episode id。
+3. 用每个卡组文档里的 `tools/analyze_kaggle_replays.py` 命令下载 replay JSON、汇总 opponent deck-sig，并导出 opponent deck CSV。
+4. 用 `tools/make_kaggle_opp_round_robin_cmd.py` 把真实线上对手转成本地 RR。
+5. 对关键坏局再用 `tools/trace_matchup_decisions.py` 做 fixed-seed trace。
 
 ## 维护方法
 

@@ -1,69 +1,43 @@
-# Tutorial Index
+# PTCG 教程总目录
 
-这是一份按教程顺序阅读的入口页。先从比赛和引擎的最小闭环开始，再看数据、BC、RL、评测和提交。
+这是一条按顺序阅读和实操的路线。目标不是“看完概念”，而是能一步一步搭起一条完整实验链：
 
-## 推荐阅读顺序
+`Kaggle episode -> corpus -> BC -> evaluation -> RR -> rule/search/RL -> submission`
 
-1. [PTCG Gameplay And CG Engine Guide](docs/12_ptcg_gameplay_and_cg_engine.md)
-   - 先知道一局牌怎么跑起来。
-   - 认识 Kaggle files、`cg` wrapper、`ptcg_engine` C++ 源码。
-2. [BC Extraction Guide](docs/04_bc_extraction.md)
-   - 了解 episode 如何被抽成 `.npz` corpus。
-   - 搞清楚 state、option、action、history、score、deck sig 如何存。
-3. [BC Design Guide](docs/06_bc_design.md)
-   - 了解模型输入、输出、训练目标、权重和评测方式。
-4. [Specialist BC Recipes](docs/07_specialist_bc_recipes.md)
-   - 了解为什么有些卡组适合 top1/top2/top3 或 deck-sig specialist。
-5. [Deck Game Plans](docs/08_deck_game_plans.md)
-   - 了解卡组 game plan、资源规划和连续决策想表达什么。
-6. [Matchup Relations](docs/09_matchup_relations.md)
-   - 了解 weak matchup、strong matchup、counter pool 的来源。
-7. [Rule Success Data](docs/10_rule_success_data.md)
-   - 了解规则/成功轨迹数据如何进入训练或评测。
-8. [Human Matchup Strategy](docs/11_human_matchup_strategy.md)
-   - 了解如何把真实 PTCG 讨论、打法文章和比赛经验转成规则。
-9. [RL Training](docs/05_rl_training.md)
-   - 了解 BC 之后如何接 RL、PPO、搜索或 self-play。
+建议顺序：
 
-## 代码阅读顺序
+1. [01 - 项目与环境](01_project_setup.md)
+2. [02 - PTCG 基础玩法与 Kaggle 文件](02_game_and_kaggle_files.md)
+3. [03 - cg 引擎、observation 与合法动作](03_cg_engine_observation.md)
+4. [04 - 数据抽取与 corpus 构建](04_bc_extraction.md)
+5. [05 - BC 到底在学什么](05_bc_concepts.md)
+6. [06 - BC 训练实操](06_bc_training.md)
+7. [07 - specialist、population、shadow](07_population_shadow.md)
+8. [08 - game plan、history、trajectory](08_plan_history_trajectory.md)
+9. [09 - matchup、random、RR、baseline-delta](09_evaluation_matchups.md)
+10. [10 - 规则层、成功数据与人类策略](10_rules_success_data.md)
+11. [11 - RL、search 与 teacher rollout](11_rl_search_teacher.md)
+12. [12 - PTCG 玩法与 cg/C++ 引擎深读](12_cg_engine_source.md)
+13. [13 - 调用链与 submission 打包](13_call_graph_submission.md)
 
-1. `main.py`
-   - Kaggle submission 入口，最终要返回 legal option index list。
-2. `ptcg_rl/numpy_policy.py`
-   - `.npz` checkpoint 的推理实现，也是 submission 侧最重要的 runtime。
-3. `ptcg_rl/encoder.py`
-   - 把 observation 转成 state/option 特征。
-4. `ptcg_rl/model.py`
-   - PyTorch policy/value 网络和 action scorer。
-5. `ptcg_rl/bc2/data.py`
-   - episode corpus 的加载、过滤和 batch collation。
-6. `ptcg_rl/bc2/losses.py`
-   - BC 的 sequence loss、set loss、plan loss。
-7. `ptcg_rl/trainer.py`
-   - PPO/self-play 的训练骨架。
-8. `tools/bc_extract_v2.py`
-   - episode -> corpus 的抽取入口。
-9. `tools/bc2_train.py`
-   - BC 训练主入口。
-10. `tools/eval_bc.py` / `tools/eval_round_robin.py`
-    - 离线评测和 RR。
-11. `tools/package_submission.py`
-    - 打包成 Kaggle submission tarball。
-12. `train.py`
-    - 旧的 RL/PPO 包装器，当前更推荐直接看 `tools/rl_train_league.py`。
+每一章都按这个格式组织：
 
-## 最小闭环
+- 先解释概念。
+- 再给最小命令。
+- 再指向源码。
+- 最后写常见误区。
 
-如果只想先跑通最小闭环，按下面顺序：
+如果你只想先做第一轮实操，按这个顺序跑帮助命令，确认当前入口参数：
 
 ```bash
-python3 tools/bc_extract_v2.py ...
-python3 tools/bc2_train.py ...
-python3 tools/eval_bc.py ...
-python3 tools/package_submission.py ...
+python3 tools/bc_extract_v2.py --help
+python3 tools/bc2_train.py --help
+python3 tools/eval_bc.py --help
+python3 tools/eval_round_robin.py --help
+python3 tools/package_submission.py --help
 ```
 
-如果只想验证引擎和 Python wrapper：
+如果你想先验证引擎：
 
 ```bash
 python3 - <<'PY'
@@ -71,9 +45,4 @@ from cg.game import battle_start, battle_select, battle_finish
 PY
 ```
 
-## 读文档时的判断标准
-
-- 先看“数据如何产生”，再看“模型如何消费这些数据”。
-- 先看“legal option 和 observation 的真实结构”，再看“我们想让模型学什么”。
-- 先看离线 trace 和随机测试，再看 Kaggle 分数。
-- 先看调用链，再看具体实现细节。
+读教程时不要跳章太多。前一章没有看懂的字段，通常会在后一章的命令、源码和日志里再次出现。

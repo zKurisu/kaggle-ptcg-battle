@@ -1,4 +1,6 @@
-# Training And Call Graph
+# 13 - 调用链与 submission 打包
+
+上一章：[12 - PTCG 玩法与 cg/C++ 引擎深读](12_cg_engine_source.md)
 
 这篇文档只做一件事：把“episode -> corpus -> model -> policy -> eval -> submission”的调用关系说清楚。
 
@@ -212,7 +214,7 @@ corpus batch
 
 ## 6. 推荐改代码的顺序
 
-1. 先改 `bc2_extract_v2.py` / corpus schema。
+1. 先改 `bc_extract_v2.py` / corpus schema。
 2. 再改 `encoder.py` / `history_features.py`。
 3. 再改 `model.py`。
 4. 再改 `numpy_policy.py`。
@@ -242,3 +244,5 @@ corpus batch
 - 当前使用中的 `tools/*`
 
 如果要做真正的目录重整，先改文档，再改入口，再慢慢移脚本，不要先大面积删文件。
+
+返回：[教程总目录](00_tutorial_index.md)

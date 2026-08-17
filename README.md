@@ -6,8 +6,8 @@ README 默认你已经在一台有 GPU、Kaggle CLI、Python 环境和 PTCG simu
 如果你是第一次看这个仓库，先读这三篇：
 
 1. [docs/00_tutorial_index.md](docs/00_tutorial_index.md) - 教程总目录，按顺序带你读完整个项目。
-2. [docs/12_ptcg_gameplay_and_cg_engine.md](docs/12_ptcg_gameplay_and_cg_engine.md) - PTCG 基础玩法、Kaggle files、`cg` 引擎和 Python wrapper。
-3. [docs/13_training_and_call_graph.md](docs/13_training_and_call_graph.md) - 数据、BC、RL、评测和 submission 的调用链。
+2. [docs/12_cg_engine_source.md](docs/12_cg_engine_source.md) - PTCG 基础玩法、Kaggle files、`cg` 引擎和 Python wrapper。
+3. [docs/13_call_graph_submission.md](docs/13_call_graph_submission.md) - 数据、BC、RL、评测和 submission 的调用链。
 
 ## Kaggle 比赛信息
 
@@ -17,7 +17,7 @@ README 默认你已经在一台有 GPU、Kaggle CLI、Python 环境和 PTCG simu
 - PTCG AI Battle Challenge 官网: <https://ptcg-abc.pokemon.co.jp/>
 - simulator / cabt API 文档: <https://matsuoinstitute.github.io/cabt/>
 
-如果需要先了解 PTCG 基本玩法、Kaggle competition files、`cg` Python wrapper 和 C++ simulator 源码阅读路线，见 [docs/12_ptcg_gameplay_and_cg_engine.md](docs/12_ptcg_gameplay_and_cg_engine.md)。
+如果需要先了解 PTCG 基本玩法、Kaggle competition files、`cg` Python wrapper 和 C++ simulator 源码阅读路线，见 [docs/12_cg_engine_source.md](docs/12_cg_engine_source.md)。
 
 这个项目对应的是 PTCG AI Battle Challenge 的 Simulation track。参赛者提交一个能玩 Pokemon Trading Card Game 的 AI agent，Kaggle 会在自动天梯中持续安排 agent 对战，并用 skill rating 更新 leaderboard。另有 Strategy / Hackathon track，需要提交策略报告；Simulation track 的提交成绩会影响该方向的评估，但本仓库主要记录 Simulation ladder 的训练和提交。
 
@@ -67,7 +67,7 @@ Kaggle episode 只能告诉我们某个 agent 在当前天梯中做了什么，�
    - `ptcg_rl/rule_overlay.py`: 可以明确判断的强规则或 action rerank；
    - `tools/mine_strategy_trajectories.py` / `tools/build_trajectory_targets.py`: 生成 strategy labels；
    - `tools/build_shadow_pool.py`: 为新 decklist 训练 shadow opponent；
-   - `tools/v15_trace_game.py`: 对比规则前后同一 fixed seed 对局。
+   - `tools/trace_matchup_decisions.py`: 对比规则前后同一 fixed seed matchup 对局。
 5. 只有当规则/资料能在离线 trace 中改变坏决策，并在 random/RR 或 Kaggle replay loss pool 中改善，才进入 submission 候选。
 
 ### PTCG Live 如何结合
@@ -243,7 +243,7 @@ kaggle datasets download kaggle/pokemon-tcg-ai-battle-episodes-2026-08-16 -p "$E
 
 ### 3.3 下载 Kaggle 静态比赛文件
 
-Kaggle competition files 里包含卡牌 ID PDF、卡牌数据 CSV、`ptcg_engine` C++ 源码、sample submission 和 `cg` Python wrapper。详细说明见 [PTCG Gameplay And CG Engine Guide](docs/12_ptcg_gameplay_and_cg_engine.md)。
+Kaggle competition files 里包含卡牌 ID PDF、卡牌数据 CSV、`ptcg_engine` C++ 源码、sample submission 和 `cg` Python wrapper。详细说明见 [12 - PTCG 玩法与 cg/C++ 引擎深读](docs/12_cg_engine_source.md)。
 
 ```bash
 mkdir -p data/kaggle_files
@@ -612,31 +612,30 @@ python3 tools/eval_bc.py "$POLICY" \
   2>&1 | tee logs/bc_aug_0801_0815/random_marnie_b8f_g300.log
 ```
 
-定位 random 输局：
+定位 random 输局可以先跑更长 random 测试，再用 matchup trace 固定 random opponent 观察决策：
 
 ```bash
-python3 tools/v15_find_random_losses.py "$POLICY" \
+python3 tools/eval_bc.py "$POLICY" \
   --deck "$DECK" \
   --games 500 \
   --workers 16 \
   --seed 20260817 \
   --max-turns 700 \
   --progress-every 50 \
-  --recheck-losses \
-  --out-csv logs/bc_aug_0801_0815/random_losses_marnie_b8f.csv
+  2>&1 | tee logs/bc_aug_0801_0815/random_marnie_b8f_g500.log
 ```
 
-固定 seed 输出单局 trace：
+固定 seed 输出对 random 的 trace：
 
 ```bash
-python3 tools/v15_trace_game.py "$POLICY" \
-  --deck "$DECK" \
-  --games 200 \
+python3 tools/trace_matchup_decisions.py \
+  --candidate "candidate=$POLICY:$DECK" \
+  --opponent "random=random:$DECK" \
+  --games 50 \
   --seed 20260817 \
-  --target-outcome loss \
   --max-turns 700 \
-  --progress-every 20 \
-  --out-md logs/bc_aug_0801_0815/trace_random_loss_marnie_b8f.md
+  --progress-every 10 \
+  --out-prefix logs/bc_aug_0801_0815/trace_random_marnie_b8f
 ```
 
 候选打 shadow pool：
@@ -676,182 +675,18 @@ python3 tools/rr_archetype_matrix.py \
 column -s, -t logs/bc_aug_0801_0815/rr_marnie_b8f_archetype_matrix.csv | head -80
 ```
 
-## 9. v14 连续决策实验线
+## 9. 历史连续决策实验线
 
-v14 的目标是让训练期能看到 sequence、history、same-turn plan、known opponent info、multi-select、DCA 等信号。不要把它当成稳定提交线。
+仓库里曾经有过 v14/v15 连续决策实验。那些脚本已经不是当前分支的活动入口，旧日志中的 `v14_*` / `v15_*` 名称只作为历史记录保留，不要直接照抄为当前命令。
 
-抽取 sequence corpus：
+当前可复现入口已经收敛到这些工具和教程：
 
-```bash
-export SEQ_CORPUS=data/seq_corpus_v14_0801_0815
-python3 -u tools/v14_extract_sequences.py "$EPISODES" \
-  --out "$SEQ_CORPUS" \
-  --lb-csv "$LB_CSV" \
-  --workers 12 \
-  --future-horizon 8 \
-  --progress-every 1000 \
-  2>&1 | tee logs/v14_extract_sequences_0801_0815.log
-```
+- 连续决策、history、trajectory：见 [docs/08 - game plan、history、trajectory](docs/08_plan_history_trajectory.md)。
+- 随机门槛和 RR：`tools/eval_bc.py`、`tools/eval_round_robin.py`、`tools/eval_baseline_delta.py`。
+- 失败局 trace：`tools/trace_matchup_decisions.py`。
+- 规则/teacher/RL：见 [docs/10 - 规则层、成功数据与人类策略](docs/10_rules_success_data.md) 和 [docs/11 - RL、search 与 teacher rollout](docs/11_rl_search_teacher.md)。
 
-审计 sequence corpus：
-
-```bash
-python3 tools/v14_audit_sequence_corpus.py \
-  --corpus "$SEQ_CORPUS" \
-  --archetype "Dragapult" \
-  --score-bands "1200+" "1100-1199" "1000-1099" "900-999" \
-  --progress-every 50000 \
-  --out-csv logs/v14_sequence_corpus_audit_dragapult_0801_0815.csv
-column -s, -t logs/v14_sequence_corpus_audit_dragapult_0801_0815.csv | head -60
-```
-
-训练 Dragapult v14 诊断模型，并在每个 epoch 做小 random smoke：
-
-```bash
-export DRAG_DECK=$(find "$POOL/decks" -iname '*dragapult*.csv' | head -1)
-test -f "$DRAG_DECK"
-mkdir -p checkpoints/v14_diag logs/v14_diag
-CUDA_VISIBLE_DEVICES=0 python3 -u tools/v14_train_sequence_policy.py \
-  --corpus "$SEQ_CORPUS" \
-  --archetype "Dragapult" \
-  --score-bands "1200+" "1100-1199" "1000-1099" "900-999" \
-  --seq-len 8 \
-  --stride 1 \
-  --width 256 \
-  --layers 4 \
-  --heads 4 \
-  --batch-size 1024 \
-  --epochs 6 \
-  --device cuda:0 \
-  --progress-every 200 \
-  --diagnostic-ablation \
-  --current-action-weight 1.0 \
-  --prefix-action-weight 0.15 \
-  --plan-weight 0.4 \
-  --next-type-weight 0.3 \
-  --turn-plan-weight 0.4 \
-  --turn-next-plan-weight 0.4 \
-  --turn-seq-plan-weight 0.4 \
-  --known-action-weight 0.2 \
-  --opportunity-type-weight 0.2 \
-  --current-rank-margin-weight 0.2 \
-  --current-complexity-weight 0.5 \
-  --multi-target-weight 2.0 \
-  --damage-counter-weight 2.0 \
-  --random-smoke-deck "$DRAG_DECK" \
-  --random-smoke-games 60 \
-  --random-smoke-workers 6 \
-  --random-smoke-every 1 \
-  --random-smoke-max-turns 700 \
-  --out checkpoints/v14_diag/dragapult_v14_seq_diag.pt \
-  2>&1 | tee logs/v14_diag/train_dragapult_v14_seq_diag.log
-```
-
-v14 训练日志必须能回答：
-
-- `target_k>1` 是否有足够样本，multi-select loss 是否非零。
-- forced rows 是否占比过高，复杂决策是否被单步 forced label 淹没。
-- current-only ablation 和 full sequence 是否有差异。
-- plan、turn-next、turn-seq、known info 的 loss/accuracy 是否有样本覆盖。
-- Dragapult 的 DamageCounterAny/DCA 相关统计是否出现。
-- per-epoch random smoke 是否暴露基础执行退化。
-
-如果这些信号缺失，不要等 RR 结束，先修抽取或 loss。
-
-## 10. v15 重写实验线
-
-v15 目标是把游戏拆成 block/plan 级训练，减少单步 BC 对连续策略的统治。仍处于研究线，必须先通过 random 100% 和 trace 审查。
-
-抽取 block corpus：
-
-```bash
-export V15_CORPUS=data/v15_blocks_0801_0815
-python3 -u tools/v15_extract_blocks.py "$EPISODES" \
-  --out "$V15_CORPUS" \
-  --lb-csv "$LB_CSV" \
-  --workers 12 \
-  --history-k 12 \
-  --plan-steps 4 \
-  --date-from 2026-08-01 \
-  --date-to 2026-08-15 \
-  --progress-every 1000 \
-  2>&1 | tee logs/v15_extract_blocks_0801_0815.log
-```
-
-训练 Dragapult plan policy：
-
-```bash
-mkdir -p checkpoints/v15_plan logs/v15_plan
-CUDA_VISIBLE_DEVICES=1 python3 -u tools/v15_train_plan_policy.py \
-  --corpus "$V15_CORPUS" \
-  --archetype "Dragapult" \
-  --min-score 900 \
-  --history-k 12 \
-  --plan-steps 4 \
-  --width 384 \
-  --layers 4 \
-  --heads 6 \
-  --batch-size 1024 \
-  --epochs 8 \
-  --device cuda:0 \
-  --progress-every 200 \
-  --action-weight 1.0 \
-  --within-type-weight 0.6 \
-  --route-weight 0.5 \
-  --count-weight 0.3 \
-  --multi-weight 1.5 \
-  --type-weight 0.5 \
-  --history-type-weight 0.3 \
-  --known-type-weight 0.2 \
-  --context-weight 0.3 \
-  --plan-type-weight 0.4 \
-  --plan-card-weight 0.3 \
-  --plan-attack-weight 0.3 \
-  --plan-context-weight 0.3 \
-  --continue-weight 0.4 \
-  --mode-weight 0.3 \
-  --outcome-weight 0.1 \
-  --out checkpoints/v15_plan/dragapult_v15_plan_0801_0815.pt \
-  2>&1 | tee logs/v15_plan/train_dragapult_v15_plan_0801_0815.log
-```
-
-v15 random gate：
-
-```bash
-python3 tools/v15_random_gate.py checkpoints/v15_plan/dragapult_v15_plan_0801_0815.pt \
-  --deck "$DRAG_DECK" \
-  --games 300 \
-  --workers 16 \
-  --seed 20260817 \
-  --max-turns 700 \
-  --progress-every 50 \
-  --out-dir logs/v15_plan/random_dragapult_v15_plan_g300
-```
-
-如果没有达到 random 100%，必须进入 fixed-seed trace：
-
-```bash
-python3 tools/v15_find_random_losses.py checkpoints/v15_plan/dragapult_v15_plan_0801_0815.pt \
-  --deck "$DRAG_DECK" \
-  --games 500 \
-  --workers 16 \
-  --seed 20260817 \
-  --max-turns 700 \
-  --progress-every 50 \
-  --recheck-losses \
-  --out-csv logs/v15_plan/random_losses_dragapult_v15_plan.csv
-
-python3 tools/v15_trace_game.py checkpoints/v15_plan/dragapult_v15_plan_0801_0815.pt \
-  --deck "$DRAG_DECK" \
-  --games 200 \
-  --seed 20260817 \
-  --target-outcome loss \
-  --max-turns 700 \
-  --progress-every 20 \
-  --out-md logs/v15_plan/trace_dragapult_v15_plan_random_loss.md
-```
-
-## 11. Kaggle replay 分析
+## 10. Kaggle replay 分析
 
 查看提交列表：
 
@@ -896,7 +731,7 @@ python3 tools/build_ladder_pool.py \
   --progress-every 1000
 ```
 
-## 12. 打包和提交
+## 11. 打包和提交
 
 先确认 policy 与 deck 对应：
 
@@ -934,7 +769,7 @@ kaggle competitions submit pokemon-tcg-ai-battle \
 kaggle competitions submissions pokemon-tcg-ai-battle -v | head -20
 ```
 
-## 13. 长任务模板
+## 12. 长任务模板
 
 长训练建议写成脚本再用 `nohup` 或 `tmux` 运行，避免 SSH/终端断开导致任务退出。下面模板假设脚本在当前服务器执行。
 
@@ -973,7 +808,7 @@ cp -a checkpoints/bc_aug_0801_0815 artifacts/backup_$(date +%Y%m%d)/ 2>/dev/null
 cp -a logs/bc_aug_0801_0815 artifacts/backup_$(date +%Y%m%d)/ 2>/dev/null || true
 ```
 
-## 14. 结果记录和提交代码
+## 13. 结果记录和提交代码
 
 每次完成重要实验后更新 [AGENT_HANDOFF.md](AGENT_HANDOFF.md)，至少写：
 
@@ -996,7 +831,7 @@ git commit -m "Update reproducible training handbook"
 
 如果 `py_compile` 因历史脚本依赖环境失败，改为只检查本次改动的 Python 文件，不要因为旧实验脚本阻塞 README 更新。
 
-## 15. 常见问题
+## 14. 常见问题
 
 ### 15.1 为什么离线 RR 高，Kaggle 低？
 

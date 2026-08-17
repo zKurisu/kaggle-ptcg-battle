@@ -1,4 +1,6 @@
-# PTCG Gameplay And CG Engine Guide
+# 12 - PTCG 玩法与 cg/C++ 引擎深读
+
+上一章：[11 - RL、search 与 teacher rollout](11_rl_search_teacher.md)
 
 这份文档用于补齐两类基础信息：
 
@@ -411,6 +413,8 @@ rg -n "FinishReason|GameResult|Result|isFinish|prize|deck" \
 - `tools/bc_extract_v2.py`：从 episode 里抽取 observation、legal options、动作标签、history/log metadata。
 - `tools/eval_bc.py`：用 `cg.game` 跑 policy vs random。
 - `tools/eval_round_robin.py`：用 `cg.game` 跑 policy pool 对战。
-- `tools/v15_trace_game.py`：逐步 trace 单局，适合定位坏决策。
+- `tools/trace_matchup_decisions.py`：逐步 trace matchup 决策，适合定位坏决策。
 
-当模型表现异常时，优先用 `tools/v15_trace_game.py` 找到一局完整失败过程，再按上面的源码路线查：当前 observation 是否缺信号、legal option 是否被编码错、标签是否丢了多选/顺序、规则 overlay 是否改错 action。
+当模型表现异常时，优先用 `tools/trace_matchup_decisions.py` 找到一局完整失败过程，再按上面的源码路线查：当前 observation 是否缺信号、legal option 是否被编码错、标签是否丢了多选/顺序、规则 overlay 是否改错 action。
+
+下一章：[13 - 调用链与 submission 打包](13_call_graph_submission.md)

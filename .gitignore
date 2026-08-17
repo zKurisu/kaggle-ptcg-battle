@@ -4,6 +4,11 @@ __pycache__/
 logs/
 *.log
 
+artifacts/
+remote_artifacts/
+remote_backups/
+submission/
+
 checkpoints/
 *.npz
 *.pt
@@ -11,6 +16,7 @@ checkpoints/
 pokemon-tcg-ai-battle.zip
 
 data/bc_corpus*/
+data/kaggle_files/
 data/ptcg_engine/
 data/sample_submission/
 data/*Card_Data.csv

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""PTCG RL Training — clean pipeline. Usage: python train_ptcg.py"""
+"""Legacy PPO/RL training entrypoint.
+
+This is the self-play branch, not the BC pipeline. The main BC path lives in
+tools/bc2_train.py, while this wrapper forwards directly to ptcg_rl.trainer.
+"""
 
 import os, sys, argparse
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -34,7 +38,8 @@ def main():
     deck = read_deck(args.deck)
     assert len(deck) == 60
 
-    # Opponent pool: 26 real archetypes + mirror self-play
+    # Opponent pool: mirror self-play plus any deck CSVs dropped into ./decks.
+    # This keeps the RL loop easy to extend without editing the trainer.
     opponent_decks = [deck]  # always include mirror
     pool_dir = os.path.join(_HERE, "decks")
     if os.path.isdir(pool_dir):

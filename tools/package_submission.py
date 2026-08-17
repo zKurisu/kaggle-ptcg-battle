@@ -70,6 +70,9 @@ def main():
     print(f"  cg:     {cg_dir}", flush=True)
     with tempfile.TemporaryDirectory(prefix="ptcg_submit_") as td:
         root = Path(td)
+        # Kaggle submission format is intentionally tiny: a top-level main.py,
+        # the deck list used by that agent, the numpy checkpoint, and the local
+        # runtime code needed by main.py.
         print("  copying main.py/deck/policy", flush=True)
         shutil.copy2(repo / "main.py", root / "main.py")
         shutil.copy2(deck, root / "deck.csv")
@@ -77,8 +80,11 @@ def main():
         if args.rules:
             (root / "rules.txt").write_text(args.rules + "\n")
             print(f"  rules:  {args.rules}", flush=True)
+        # Ship the same ptcg_rl package that trained the policy. This keeps
+        # submission-time numpy inference aligned with offline eval.
         print("  copying ptcg_rl", flush=True)
         _copytree(repo / "ptcg_rl", root / "ptcg_rl")
+        # Bundle the competition-supplied simulator wrapper and binary.
         print("  copying cg engine", flush=True)
         _copytree(cg_dir, root / "cg")
 

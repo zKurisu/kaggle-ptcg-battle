@@ -19,6 +19,8 @@ policy = NumpyPolicy.load(os.path.join(HERE, "policy.npz"))
 
 
 def _load_rule_mode() -> str:
+    # The packaged agent can optionally enable a light rule overlay.
+    # Keep this path simple because Kaggle inference has tight CPU / RAM limits.
     mode = os.environ.get("PTCG_RULE_MODE", "").strip()
     cfg = os.path.join(HERE, "rules.txt")
     if not mode and os.path.exists(cfg):
@@ -50,7 +52,10 @@ def _safe_random(obs_dict: dict) -> list[int]:
 
 
 def agent(obs_dict: dict) -> list[int]:
+    # Kaggle calls agent() at every legal decision point. The only contract is:
+    # return legal option indices, never crash, and never emit out-of-range ids.
     if obs_dict.get("select") is None:
+        # Deck selection / new game: reset per-game memory in both policy and rule planner.
         if hasattr(policy, "reset_history"):
             policy.reset_history()
         if planner is not None:
@@ -62,7 +67,8 @@ def agent(obs_dict: dict) -> list[int]:
     mc, mn, n = sel.get("maxCount", 0), sel.get("minCount", 0), len(opts)
     if n == 0 or mc <= 0: return []
 
-    # MCTS search
+    # Optional MCTS path. BC checkpoints usually rely on the greedy policy;
+    # search is left as a guarded fallback for experiments that train a value head.
     if USE_MCTS:
         try:
             picks = policy.select_mcts(obs_dict, MY_DECK,
@@ -74,7 +80,7 @@ def agent(obs_dict: dict) -> list[int]:
             if mn <= len(picks) <= mc: return picks[:mc]
         except Exception: pass
 
-    # Greedy fallback
+    # Greedy path is the normal submission path.
     try:
         picks = policy.select(obs_dict, greedy=True, temperature=1.2)
         if RULE_MODE:
@@ -84,6 +90,7 @@ def agent(obs_dict: dict) -> list[int]:
         if mn <= len(picks) <= mc: return picks[:mc]
     except Exception: pass
 
+    # Final safety net: never fail a Kaggle self-check because of a model or rule bug.
     return _safe_random(obs_dict)
 
 

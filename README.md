@@ -3,6 +3,12 @@
 
 README 默认你已经在一台有 GPU、Kaggle CLI、Python 环境和 PTCG simulator 的训练环境中工作。所有命令都从仓库根目录执行，不依赖特定用户名、机器名或外部目录布局。
 
+如果你是第一次看这个仓库，先读这三篇：
+
+1. [docs/00_tutorial_index.md](docs/00_tutorial_index.md) - 教程总目录，按顺序带你读完整个项目。
+2. [docs/12_ptcg_gameplay_and_cg_engine.md](docs/12_ptcg_gameplay_and_cg_engine.md) - PTCG 基础玩法、Kaggle files、`cg` 引擎和 Python wrapper。
+3. [docs/13_training_and_call_graph.md](docs/13_training_and_call_graph.md) - 数据、BC、RL、评测和 submission 的调用链。
+
 ## Kaggle 比赛信息
 
 官方入口:

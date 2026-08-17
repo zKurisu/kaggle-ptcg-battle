@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""BC training entrypoint.
+
+Pipeline:
+    corpus .npz -> BCCorpus -> sequence loss / plan loss -> PyTorch checkpoint
+    -> export_numpy() -> policy.npz for Kaggle submission.
+"""
 from __future__ import annotations
 
 import argparse

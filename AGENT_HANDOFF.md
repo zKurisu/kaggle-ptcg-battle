@@ -1,8 +1,28 @@
 # Agent Handoff
 
-Last updated: 2026-08-13 11:35 Asia/Shanghai.
+Last updated: 2026-08-17 13:45 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
+
+## Update: Master README Refreshed 2026-08-17
+
+User asked that the `master` README also be brought up to date.  `README.md`
+now starts with a curated jie Kaggle submission history and a version/effect
+table covering v4/v5 through v15.  It explicitly records which changes helped
+and which failed:
+
+- v7 fixed high-quality Ogerpon sigs worked better than v8 mixed/v9 gameplan.
+- v10/v11/w4 deck-sig specialists produced most historical 900+ results.
+- v12 history had some high Marnie scores but was not consistently better than
+  old BC.
+- v13 shadow and much of v14 did not translate to stable Kaggle strength.
+- v15 remains a research line and should be gated by training-time signals,
+  random 100%, and fixed-seed trace.
+
+The README also updates the default `ks` path to `/data/jie`, separates ladder
+deck pools from policy/shadow RR pools, and documents current reproducible
+commands for data extraction, BC training, shadow/RR, v14/v15 diagnostics,
+replay analysis, and packaging.
 
 ## Workspaces
 

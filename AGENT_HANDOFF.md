@@ -1,8 +1,39 @@
 # Agent Handoff
 
-Last updated: 2026-08-17 00:48 Asia/Shanghai.
+Last updated: 2026-08-17 13:20 Asia/Shanghai.
 
 This file is the first place a new agent should read before touching the project. Keep it updated whenever the pipeline changes, a Kaggle submission is made, a long remote job is started/stopped, or the interpretation of current results changes. After updating it locally, sync it to the `ks` workspace and commit the change.
+
+## Update: README Rewritten As Reproducible Handbook 2026-08-17
+
+User noted that `README.md` had not been updated for a long time and should be
+usable by a beginner.  The README has been replaced with a shorter
+step-by-step handbook covering:
+
+- stable directory variables for local and ks workspaces;
+- leaderboard and daily episode download commands;
+- `bc_extract_v2.py` corpus extraction with history/log/board-history fields;
+- ladder-pool and archetype/deck-signature inspection;
+- stable `bc2_train.py` single-sig, top-k, team-specific, and population
+  training recipes;
+- shadow pool construction, random audit, RR, RR summary, and archetype matrix;
+- v14/v15 sequence/plan experiments with required training-time diagnostic
+  signals;
+- Kaggle replay analysis;
+- submission packaging;
+- remote long-job and artifact-backup templates.
+
+Important corrections made in the README:
+
+- Ladder pool and policy/shadow RR pool are explicitly separated.
+- `rr_archetype_matrix.py` is documented with its current `--rr/--manifest`
+  CLI.
+- `v14_audit_sequence_corpus.py` is documented with required
+  `--archetype`/`--out-csv`.
+- v15 example uses `--min-score 900` instead of appending `--score-band` to the
+  script's default all-band list.
+
+Commit this README/handoff update before starting another long experiment.
 
 ## Update: Ogerpon Historical Submission Baselines 2026-08-17
 

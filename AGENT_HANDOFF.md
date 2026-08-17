@@ -13565,3 +13565,32 @@ Follow-up RR vs the v15 common historical/current matchup pool:
   heavy environment. It is heavily exposed to Crustle and Alakazam, is slightly
   negative into Lucario, and loses the local Ogerpon mirror against the v14
   `8bc67715` representative.
+
+Historical Ogerpon vs historical Marnie check:
+
+- User asked whether historical Ogerpon also beats historical Marnie.
+- Ran 9 imported historical Ogerpon submissions/checkpoints against two
+  historical Marnie representatives:
+  - `marnie_w4_b8f`:
+    `artifacts/init_recover/w4_marnie_sig1_b8f251a4_policy.npz`
+  - `marnie_v14_b8f`:
+    `checkpoints/v14_sequence_0808_0812/pop_top2_allbands_parallel3/v14seq_marnie_grimmsnarl_b8f251a4_1.pt`
+  - Both use deck:
+    `logs/ladder_pool_0812_all_v13_20260813/decks/b8f251a476e7_marnie_grimmsnarl_raihan_ramadistra.csv`
+- Remote summary:
+  `logs/repro_alakazam_ogerpon_20260816/rr_hist_ogerpon_vs_hist_marnie_20260817/summary_pivot_g60.csv`
+- Local backup:
+  `artifacts/repro_alakazam_ogerpon_20260816/rr_hist_ogerpon_vs_hist_marnie_20260817/summary_pivot_g60.csv`
+- Results, Ogerpon win rate, 60 games per matchup:
+  - `hist_shadow_5899`: w4 `0.917`, v14 `0.983`, avg `0.950`
+  - `hist_w4legacy_5899`: w4 `0.833`, v14 `0.950`, avg `0.892`
+  - `hist_pop_v11_5899`: w4 `0.833`, v14 `0.933`, avg `0.883`
+  - `hist_v10_top2`: w4 `0.833`, v14 `0.933`, avg `0.883`
+  - `hist_v8_mixed`: w4 `0.833`, v14 `0.867`, avg `0.850`
+  - `hist_v7_top2`: w4 `0.750`, v14 `0.933`, avg `0.842`
+  - `hist_v10_top3`: w4 `0.783`, v14 `0.867`, avg `0.825`
+  - `hist_v9_w2`: w4 `0.817`, v14 `0.833`, avg `0.825`
+  - `hist_v9_gameplan`: w4 `0.700`, v14 `0.833`, avg `0.767`
+- Interpretation: historical Ogerpon is strongly favored into historical
+  Marnie. This supports using Ogerpon as an anti-Marnie environment response,
+  but it does not mitigate Ogerpon's separate Crustle/Alakazam weaknesses.

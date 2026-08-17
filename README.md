@@ -11,6 +11,8 @@ README 默认你已经在一台有 GPU、Kaggle CLI、Python 环境和 PTCG simu
 - PTCG AI Battle Challenge 官网: <https://ptcg-abc.pokemon.co.jp/>
 - simulator / cabt API 文档: <https://matsuoinstitute.github.io/cabt/>
 
+如果需要先了解 PTCG 基本玩法、Kaggle competition files、`cg` Python wrapper 和 C++ simulator 源码阅读路线，见 [docs/12_ptcg_gameplay_and_cg_engine.md](docs/12_ptcg_gameplay_and_cg_engine.md)。
+
 这个项目对应的是 PTCG AI Battle Challenge 的 Simulation track。参赛者提交一个能玩 Pokemon Trading Card Game 的 AI agent，Kaggle 会在自动天梯中持续安排 agent 对战，并用 skill rating 更新 leaderboard。另有 Strategy / Hackathon track，需要提交策略报告；Simulation track 的提交成绩会影响该方向的评估，但本仓库主要记录 Simulation ladder 的训练和提交。
 
 关键规则和约束:
@@ -36,6 +38,7 @@ Kaggle episode 只能告诉我们某个 agent 在当前天梯中做了什么，�
 | [Limitless TCG](https://limitlesstcg.com/) | 大赛结果、top decklists、meta share、卡组骨架 | 找真实高分构筑、确认 archetype 主流 engine、导出/改写 decklist | 真实 Standard 环境不等于 Kaggle ladder，先转成 `deck.csv` 后用引擎测合法性 |
 | [Limitless Labs](https://labs.limitlesstcg.com/) | 更细的 tournament standings、metagame analysis、matchup 信息 | 用来判断“现实中某弱势局是否仍有 30% 左右胜率”、找可参考胜局 | 官方页面也提示其统计是站外计算，可能有误差，不能直接当训练标签 |
 | [Play Limitless](https://play.limitlesstcg.com/) | 线上赛 decklists、metagame、pairings、win rate | 找更接近线上玩家的构筑和 side tech | 线上赛样本质量参差，需要筛 top cut / 高胜率玩家 |
+| [Play! Pokémon Resources](https://play.pokemon.com/en-us/resources/documents/?filter=all) / [宝可梦中文玩法规则](https://www.pokemon.cn/tcg-rules-howtoplay) | 官方规则书、玩法规则、赛场规则、errata | 补 PTCG 基础规则和真实赛制背景 | Kaggle simulator 可能与真实规则有差异，最终以 `cg` legal options 为准 |
 | [Limitless Docs](https://docs.limitlesstcg.com/player/decklists.html) | decklist 文本格式、PTCGL/Limitless 导出说明 | 用来规范 PTCG Live/Limitless decklist 到本项目 `deck.csv` 的转换 | PTCGL ALT 卡号可能需要用普通版本替换或删掉编号再匹配 |
 | [Trainer Hill](https://trainerhill.com/) / [Trainer Hill GitHub](https://github.com/Trainer-Hill) | meta overview、matchup data、decklist analysis、skeleton list 思路 | 查某 archetype 的核心卡、tech cards、对局热图 | 部分功能可能需要账号/付费；只作为外部先验 |
 | [PokeDeck Architect](https://pokedeckarchitect.com/meta) | 基于 Limitless 的 meta、win rate、top-8 转化、tech trend | 快速确认近期 meta 和可疑 hard counter | 第三方聚合，需回到原 decklist 或离线测试验证 |
@@ -230,6 +233,18 @@ ls -lh "$EPISODES"/pokemon-tcg-ai-battle-episodes-2026-08-*.zip
 
 ```bash
 kaggle datasets download kaggle/pokemon-tcg-ai-battle-episodes-2026-08-16 -p "$EPISODES"
+```
+
+### 3.3 下载 Kaggle 静态比赛文件
+
+Kaggle competition files 里包含卡牌 ID PDF、卡牌数据 CSV、`ptcg_engine` C++ 源码、sample submission 和 `cg` Python wrapper。详细说明见 [PTCG Gameplay And CG Engine Guide](docs/12_ptcg_gameplay_and_cg_engine.md)。
+
+```bash
+mkdir -p data/kaggle_files
+kaggle competitions files pokemon-tcg-ai-battle --page-size 200 -v \
+  | tee data/kaggle_files/files.csv
+kaggle competitions download pokemon-tcg-ai-battle -p data/kaggle_files
+unzip -o data/kaggle_files/pokemon-tcg-ai-battle.zip -d data/kaggle_files
 ```
 
 ## 4. 构建稳定 BC corpus

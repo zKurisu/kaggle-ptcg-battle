@@ -22,7 +22,12 @@ def _copytree(src: Path, dst: Path):
 
 
 def _default_cg_dir(repo: Path) -> Path | None:
-    for p in (repo / "cg", repo.parent / "cg", repo.parent.parent / "cg"):
+    for p in (
+        repo / "external" / "kaggle-environments" / "kaggle_environments" / "envs" / "cabt" / "cg",
+        repo / "cg",
+        repo.parent / "cg",
+        repo.parent.parent / "cg",
+    ):
         if (p / "libcg.so").exists() or (p / "api.py").exists():
             return p
     return None
@@ -38,7 +43,7 @@ def main():
     p.add_argument("--auto-deck", action="store_true",
                    help="fail if --registry cannot resolve the policy deck")
     p.add_argument("--cg-dir", default=None,
-                   help="path to cg engine directory; defaults to nearby ../cg")
+                   help="path to cg engine directory; defaults to external/kaggle-environments/.../cabt/cg")
     p.add_argument("--rules", choices=["", *RULE_MODES], default="",
                    help="optional rule overlay mode to enable in packaged agent")
     p.add_argument("--out", default=str(repo / "submission.tar.gz"))
@@ -61,7 +66,10 @@ def main():
     if not deck.exists():
         raise FileNotFoundError(f"deck not found: {deck}")
     if cg_dir is None or not cg_dir.exists():
-        raise FileNotFoundError("cg engine not found; pass --cg-dir /path/to/cg")
+        raise FileNotFoundError(
+            "cg engine not found; run `git submodule update --init --recursive external/kaggle-environments` "
+            "or pass --cg-dir explicitly"
+        )
 
     out.parent.mkdir(parents=True, exist_ok=True)
     print(f"Packaging submission", flush=True)

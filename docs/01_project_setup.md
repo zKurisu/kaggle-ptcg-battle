@@ -15,7 +15,9 @@
 - `tools/`：抽取、训练、评测、打包、分析、trace 工具。
 - `docs/`：教程和实验说明。
 - `decks/`：项目内可用 deck CSV。
-- `data/`：原始资料、引擎文件、抽取 corpus。
+- `raw_episode/`：自己下载的 Kaggle daily episode zip，不进 Git。
+- `external/kaggle-environments/`：Kaggle environment/cabt 源码 submodule。
+- `data/`：卡牌资料、抽取 corpus 和中间数据。
 - `logs/`：训练、评测、分析日志。
 - `checkpoints/`：模型和中间 checkpoint。
 
@@ -23,9 +25,10 @@
 
 ### 输入
 
-- Kaggle episodes：`episodes_raw/`
+- Kaggle episodes：`raw_episode/`
 - leaderboard CSV：用于 score band 标注
 - Kaggle files：规则、卡牌数据、引擎源码、sample submission
+- cg runtime：`external/kaggle-environments/kaggle_environments/envs/cabt/cg`
 
 ### 处理中间件
 
@@ -45,10 +48,11 @@
 
 ```bash
 export REPO=${REPO:-$(pwd)}
-export EPISODES=${EPISODES:-$REPO/../episodes_raw}
-export CG_DIR=${CG_DIR:-$REPO/../cg}
+export EPISODES=${EPISODES:-$REPO/raw_episode}
+export CG_DIR=${CG_DIR:-$REPO/external/kaggle-environments/kaggle_environments/envs/cabt/cg}
 export LB_DIR=${LB_DIR:-logs/leaderboard_$(date +%Y%m%d)}
-mkdir -p data logs checkpoints
+mkdir -p raw_episode data logs checkpoints
+git submodule update --init --recursive external/kaggle-environments
 ```
 
 检查引擎和 Python 环境：
@@ -66,7 +70,7 @@ nvidia-smi
 - 抽取章节会写到 `data/bc_corpus_*`
 - BC 章节会读 `data/bc_corpus_*`
 - 评测章节会读 `checkpoints/*.npz` 和 `decks/*.csv`
-- submission 章节会把 `main.py`、`policy.npz`、`deck.csv`、`cg/` 打包
+- submission 章节会把 `main.py`、`policy.npz`、`deck.csv`、`cg/` runtime 打包
 
 如果你在命令里写错路径，实验通常不是“效果不好”，而是“根本没在跑正确的文件”。
 

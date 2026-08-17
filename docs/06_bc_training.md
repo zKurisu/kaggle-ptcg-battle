@@ -180,7 +180,6 @@ mkdir -p submission
 python3 tools/package_submission.py \
   --policy checkpoints/bc_tutorial/bc2_marnie_b8f_w3.npz \
   --deck decks/pool_329_marnie_s_grimmsnarl.csv \
-  --cg-dir "$CG_DIR" \
   --out submission/submission_marnie_b8f_w3.tar.gz
 ```
 

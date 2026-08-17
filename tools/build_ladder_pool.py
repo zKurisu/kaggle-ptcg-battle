@@ -264,7 +264,7 @@ def write_outputs(rows: list[dict], out_dir: Path) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--episodes-dir", default="../episodes_raw")
+    p.add_argument("--episodes-dir", default="raw_episode")
     p.add_argument("--out", default="logs/ladder_pool")
     p.add_argument("--lb-csv", default="")
     p.add_argument("--personal-loss-dir", action="append", default=[],

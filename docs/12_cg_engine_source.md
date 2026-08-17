@@ -135,25 +135,38 @@ kaggle competitions download pokemon-tcg-ai-battle \
 
 ### 2.3 不要提交 Kaggle 静态文件
 
-`ptcg_engine`、card data、card text 和二进制库属于比赛提供材料。它们用于参赛、训练和测试，不应复制进公开仓库或二次分发。仓库里只记录下载命令、源码阅读方法和我们自己的训练代码。
+`ptcg_engine`、card data、card text 和二进制库属于比赛提供材料。它们用于参赛、训练和测试，不应随意复制进公开仓库或二次分发。`cg` wrapper/runtime 如果从公开 `kaggle-environments` 仓库取得，则通过 submodule 引用；自己从 Kaggle competition files 下载的原始包仍只放在本地目录。
 
 ## 3. Python `cg` 接口
 
-Kaggle sample submission 里的 `cg/` 是 Python wrapper，加上平台对应的动态库：
+Kaggle sample submission 里的 `cg/` 是 Python wrapper，加上平台对应的动态库。当前项目把公开的 Kaggle environment 仓库作为 submodule：
+
+```bash
+git submodule update --init --recursive external/kaggle-environments
+export CG_DIR=${CG_DIR:-$REPO/external/kaggle-environments/kaggle_environments/envs/cabt/cg}
+```
+
+对应源码位置：
+
+- cabt 环境入口：`external/kaggle-environments/kaggle_environments/envs/cabt/cabt.py`
+- cg wrapper/runtime：`external/kaggle-environments/kaggle_environments/envs/cabt/cg/`
+- cabt 测试：`external/kaggle-environments/tests/envs/cabt/`
+
+`cg/` runtime 内包含：
 
 - Linux x86_64：`libcg.so`
 - Linux arm64：`libcg-arm64.so`
 - macOS：`libcg.dylib`
 - Windows：`cg.dll`
 
-本项目打包时通常通过 `tools/package_submission.py --cg-dir "$CG_DIR"` 把 `cg/` 放进 submission。
+本项目打包时 `tools/package_submission.py` 默认从上述 submodule 路径读取 `cg/` 并放进 submission。若你从 Kaggle competition files 解压了另一份 `cg/`，也可以用 `--cg-dir` 显式覆盖。
 
 ### 3.1 最小 smoke test
 
 如果 `CG_DIR` 指向 `cg/` 目录本身，Python import 需要把它的父目录加入 `sys.path`。
 
 ```bash
-export CG_DIR=${CG_DIR:-$REPO/../cg}
+export CG_DIR=${CG_DIR:-$REPO/external/kaggle-environments/kaggle_environments/envs/cabt/cg}
 python3 - <<'PY'
 import os, sys
 cg_dir = os.environ["CG_DIR"]
@@ -181,7 +194,7 @@ PY
 ```bash
 python3 - <<'PY'
 import os, sys, random
-cg_dir = os.environ.get("CG_DIR", "../cg")
+cg_dir = os.environ.get("CG_DIR", "external/kaggle-environments/kaggle_environments/envs/cabt/cg")
 sys.path.insert(0, os.path.dirname(os.path.abspath(cg_dir)))
 
 from cg.game import battle_start, battle_select, battle_finish

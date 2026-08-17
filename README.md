@@ -168,13 +168,14 @@ kaggle competitions submissions pokemon-tcg-ai-battle -v
 
 ## 2. 目录和环境
 
-在仓库根目录设置少量相对路径变量。默认原始 episode zip 放在仓库上一级的 `episodes_raw/`，simulator 引擎放在仓库上一级的 `cg/`。
+在仓库根目录设置少量相对路径变量。原始 episode zip 放在项目内 `raw_episode/`。`cg` 引擎源码和 runtime wrapper 来自 `external/kaggle-environments/` submodule。
 
 ```bash
 export REPO=${REPO:-$(pwd)}
-export EPISODES=${EPISODES:-$REPO/../episodes_raw}
-export CG_DIR=${CG_DIR:-$REPO/../cg}
-mkdir -p data logs checkpoints
+export EPISODES=${EPISODES:-$REPO/raw_episode}
+export CG_DIR=${CG_DIR:-$REPO/external/kaggle-environments/kaggle_environments/envs/cabt/cg}
+mkdir -p raw_episode data logs checkpoints
+git submodule update --init --recursive external/kaggle-environments
 ```
 
 确认引擎和 Kaggle CLI 可用：
@@ -244,7 +245,7 @@ kaggle datasets download kaggle/pokemon-tcg-ai-battle-episodes-2026-08-16 -p "$E
 
 ### 3.3 下载 Kaggle 静态比赛文件
 
-Kaggle competition files 里包含卡牌 ID PDF、卡牌数据 CSV、`ptcg_engine` C++ 源码、sample submission 和 `cg` Python wrapper。详细说明见 [12 - PTCG 玩法与 cg/C++ 引擎深读](docs/12_cg_engine_source.md)。
+Kaggle competition files 里包含卡牌 ID PDF、卡牌数据 CSV、`ptcg_engine` C++ 源码、sample submission 和 `cg` Python wrapper。`cg` runtime 也可以从 `external/kaggle-environments/kaggle_environments/envs/cabt/cg` 读取。详细说明见 [12 - PTCG 玩法与 cg/C++ 引擎深读](docs/12_cg_engine_source.md)。
 
 ```bash
 mkdir -p data/kaggle_files
@@ -751,7 +752,6 @@ mkdir -p "$SUB_DIR"
 python3 tools/package_submission.py \
   --policy "$POLICY" \
   --deck "$DECK" \
-  --cg-dir "$CG_DIR" \
   --out "$SUB_DIR/submission_marnie_b8f_w3_900p_0801_0815.tar.gz"
 ls -lh "$SUB_DIR/submission_marnie_b8f_w3_900p_0801_0815.tar.gz"
 ```
@@ -779,7 +779,8 @@ cat >run_ptcg_job.sh <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 export REPO=${REPO:-$PWD}
-export EPISODES=${EPISODES:-../episodes_raw}
+export EPISODES=${EPISODES:-$REPO/raw_episode}
+export CG_DIR=${CG_DIR:-$REPO/external/kaggle-environments/kaggle_environments/envs/cabt/cg}
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1

@@ -721,7 +721,7 @@ def summarize_markdown(
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--episodes-dir", default="/home/jie/Do/0_PTCG/workspace/episodes_raw")
+    p.add_argument("--episodes-dir", default="raw_episode")
     p.add_argument("--date-from", default="")
     p.add_argument("--date-to", default="")
     p.add_argument("--deck-manifest", action="append", default=[])

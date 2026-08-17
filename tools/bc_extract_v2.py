@@ -3,7 +3,7 @@
 Extract state→action pairs from Kaggle episode ZIPs, grouped by archetype.
 
 Usage:
-    python tools/bc_extract_v2.py ../episodes_raw/ --out data/bc_corpus/
+    python tools/bc_extract_v2.py raw_episode/ --out data/bc_corpus/
 
 Output per zip × per archetype:
     data/bc_corpus/<Archetype>/<date>.npz

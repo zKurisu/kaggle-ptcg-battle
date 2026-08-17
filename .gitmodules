@@ -1,0 +1,3 @@
+[submodule "external/kaggle-environments"]
+	path = external/kaggle-environments
+	url = https://github.com/Kaggle/kaggle-environments.git

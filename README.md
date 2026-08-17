@@ -8,6 +8,7 @@ README 默认你已经在一台有 GPU、Kaggle CLI、Python 环境和 PTCG simu
 1. [docs/00_tutorial_index.md](docs/00_tutorial_index.md) - 教程总目录，按顺序带你读完整个项目。
 2. [docs/12_cg_engine_source.md](docs/12_cg_engine_source.md) - PTCG 基础玩法、Kaggle files、`cg` 引擎和 Python wrapper。
 3. [docs/13_call_graph_submission.md](docs/13_call_graph_submission.md) - 数据、BC、RL、评测和 submission 的调用链。
+4. [docs/decks/00_deck_index.md](docs/decks/00_deck_index.md) - 本地 deck 模板、Kaggle ladder 强签名、卡组打法、视频和卡面素材来源。
 
 ## Kaggle 比赛信息
 

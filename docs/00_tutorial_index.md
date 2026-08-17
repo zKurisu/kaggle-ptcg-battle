@@ -19,6 +19,7 @@
 11. [11 - RL、search 与 teacher rollout](11_rl_search_teacher.md)
 12. [12 - PTCG 玩法与 cg/C++ 引擎深读](12_cg_engine_source.md)
 13. [13 - 调用链与 submission 打包](13_call_graph_submission.md)
+14. [decks - 卡组资料索引](decks/00_deck_index.md)
 
 每一章都按这个格式组织：
 

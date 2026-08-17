@@ -195,6 +195,8 @@ def _make_row(
     game_steps: int,
     step_index: int,
     decision_index: int,
+    turn_number: int,
+    turn_action_count: int,
 ) -> dict[str, object]:
     act_event = selected_action_event(encoded, action)
     ot = np.asarray(encoded.opt_type, dtype=np.int16)
@@ -243,6 +245,8 @@ def _make_row(
         "game_steps": int(game_steps),
         "step_index": int(step_index),
         "decision_index": int(decision_index),
+        "turn_number": int(turn_number),
+        "turn_action_count": int(turn_action_count),
     }
 
 
@@ -338,6 +342,8 @@ def process_zip(
                                     game_steps=len(steps),
                                     step_index=int(pend["step_index"]),
                                     decision_index=int(pend["decision_index"]),
+                                    turn_number=int(pend["turn_number"]),
+                                    turn_action_count=int(pend["turn_action_count"]),
                                 )
                                 player_rows[pi].append(row)
                                 player_actions[pi].append(np.asarray(action, dtype=np.int16))
@@ -355,6 +361,7 @@ def process_zip(
                         if pd.get("status") == "ACTIVE" and isinstance(sel, dict) and len(sel.get("option", [])) > 0:
                             try:
                                 encoded = encoder.encode(obs)
+                                cur = obs.get("current") or {}
                                 known_cards, known_counts, known_mask = ledgers[pi].known_opp_arrays()
                                 pending[pi] = {
                                     "obs": obs,
@@ -366,6 +373,8 @@ def process_zip(
                                     "prev": _prev_event_fields(ledgers[pi]),
                                     "step_index": step_index,
                                     "decision_index": len(player_rows[pi]),
+                                    "turn_number": int(cur.get("turn", 0) or 0),
+                                    "turn_action_count": int(cur.get("turnActionCount", 0) or 0),
                                 }
                             except Exception:
                                 errors += 1
@@ -489,6 +498,8 @@ def _save_rows(dest: Path, rows: list[dict[str, object]], *, future_horizon: int
         game_steps=np.asarray([r["game_steps"] for r in rows], dtype=np.int16),
         step_index=np.asarray([r["step_index"] for r in rows], dtype=np.int16),
         decision_index=np.asarray([r["decision_index"] for r in rows], dtype=np.int16),
+        turn_number=np.asarray([r["turn_number"] for r in rows], dtype=np.int16),
+        turn_action_count=np.asarray([r["turn_action_count"] for r in rows], dtype=np.int16),
         feature_version=np.asarray(FEATURE_VERSION, dtype=object),
         state_feat_dim=np.asarray(STATE_FEAT_DIM, dtype=np.int16),
         opt_feat_dim=np.asarray(OPT_FEAT_DIM, dtype=np.int16),

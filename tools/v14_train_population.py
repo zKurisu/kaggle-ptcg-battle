@@ -20,6 +20,7 @@ class Job:
     team_name: str
     score_bands: str
     out: str
+    deck_path: str = ""
     gpu: str = ""
     proc: subprocess.Popen | None = None
     log_path: str = ""
@@ -48,7 +49,16 @@ def read_jobs(path: str, *, default_out_dir: str, default_score_bands: str) -> l
             if not out:
                 out = str(Path(default_out_dir) / f"{name}.pt")
             bands = (row.get("score_bands") or default_score_bands).strip()
-            jobs.append(Job(name=name, archetype=arch, deck_sig=deck_sig, team_name=team, score_bands=bands, out=out))
+            deck_path = (row.get("deck_path") or row.get("deck") or row.get("deck_file") or "").strip()
+            jobs.append(Job(
+                name=name,
+                archetype=arch,
+                deck_sig=deck_sig,
+                team_name=team,
+                score_bands=bands,
+                out=out,
+                deck_path=deck_path,
+            ))
     if not jobs:
         raise ValueError(f"manifest has no jobs: {path}")
     return jobs
@@ -110,6 +120,34 @@ def build_cmd(args: argparse.Namespace, job: Job) -> list[str]:
         str(args.next_type_weight),
         "--dca-plan-weight",
         str(args.dca_plan_weight),
+        "--known-action-weight",
+        str(args.known_action_weight),
+        "--turn-plan-weight",
+        str(args.turn_plan_weight),
+        "--turn-terminal-weight",
+        str(args.turn_terminal_weight),
+        "--turn-next-plan-weight",
+        str(args.turn_next_plan_weight),
+        "--turn-next-type-weight",
+        str(args.turn_next_type_weight),
+        "--turn-next-card-weight",
+        str(args.turn_next_card_weight),
+        "--turn-next-attack-weight",
+        str(args.turn_next_attack_weight),
+        "--turn-next-context-weight",
+        str(args.turn_next_context_weight),
+        "--opportunity-type-weight",
+        str(args.opportunity_type_weight),
+        "--opportunity-margin-weight",
+        str(args.opportunity_margin_weight),
+        "--opportunity-margin",
+        str(args.opportunity_margin),
+        "--current-rank-margin-weight",
+        str(args.current_rank_margin_weight),
+        "--current-rank-margin",
+        str(args.current_rank_margin),
+        "--current-rank-margin-min-options",
+        str(args.current_rank_margin_min_options),
         "--history-condition-scale",
         str(args.history_condition_scale),
         "--plan-condition-scale",
@@ -120,8 +158,16 @@ def build_cmd(args: argparse.Namespace, job: Job) -> list[str]:
         str(args.dca_condition_scale),
         "--known-condition-scale",
         str(args.known_condition_scale),
+        "--known-logit-scale",
+        str(args.known_logit_scale),
+        "--turn-condition-scale",
+        str(args.turn_condition_scale),
+        "--turn-next-condition-scale",
+        str(args.turn_next_condition_scale),
         "--type-prior-scale",
         str(args.type_prior_scale),
+        "--current-complexity-weight",
+        str(args.current_complexity_weight),
         "--multi-target-weight",
         str(args.multi_target_weight),
         "--damage-counter-weight",
@@ -147,6 +193,26 @@ def build_cmd(args: argparse.Namespace, job: Job) -> list[str]:
         cmd += ["--deck-sig", job.deck_sig]
     if job.team_name:
         cmd += ["--team-name", job.team_name]
+    smoke_deck = args.random_smoke_deck or job.deck_path
+    if args.random_smoke_games > 0 and smoke_deck:
+        cmd += [
+            "--random-smoke-deck",
+            smoke_deck,
+            "--random-smoke-games",
+            str(args.random_smoke_games),
+            "--random-smoke-workers",
+            str(args.random_smoke_workers),
+            "--random-smoke-every",
+            str(args.random_smoke_every),
+            "--random-smoke-max-turns",
+            str(args.random_smoke_max_turns),
+            "--random-smoke-device",
+            args.random_smoke_device,
+            "--random-smoke-progress-every",
+            str(args.random_smoke_progress_every),
+            "--random-smoke-min-wr",
+            str(args.random_smoke_min_wr),
+        ]
     return cmd
 
 
@@ -202,14 +268,41 @@ def main() -> None:
     p.add_argument("--plan-weight", type=float, default=0.35)
     p.add_argument("--next-type-weight", type=float, default=0.25)
     p.add_argument("--dca-plan-weight", type=float, default=0.25)
+    p.add_argument("--known-action-weight", type=float, default=0.0)
+    p.add_argument("--turn-plan-weight", type=float, default=0.0)
+    p.add_argument("--turn-terminal-weight", type=float, default=0.0)
+    p.add_argument("--turn-next-plan-weight", type=float, default=0.0)
+    p.add_argument("--turn-next-type-weight", type=float, default=1.0)
+    p.add_argument("--turn-next-card-weight", type=float, default=0.25)
+    p.add_argument("--turn-next-attack-weight", type=float, default=0.25)
+    p.add_argument("--turn-next-context-weight", type=float, default=0.10)
+    p.add_argument("--opportunity-type-weight", type=float, default=0.0)
+    p.add_argument("--opportunity-margin-weight", type=float, default=0.0)
+    p.add_argument("--opportunity-margin", type=float, default=0.25)
+    p.add_argument("--current-rank-margin-weight", type=float, default=0.0)
+    p.add_argument("--current-rank-margin", type=float, default=0.25)
+    p.add_argument("--current-rank-margin-min-options", type=int, default=2)
     p.add_argument("--history-condition-scale", type=float, default=0.0)
     p.add_argument("--plan-condition-scale", type=float, default=0.0)
     p.add_argument("--next-type-condition-scale", type=float, default=0.0)
     p.add_argument("--dca-condition-scale", type=float, default=0.0)
     p.add_argument("--known-condition-scale", type=float, default=0.0)
+    p.add_argument("--known-logit-scale", type=float, default=0.0)
+    p.add_argument("--turn-condition-scale", type=float, default=0.0)
+    p.add_argument("--turn-next-condition-scale", type=float, default=0.0)
     p.add_argument("--type-prior-scale", type=float, default=0.0)
+    p.add_argument("--current-complexity-weight", type=float, default=0.0)
     p.add_argument("--multi-target-weight", type=float, default=1.0)
     p.add_argument("--damage-counter-weight", type=float, default=1.0)
+    p.add_argument("--random-smoke-deck", default="",
+                   help="optional global deck CSV for per-epoch random smoke; manifest deck_path is used when omitted")
+    p.add_argument("--random-smoke-games", type=int, default=0)
+    p.add_argument("--random-smoke-workers", type=int, default=4)
+    p.add_argument("--random-smoke-every", type=int, default=1)
+    p.add_argument("--random-smoke-max-turns", type=int, default=700)
+    p.add_argument("--random-smoke-device", default="cpu")
+    p.add_argument("--random-smoke-progress-every", type=int, default=20)
+    p.add_argument("--random-smoke-min-wr", type=float, default=0.90)
     p.add_argument("--winner-only", action="store_true")
     p.add_argument("--min-score", type=float, default=0.0)
     p.add_argument("--amp", action="store_true")

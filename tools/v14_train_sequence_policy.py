@@ -7,6 +7,8 @@ import math
 import json
 import os
 import random
+import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -96,6 +98,16 @@ def _signal_stats_line(stats: dict[str, object]) -> str:
         ("known_opp_rate", 3),
         ("known_opp_slots_mean", 2),
         ("known_opp_count_mean", 2),
+        ("turn_continue_rate", 3),
+        ("turn_remaining_mean", 2),
+        ("turn_future_type_density", 3),
+        ("turn_next_rate", 3),
+        ("turn_next_card_rate", 3),
+        ("turn_next_attack_rate", 3),
+        ("turn_next_context_rate", 3),
+        ("turn_plan_seq_density", 3),
+        ("turn_plan_seq_card_rate", 3),
+        ("turn_plan_seq_attack_rate", 3),
         ("dca_rate", 3),
         ("dca_groups", 0),
         ("dca_spread_rate", 3),
@@ -326,20 +338,54 @@ def _signal_warnings(
         warnings.append(f"large_preclip_grad={train_loss.get('grad_norm', 0.0):.1f}")
     if val_acc.get("cur_n", 0.0) > 50 and val_acc.get("cur_top1", 0.0) + 0.05 < val_acc.get("top1", 0.0):
         warnings.append("current_step_weaker_than_prefix")
-    if val_acc.get("cur1_agree", 0.0) > 0.90 and abs(val_acc.get("cur1_delta", 0.0)) < 0.02:
-        warnings.append("history_not_affecting_current")
-    if val_acc.get("stateless_agree", 0.0) > 0.88 and abs(val_acc.get("stateless_delta", 0.0)) < 0.03:
-        warnings.append("stateless_current_matches_full")
-    if val_acc.get("noact_agree", 0.0) > 0.92 and abs(val_acc.get("noact_delta", 0.0)) < 0.02:
-        warnings.append("action_ledger_not_affecting_current")
-    if val_acc.get("revhist_agree", 0.0) > 0.92 and abs(val_acc.get("revhist_delta", 0.0)) < 0.02:
-        warnings.append("history_order_not_affecting_current")
+    if val_acc.get("cur_n", 0.0) > 50 and val_acc.get("cur_forced_rate", 0.0) > 0.20:
+        warnings.append(f"current_top1_forced_inflated={val_acc.get('cur_forced_rate', 0.0):.3f}")
+    if val_acc.get("cur_target_margin_best", 0.0) < 0.10 and val_acc.get("cur_n", 0.0) > 50:
+        warnings.append(f"current_exact_rank_margin_low={val_acc.get('cur_target_margin_best', 0.0):.3f}")
+    if val_acc.get("cur_rank_violation_025", 0.0) > 0.35 and val_acc.get("cur_n", 0.0) > 50:
+        warnings.append(f"current_exact_rank_violation={val_acc.get('cur_rank_violation_025', 0.0):.3f}")
     if (
-        val_acc.get("next_type_n", 0.0) > 50
-        and abs(val_acc.get("revhist_next_delta", 0.0)) < 0.02
-        and val_acc.get("revhist_next_kl", 0.0) < 0.02
+        val_acc.get("cur_n", 0.0) > 50
+        and val_acc.get("cur_nonforced_top1", 0.0) > 0
+        and val_acc.get("cur_nonforced_top1", 0.0) + 0.08 < val_acc.get("cur_top1", 0.0)
     ):
-        warnings.append("history_order_not_affecting_future")
+        warnings.append(f"nonforced_current_weak={val_acc.get('cur_nonforced_top1', 0.0):.3f}")
+    if val_acc.get("cur_pred_end_when_nonend_legal", 0.0) > 0.08:
+        warnings.append(f"premature_end_when_nonend_legal={val_acc.get('cur_pred_end_when_nonend_legal', 0.0):.3f}")
+    if val_acc.get("cur_pred_end_when_target_nonend", 0.0) > 0.05:
+        warnings.append(f"miss_nonend_by_end={val_acc.get('cur_pred_end_when_target_nonend', 0.0):.3f}")
+    for name in ("attach", "evolve", "ability", "attack"):
+        legal = val_acc.get(f"cur_{name}_legal_rate", 0.0)
+        target = val_acc.get(f"cur_{name}_target_if_legal", 0.0)
+        pred = val_acc.get(f"cur_{name}_pred_if_legal", 0.0)
+        miss = val_acc.get(f"cur_{name}_miss_if_target", 0.0)
+        mass = val_acc.get(f"cur_{name}_target_mass", 0.0)
+        if legal > 0.08 and target > 0.08 and pred + 0.12 < target:
+            warnings.append(f"current_{name}_opportunity_underused={pred:.3f}<{target:.3f}")
+        if miss > 0.25 and target > 0.08:
+            warnings.append(f"current_{name}_target_missed={miss:.3f}")
+        if target > 0.08 and mass < 0.45:
+            warnings.append(f"current_{name}_target_mass_low={mass:.3f}")
+        margin = val_acc.get(f"cur_{name}_target_margin_other", 0.0)
+        if target > 0.08 and margin < 0.10:
+            warnings.append(f"current_{name}_target_margin_low={margin:.3f}")
+    if not args.diagnostic_ablation:
+        warnings.append("diagnostic_ablation_disabled")
+    else:
+        if val_acc.get("cur1_agree", 0.0) > 0.90 and abs(val_acc.get("cur1_delta", 0.0)) < 0.02:
+            warnings.append("history_not_affecting_current")
+        if val_acc.get("stateless_agree", 0.0) > 0.88 and abs(val_acc.get("stateless_delta", 0.0)) < 0.03:
+            warnings.append("stateless_current_matches_full")
+        if val_acc.get("noact_agree", 0.0) > 0.92 and abs(val_acc.get("noact_delta", 0.0)) < 0.02:
+            warnings.append("action_ledger_not_affecting_current")
+        if val_acc.get("revhist_agree", 0.0) > 0.92 and abs(val_acc.get("revhist_delta", 0.0)) < 0.02:
+            warnings.append("history_order_not_affecting_current")
+        if (
+            val_acc.get("next_type_n", 0.0) > 50
+            and abs(val_acc.get("revhist_next_delta", 0.0)) < 0.02
+            and val_acc.get("revhist_next_kl", 0.0) < 0.02
+        ):
+            warnings.append("history_order_not_affecting_future")
     if val_acc.get("plan_pos_rate", 0.0) > 0.10 and val_acc.get("plan_f1", 0.0) < 0.20:
         warnings.append("future_plan_weak")
     if args.history_condition_scale > 0.0 and val_loss.get("hist_query_ratio", 0.0) < 0.05:
@@ -352,8 +398,52 @@ def _signal_warnings(
         warnings.append(f"known_condition_inactive={val_loss.get('known_query_ratio', 0.0):.3f}")
     if val_acc.get("known_opp_rate", 0.0) > 0.05 and val_acc.get("noknown_agree", 0.0) > 0.95 and abs(val_acc.get("noknown_delta", 0.0)) < 0.02:
         warnings.append("known_info_not_affecting_current")
+    if args.known_action_weight > 0.0 and val_acc.get("known_action_n", 0.0) > 50 and val_acc.get("known_action_top1", 0.0) < 0.35:
+        warnings.append(f"known_action_weak={val_acc.get('known_action_top1', 0.0):.3f}")
+    if args.known_logit_scale > 0.0 and val_acc.get("known_opp_rate", 0.0) > 0.05 and val_acc.get("noknown_agree", 0.0) > 0.95 and abs(val_acc.get("noknown_delta", 0.0)) < 0.02:
+        warnings.append("known_logit_not_affecting_current")
+    if args.turn_condition_scale > 0.0 and val_loss.get("turn_query_ratio", 0.0) < 0.05:
+        warnings.append(f"turn_condition_inactive={val_loss.get('turn_query_ratio', 0.0):.3f}")
+    if args.turn_next_condition_scale > 0.0 and val_loss.get("turn_next_query_ratio", 0.0) < 0.05:
+        warnings.append(f"turn_next_condition_inactive={val_loss.get('turn_next_query_ratio', 0.0):.3f}")
+    if args.turn_seq_condition_scale > 0.0 and val_loss.get("turn_seq_query_ratio", 0.0) < 0.05:
+        warnings.append(f"turn_seq_condition_inactive={val_loss.get('turn_seq_query_ratio', 0.0):.3f}")
+    if val_acc.get("turn_continue_target_rate", 0.0) > 0.10 and val_acc.get("turn_continue_f1", 0.0) < 0.45:
+        warnings.append(f"turn_continue_weak={val_acc.get('turn_continue_f1', 0.0):.3f}")
+    if val_acc.get("turn_future_type_target_rate", 0.0) > 0.03 and val_acc.get("turn_future_type_f1", 0.0) < 0.25:
+        warnings.append(f"turn_future_type_weak={val_acc.get('turn_future_type_f1', 0.0):.3f}")
+    if val_acc.get("cur_turn_continue_target_rate", 0.0) > 0.10 and val_acc.get("cur_turn_continue_miss", 0.0) > 0.25:
+        warnings.append(f"current_turn_continue_missed={val_acc.get('cur_turn_continue_miss', 0.0):.3f}")
+    if val_acc.get("cur_turn_continue_target_rate", 0.0) > 0.10 and val_acc.get("cur_terminal_when_continue", 0.0) > 0.10:
+        warnings.append(f"terminal_during_continue={val_acc.get('cur_terminal_when_continue', 0.0):.3f}")
+    if val_acc.get("cur_turn_continue_target_rate", 0.0) > 0.10 and val_acc.get("cur_terminal_prob_when_continue", 0.0) > 0.20:
+        warnings.append(f"terminal_mass_during_continue={val_acc.get('cur_terminal_prob_when_continue', 0.0):.3f}")
     if val_acc.get("next_type_n", 0.0) > 50 and val_acc.get("next_type_acc", 0.0) < 0.45:
         warnings.append(f"next_type_weak={val_acc.get('next_type_acc', 0.0):.3f}")
+    if val_acc.get("turn_next_exists_rate", 0.0) > 0.10 and val_acc.get("turn_next_type_pos_acc", 0.0) < 0.35:
+        warnings.append(f"turn_next_type_weak={val_acc.get('turn_next_type_pos_acc', 0.0):.3f}")
+    if (
+        val_acc.get("turn_next_exists_rate", 0.0) > 0.10
+        and val_acc.get("turn_next_none_acc", 0.0) > 0.90
+        and val_acc.get("turn_next_type_pos_acc", 0.0) < 0.45
+    ):
+        warnings.append("turn_next_collapsed_to_none")
+    if val_acc.get("turn_next_card_n", 0.0) > 50 and val_acc.get("turn_next_card_acc", 0.0) < 0.20:
+        warnings.append(f"turn_next_card_weak={val_acc.get('turn_next_card_acc', 0.0):.3f}")
+    if val_acc.get("turn_next_attack_n", 0.0) > 50 and val_acc.get("turn_next_attack_acc", 0.0) < 0.20:
+        warnings.append(f"turn_next_attack_weak={val_acc.get('turn_next_attack_acc', 0.0):.3f}")
+    if val_loss.get("turn_seq_slots", 0.0) > 50 and val_acc.get("turn_seq_type_pos_acc", 0.0) < 0.30:
+        warnings.append(f"turn_seq_type_weak={val_acc.get('turn_seq_type_pos_acc', 0.0):.3f}")
+    if (
+        val_loss.get("turn_seq_slots", 0.0) > 50
+        and val_acc.get("turn_seq_none_acc", 0.0) > 0.90
+        and val_acc.get("turn_seq_type_pos_acc", 0.0) < 0.45
+    ):
+        warnings.append("turn_seq_collapsed_to_none")
+    if val_acc.get("turn_seq_card_n", 0.0) > 50 and val_acc.get("turn_seq_card_acc", 0.0) < 0.15:
+        warnings.append(f"turn_seq_card_weak={val_acc.get('turn_seq_card_acc', 0.0):.3f}")
+    if val_acc.get("turn_seq_attack_n", 0.0) > 50 and val_acc.get("turn_seq_attack_acc", 0.0) < 0.20:
+        warnings.append(f"turn_seq_attack_weak={val_acc.get('turn_seq_attack_acc', 0.0):.3f}")
     if val_acc.get("ambig_type_rate", 0.0) > 0.10 and val_acc.get("ambig_type_top1", 0.0) + 0.05 < val_acc.get("top1", 0.0):
         warnings.append("ambiguous_options_weak")
     for name in ("attach", "evolve", "attack"):
@@ -437,17 +527,30 @@ def run_epoch(
                     scaler.unscale_(optimizer)
                     grad = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                     grad_norm = float(grad.detach().cpu()) if torch.is_tensor(grad) else float(grad)
-                    if not np.isfinite(grad_norm):
+                parts = dict(parts)
+                if not np.isfinite(grad_norm):
+                    parts["grad_norm"] = 0.0
+                    parts["grad_nonfinite"] = 1.0
+                    if amp:
+                        print(
+                            f"WARN nonfinite_grad_skip mode=train epoch={epoch} batch={bi}/{total_batches} "
+                            f"grad_norm={grad_norm} parts={parts}",
+                            flush=True,
+                        )
+                        optimizer.zero_grad(set_to_none=True)
+                        scaler.update()
+                    else:
                         print(
                             f"FATAL nonfinite_grad mode=train epoch={epoch} batch={bi}/{total_batches} "
                             f"grad_norm={grad_norm} parts={parts}",
                             flush=True,
                         )
                         raise RuntimeError("nonfinite sequence policy gradient")
-                scaler.step(optimizer)
-                scaler.update()
-                parts = dict(parts)
-                parts["grad_norm"] = grad_norm
+                else:
+                    parts["grad_norm"] = grad_norm
+                    parts["grad_nonfinite"] = 0.0
+                    scaler.step(optimizer)
+                    scaler.update()
         loss_parts.append(parts)
         acc = sequence_accuracy(outputs, batch)
         if diagnostic_ablation and not train:
@@ -471,9 +574,48 @@ def run_epoch(
                 f"k={ma.get('pred_k', 0):.2f}/{ma.get('target_k', 0):.2f} "
                 f"cur={ma.get('cur_top1', 0):.3f}/{ma.get('cur_type_acc', 0):.3f}/"
                 f"{mp.get('current_weight_share', 0):.2f}/{mp.get('current_row_share', 0):.2f} "
+                f"cmp={mp.get('current_complexity_mean', 0):.2f}/{mp.get('current_complexity_max', 0):.2f} "
+                f"curQ=H{ma.get('cur_entropy', 0):.2f}/M{ma.get('cur_margin', 0):.2f}/"
+                f"R{ma.get('cur_target_margin_best', 0):.2f}/{ma.get('cur_rank_violation_025', 0):.2f}/"
+                f"AR{ma.get('cur_ambig_target_margin_best', 0):.2f}/"
+                f"F{ma.get('cur_forced_rate', 0):.2f}/NF{ma.get('cur_nonforced_top1', 0):.3f}/"
+                f"B{ma.get('cur_bigopt_top1', 0):.3f}/A{ma.get('cur_ambig_type_top1', 0):.3f}/"
+                f"End{ma.get('cur_pred_end_rate', 0):.2f}/{ma.get('cur_pred_end_when_nonend_legal', 0):.2f} "
+                f"opp=at{ma.get('cur_attach_legal_rate', 0):.2f}/{ma.get('cur_attach_target_if_legal', 0):.2f}/{ma.get('cur_attach_pred_if_legal', 0):.2f} "
+                f"ev{ma.get('cur_evolve_legal_rate', 0):.2f}/{ma.get('cur_evolve_target_if_legal', 0):.2f}/{ma.get('cur_evolve_pred_if_legal', 0):.2f} "
+                f"ak{ma.get('cur_attack_legal_rate', 0):.2f}/{ma.get('cur_attack_target_if_legal', 0):.2f}/{ma.get('cur_attack_pred_if_legal', 0):.2f} "
+                f"oppM=at{ma.get('cur_attach_target_mass', 0):.2f}/"
+                f"ev{ma.get('cur_evolve_target_mass', 0):.2f}/"
+                f"ab{ma.get('cur_ability_target_mass', 0):.2f}/"
+                f"ak{ma.get('cur_attack_target_mass', 0):.2f}/"
+                f"{mp.get('opportunity_type', 0):.3f} "
+                f"oppMargin=at{ma.get('cur_attach_target_margin_other', 0):.2f}/"
+                f"ev{ma.get('cur_evolve_target_margin_other', 0):.2f}/"
+                f"ab{ma.get('cur_ability_target_margin_other', 0):.2f}/"
+                f"ak{ma.get('cur_attack_target_margin_other', 0):.2f}/"
+                f"{mp.get('opportunity_margin', 0):.3f}/"
+                f"{mp.get('opportunity_margin_violation', 0):.2f} "
                 f"seq={ma.get('seq_len_mean', 0):.1f}/{ma.get('seq_full_rate', 0):.2f}/{ma.get('history_present_rate', 0):.2f} "
                 f"known={ma.get('known_opp_rate', 0):.2f}/{ma.get('known_opp_slots_mean', 0):.1f}/"
-                f"{mp.get('known_opp_slots_mean', 0):.1f} "
+                f"{mp.get('known_opp_slots_mean', 0):.1f}/"
+                f"{ma.get('known_action_top1', 0):.3f}/{mp.get('known_action', 0):.3f} "
+                f"turn={ma.get('turn_continue_f1', 0):.3f}/"
+                f"{ma.get('turn_continue_target_rate', 0):.2f}->{ma.get('turn_continue_pred_rate', 0):.2f}/"
+                f"{ma.get('turn_remaining_mae', 0):.2f}/"
+                f"{ma.get('turn_future_type_f1', 0):.3f}/"
+                f"{mp.get('turn_plan', 0):.3f} "
+                f"curTurn={ma.get('cur_turn_continue_f1', 0):.3f}/"
+                f"{ma.get('cur_turn_continue_target_rate', 0):.2f}->{ma.get('cur_turn_continue_pred_rate', 0):.2f}/"
+                f"miss{ma.get('cur_turn_continue_miss', 0):.2f}/"
+                f"term{ma.get('cur_terminal_when_continue', 0):.2f}/"
+                f"pT{ma.get('cur_terminal_prob_when_continue', 0):.2f}/"
+                f"stopT{ma.get('cur_terminal_prob_when_stop', 0):.2f} "
+                f"turnNext={ma.get('turn_next_exists_rate', 0):.2f}/"
+                f"{ma.get('turn_next_type_pos_acc', 0):.3f}/"
+                f"none{ma.get('turn_next_none_acc', 0):.3f}/"
+                f"card{ma.get('turn_next_card_acc', 0):.3f}/"
+                f"atk{ma.get('turn_next_attack_acc', 0):.3f}/"
+                f"{mp.get('turn_next_plan', 0):.3f} "
                 f"setF1={ma.get('set_f1', 0):.3f} ordAcc={ma.get('order_acc', 0):.3f} "
                 f"atype={ma.get('action_type_acc', 0):.3f} "
                 f"pln={ma.get('plan_f1', 0):.3f}/{ma.get('plan_mae', 0):.3f}/"
@@ -504,13 +646,16 @@ def run_epoch(
                 f"dcaA={mp.get('dca_action', 0):.3f}/{mp.get('non_dca_action', 0):.3f} "
                 f"cond=h{mp.get('hist_query_ratio', 0):.2f}/p{mp.get('plan_query_ratio', 0):.2f}/"
                 f"n{mp.get('next_query_ratio', 0):.2f}/d{mp.get('dca_query_ratio', 0):.2f}/"
-                f"k{mp.get('known_query_ratio', 0):.2f}/t{mp.get('type_prior_abs', 0):.2f} "
+                f"k{mp.get('known_query_ratio', 0):.2f}/u{mp.get('turn_query_ratio', 0):.2f}/"
+                f"tn{mp.get('turn_next_query_ratio', 0):.2f}/"
+                f"q{mp.get('conditioned_query_ratio', 0):.2f}/"
+                f"t{mp.get('type_prior_abs', 0):.2f} "
                 f"out={ma.get('outcome_acc', 0):.3f}/{ma.get('outcome_brier', 0):.3f}/"
                 f"{ma.get('outcome_pos_rate', 0):.2f}->{ma.get('outcome_pred_pos_rate', 0):.2f} "
                 f"types=p{ma.get('play_top1', 0):.2f},at{ma.get('attach_top1', 0):.2f},"
                 f"ev{ma.get('evolve_top1', 0):.2f},ab{ma.get('ability_top1', 0):.2f},"
                 f"ak{ma.get('attack_top1', 0):.2f},en{ma.get('end_top1', 0):.2f} "
-                f"grad={mp.get('grad_norm', 0):.2f} "
+                f"grad={mp.get('grad_norm', 0):.2f}/skip{mp.get('grad_nonfinite', 0):.2f} "
                 f"{rate:.0f} samples/s eta={eta:.0f}s{_cuda_mem(device)}",
                 flush=True,
             )
@@ -540,6 +685,78 @@ def save_checkpoint(
         },
         path,
     )
+
+
+def _run_random_smoke(args: argparse.Namespace, checkpoint_path: str, epoch: int) -> dict[str, float]:
+    if not args.random_smoke_deck or int(args.random_smoke_games) <= 0:
+        return {}
+    if int(args.random_smoke_every) > 1 and epoch % int(args.random_smoke_every) != 0:
+        return {}
+    cmd = [
+        sys.executable,
+        str(_HERE / "v14_eval_random.py"),
+        checkpoint_path,
+        "--deck",
+        args.random_smoke_deck,
+        "--games",
+        str(int(args.random_smoke_games)),
+        "--workers",
+        str(int(args.random_smoke_workers)),
+        "--device",
+        args.random_smoke_device,
+        "--seed",
+        str(int(args.seed) + epoch * 1009),
+        "--max-turns",
+        str(int(args.random_smoke_max_turns)),
+        "--progress-every",
+        str(int(args.random_smoke_progress_every)),
+    ]
+    print(
+        "random_smoke_start "
+        f"epoch={epoch} games={args.random_smoke_games} workers={args.random_smoke_workers} "
+        f"deck={args.random_smoke_deck}",
+        flush=True,
+    )
+    wins = games = errors = policy_errors = 0
+    t0 = time.time()
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    assert proc.stdout is not None
+    for raw in proc.stdout:
+        line = raw.rstrip()
+        if line:
+            print(f"random_smoke {line}", flush=True)
+        m = re.search(r"Win rate vs Random:\s*([0-9.]+)%\s*\((\d+)/(\d+)\)", line)
+        if m:
+            wins = int(m.group(2))
+            games = int(m.group(3))
+        m = re.search(r"Timeout/error games:\s*(\d+)/(\d+)", line)
+        if m:
+            errors = int(m.group(1))
+        m = re.search(r"Policy fallback errors:\s*(\d+)", line)
+        if m:
+            policy_errors = int(m.group(1))
+    rc = proc.wait()
+    elapsed = time.time() - t0
+    wr = float(wins / max(games, 1)) if games else 0.0
+    status = "ok" if rc == 0 else f"failed_rc={rc}"
+    warn = ""
+    if games and wr < float(args.random_smoke_min_wr):
+        warn = f" warning=random_smoke_below_min_{float(args.random_smoke_min_wr):.3f}"
+    if rc != 0:
+        warn += " warning=random_smoke_failed"
+    print(
+        f"random_smoke_result epoch={epoch} status={status} wr={wr:.3f} "
+        f"wins={wins}/{games} errors={errors} policy_errors={policy_errors} "
+        f"elapsed={elapsed:.1f}s{warn}",
+        flush=True,
+    )
+    return {
+        "random_smoke_wr": wr,
+        "random_smoke_games": float(games),
+        "random_smoke_errors": float(errors),
+        "random_smoke_policy_errors": float(policy_errors),
+        "random_smoke_rc": float(rc),
+    }
 
 
 def main() -> None:
@@ -573,6 +790,8 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--amp", action="store_true")
+    p.add_argument("--allow-amp", action="store_true",
+                   help="explicitly allow v14 AMP despite known unstable signal diagnostics")
     p.add_argument("--grad-clip", type=float, default=1.0)
     p.add_argument("--max-train-batches", type=int, default=0)
     p.add_argument("--max-val-batches", type=int, default=200)
@@ -593,6 +812,44 @@ def main() -> None:
                    help="predict future action-type sequence from each prefix state")
     p.add_argument("--dca-plan-weight", type=float, default=0.25,
                    help="predict block-level DamageCounterAny spread/unique/focus labels")
+    p.add_argument("--known-action-weight", type=float, default=0.0,
+                   help="auxiliary CE for known-only option scoring on rows with public known opponent cards")
+    p.add_argument("--turn-plan-weight", type=float, default=0.0,
+                   help="auxiliary same-turn continuation/future-action plan loss")
+    p.add_argument("--turn-terminal-weight", type=float, default=0.0,
+                   help="bind same-turn continuation labels to END/ATTACK terminal action mass")
+    p.add_argument("--turn-next-plan-weight", type=float, default=0.0,
+                   help="auxiliary same-turn next concrete action plan loss")
+    p.add_argument("--turn-next-type-weight", type=float, default=1.0,
+                   help="relative same-turn next action type loss weight")
+    p.add_argument("--turn-next-card-weight", type=float, default=0.25,
+                   help="relative same-turn next card/card2 loss weight")
+    p.add_argument("--turn-next-attack-weight", type=float, default=0.25,
+                   help="relative same-turn next attack loss weight")
+    p.add_argument("--turn-next-context-weight", type=float, default=0.10,
+                   help="relative same-turn next context loss weight")
+    p.add_argument("--turn-seq-plan-weight", type=float, default=0.0,
+                   help="auxiliary ordered same-turn K-step action plan loss")
+    p.add_argument("--turn-seq-type-weight", type=float, default=1.0,
+                   help="relative ordered same-turn K-step type loss weight")
+    p.add_argument("--turn-seq-card-weight", type=float, default=0.15,
+                   help="relative ordered same-turn K-step card loss weight")
+    p.add_argument("--turn-seq-attack-weight", type=float, default=0.15,
+                   help="relative ordered same-turn K-step attack loss weight")
+    p.add_argument("--turn-seq-context-weight", type=float, default=0.05,
+                   help="relative ordered same-turn K-step context loss weight")
+    p.add_argument("--opportunity-type-weight", type=float, default=0.0,
+                   help="train current action logits to put mass on the demonstrated legal action type")
+    p.add_argument("--opportunity-margin-weight", type=float, default=0.0,
+                   help="penalize key current actions when target logit is below best other-type option")
+    p.add_argument("--opportunity-margin", type=float, default=0.25,
+                   help="desired target-vs-other-type logit margin for opportunity-margin loss")
+    p.add_argument("--current-rank-margin-weight", type=float, default=0.0,
+                   help="penalize current target action when best non-target legal action is too close")
+    p.add_argument("--current-rank-margin", type=float, default=0.25,
+                   help="desired target-vs-best-non-target logit margin on the live current row")
+    p.add_argument("--current-rank-margin-min-options", type=int, default=2,
+                   help="minimum legal option count for current-rank-margin loss")
     p.add_argument("--history-condition-scale", type=float, default=0.0,
                    help="inject previous causal sequence state into the live action scorer")
     p.add_argument("--plan-condition-scale", type=float, default=0.0,
@@ -603,14 +860,41 @@ def main() -> None:
                    help="inject predicted DamageCounterAny block-plan embedding into the action scorer")
     p.add_argument("--known-condition-scale", type=float, default=0.0,
                    help="inject public known-opponent-hand memory into the action scorer")
+    p.add_argument("--known-logit-scale", type=float, default=0.0,
+                   help="add known-only option scorer logits to final action logits")
+    p.add_argument("--turn-condition-scale", type=float, default=0.0,
+                   help="inject predicted same-turn continuation/future-action plan into the live action scorer")
+    p.add_argument("--turn-next-condition-scale", type=float, default=0.0,
+                   help="inject predicted same-turn next concrete action plan into the live action scorer")
+    p.add_argument("--turn-seq-condition-scale", type=float, default=0.0,
+                   help="inject predicted ordered same-turn K-step plan into the live action scorer")
     p.add_argument("--type-prior-scale", type=float, default=0.0,
                    help="add predicted action-type log-probability as an option-level prior")
+    p.add_argument("--current-complexity-weight", type=float, default=0.0,
+                   help="upweight current decisions with many legal options so forced rows do not dominate training")
     p.add_argument("--multi-target-weight", type=float, default=1.0,
                    help="boost decision losses on target_k>1 rows; default keeps historical weighting")
     p.add_argument("--damage-counter-weight", type=float, default=1.0,
                    help="boost DamageCounterAny resolution rows such as Dragapult Phantom Dive")
+    p.add_argument("--random-smoke-deck", default="",
+                   help="optional deck CSV for per-epoch small random rollout smoke test")
+    p.add_argument("--random-smoke-games", type=int, default=0)
+    p.add_argument("--random-smoke-workers", type=int, default=4)
+    p.add_argument("--random-smoke-every", type=int, default=1)
+    p.add_argument("--random-smoke-max-turns", type=int, default=700)
+    p.add_argument("--random-smoke-device", default="cpu")
+    p.add_argument("--random-smoke-progress-every", type=int, default=20)
+    p.add_argument("--random-smoke-min-wr", type=float, default=0.90,
+                   help="print a warning when epoch smoke random WR falls below this value")
     p.add_argument("--out", required=True)
     args = p.parse_args()
+
+    if args.amp and not args.allow_amp:
+        raise SystemExit(
+            "v14 AMP is disabled by default: previous diagnostics produced "
+            "nonfinite/degenerate training signals. Remove --amp, or pass "
+            "--allow-amp only for an explicit AMP repair experiment."
+        )
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -666,6 +950,9 @@ def main() -> None:
         next_type_condition_scale=args.next_type_condition_scale,
         dca_condition_scale=args.dca_condition_scale,
         known_condition_scale=args.known_condition_scale,
+        known_logit_scale=args.known_logit_scale,
+        turn_condition_scale=args.turn_condition_scale,
+        turn_next_condition_scale=args.turn_next_condition_scale,
         type_prior_scale=args.type_prior_scale,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
@@ -673,7 +960,10 @@ def main() -> None:
         f"Model params: {n_params/1e6:.2f}M device={device} "
         f"condition_scales=hist:{args.history_condition_scale} plan:{args.plan_condition_scale} "
         f"next:{args.next_type_condition_scale} dca:{args.dca_condition_scale} "
-        f"known:{args.known_condition_scale} type:{args.type_prior_scale}",
+        f"known:{args.known_condition_scale} known_logit:{args.known_logit_scale} "
+        f"turn:{args.turn_condition_scale} turn_next:{args.turn_next_condition_scale} "
+        f"type:{args.type_prior_scale} "
+        f"cur_complex:{args.current_complexity_weight}",
         flush=True,
     )
 
@@ -688,6 +978,21 @@ def main() -> None:
         plan_weight=args.plan_weight,
         next_type_weight=args.next_type_weight,
         dca_plan_weight=args.dca_plan_weight,
+        known_action_weight=args.known_action_weight,
+        turn_plan_weight=args.turn_plan_weight,
+        turn_terminal_weight=args.turn_terminal_weight,
+        turn_next_plan_weight=args.turn_next_plan_weight,
+        turn_next_type_weight=args.turn_next_type_weight,
+        turn_next_card_weight=args.turn_next_card_weight,
+        turn_next_attack_weight=args.turn_next_attack_weight,
+        turn_next_context_weight=args.turn_next_context_weight,
+        opportunity_type_weight=args.opportunity_type_weight,
+        opportunity_margin_weight=args.opportunity_margin_weight,
+        opportunity_margin=args.opportunity_margin,
+        current_rank_margin_weight=args.current_rank_margin_weight,
+        current_rank_margin=args.current_rank_margin,
+        current_rank_margin_min_options=args.current_rank_margin_min_options,
+        current_complexity_weight=args.current_complexity_weight,
         outcome_weight=0.10,
         type_weight=0.10,
         multi_target_weight=args.multi_target_weight,
@@ -736,10 +1041,67 @@ def main() -> None:
             f"val_cur={val_acc.get('cur_top1', 0):.3f}/{val_acc.get('cur_type_acc', 0):.3f} "
             f"val_curW={val_loss.get('current_weight_share', 0):.3f} "
             f"val_curRow={val_loss.get('current_row_share', 0):.3f} "
+            f"val_curCmp={val_loss.get('current_complexity_mean', 0):.2f}/"
+            f"{val_loss.get('current_complexity_max', 0):.2f} "
+            f"val_curQ=H{val_acc.get('cur_entropy', 0):.2f}/M{val_acc.get('cur_margin', 0):.2f}/"
+            f"R{val_acc.get('cur_target_margin_best', 0):.2f}/"
+            f"{val_acc.get('cur_rank_violation_025', 0):.2f}/"
+            f"AR{val_acc.get('cur_ambig_target_margin_best', 0):.2f}/"
+            f"F{val_acc.get('cur_forced_rate', 0):.2f}/NF{val_acc.get('cur_nonforced_top1', 0):.3f}/"
+            f"B{val_acc.get('cur_bigopt_rate', 0):.2f}:{val_acc.get('cur_bigopt_top1', 0):.3f}/"
+            f"A{val_acc.get('cur_ambig_type_rate', 0):.2f}:{val_acc.get('cur_ambig_type_top1', 0):.3f}/"
+            f"EndT{val_acc.get('cur_target_end_rate', 0):.2f}/P{val_acc.get('cur_pred_end_rate', 0):.2f}/"
+            f"NL{val_acc.get('cur_pred_end_when_nonend_legal', 0):.2f}/TN{val_acc.get('cur_pred_end_when_target_nonend', 0):.2f} "
+            f"val_opp=at{val_acc.get('cur_attach_legal_rate', 0):.2f}/"
+            f"{val_acc.get('cur_attach_target_if_legal', 0):.2f}/{val_acc.get('cur_attach_pred_if_legal', 0):.2f}/"
+            f"{val_acc.get('cur_attach_miss_if_target', 0):.2f} "
+            f"ev{val_acc.get('cur_evolve_legal_rate', 0):.2f}/"
+            f"{val_acc.get('cur_evolve_target_if_legal', 0):.2f}/{val_acc.get('cur_evolve_pred_if_legal', 0):.2f}/"
+            f"{val_acc.get('cur_evolve_miss_if_target', 0):.2f} "
+            f"ak{val_acc.get('cur_attack_legal_rate', 0):.2f}/"
+            f"{val_acc.get('cur_attack_target_if_legal', 0):.2f}/{val_acc.get('cur_attack_pred_if_legal', 0):.2f}/"
+            f"{val_acc.get('cur_attack_miss_if_target', 0):.2f} "
+            f"ab{val_acc.get('cur_ability_legal_rate', 0):.2f}/"
+            f"{val_acc.get('cur_ability_target_if_legal', 0):.2f}/{val_acc.get('cur_ability_pred_if_legal', 0):.2f}/"
+            f"{val_acc.get('cur_ability_miss_if_target', 0):.2f} "
+            f"val_oppMass=at{val_acc.get('cur_attach_target_mass', 0):.2f}/"
+            f"ev{val_acc.get('cur_evolve_target_mass', 0):.2f}/"
+            f"ak{val_acc.get('cur_attack_target_mass', 0):.2f}/"
+            f"ab{val_acc.get('cur_ability_target_mass', 0):.2f} "
+            f"val_oppMargin=at{val_acc.get('cur_attach_target_margin_other', 0):.2f}/"
+            f"ev{val_acc.get('cur_evolve_target_margin_other', 0):.2f}/"
+            f"ak{val_acc.get('cur_attack_target_margin_other', 0):.2f}/"
+            f"ab{val_acc.get('cur_ability_target_margin_other', 0):.2f} "
             f"val_seq={val_acc.get('seq_len_mean', 0):.1f}/{val_acc.get('seq_full_rate', 0):.2f}/"
             f"{val_acc.get('history_present_rate', 0):.2f} "
             f"val_known={val_acc.get('known_opp_rate', 0):.3f}/{val_acc.get('known_opp_slots_mean', 0):.2f}/"
-            f"{val_acc.get('known_opp_count_mean', 0):.2f} "
+            f"{val_acc.get('known_opp_count_mean', 0):.2f}/"
+            f"{val_acc.get('known_action_top1', 0):.3f}/{val_loss.get('known_action', 0):.3f} "
+            f"val_turn={val_acc.get('turn_continue_acc', 0):.3f}/"
+            f"{val_acc.get('turn_continue_f1', 0):.3f}/"
+            f"{val_acc.get('turn_continue_target_rate', 0):.2f}->{val_acc.get('turn_continue_pred_rate', 0):.2f}/"
+            f"rem{val_acc.get('turn_remaining_mae', 0):.2f}/"
+            f"typ{val_acc.get('turn_future_type_f1', 0):.3f}/"
+            f"{val_loss.get('turn_plan', 0):.3f} "
+            f"val_curTurn={val_acc.get('cur_turn_continue_f1', 0):.3f}/"
+            f"{val_acc.get('cur_turn_continue_target_rate', 0):.2f}->{val_acc.get('cur_turn_continue_pred_rate', 0):.2f}/"
+            f"miss{val_acc.get('cur_turn_continue_miss', 0):.2f}/"
+            f"term{val_acc.get('cur_terminal_when_continue', 0):.2f}/"
+            f"pT{val_acc.get('cur_terminal_prob_when_continue', 0):.2f}/"
+            f"stopT{val_acc.get('cur_terminal_prob_when_stop', 0):.2f}/"
+            f"over{val_acc.get('cur_nonterminal_when_stop', 0):.2f} "
+            f"val_turnNext={val_acc.get('turn_next_exists_rate', 0):.2f}/"
+            f"{val_acc.get('turn_next_type_acc', 0):.3f}/"
+            f"{val_acc.get('turn_next_type_pos_acc', 0):.3f}/"
+            f"none{val_acc.get('turn_next_none_acc', 0):.3f}/"
+            f"card{val_acc.get('turn_next_card_acc', 0):.3f}/"
+            f"atk{val_acc.get('turn_next_attack_acc', 0):.3f}/"
+            f"ctx{val_acc.get('turn_next_context_acc', 0):.3f} "
+            f"val_curNext={val_acc.get('cur_turn_next_exists_rate', 0):.2f}/"
+            f"{val_acc.get('cur_turn_next_type_acc', 0):.3f}/"
+            f"{val_acc.get('cur_turn_next_type_pos_acc', 0):.3f}/"
+            f"card{val_acc.get('cur_turn_next_card_acc', 0):.3f}/"
+            f"atk{val_acc.get('cur_turn_next_attack_acc', 0):.3f} "
             f"val_cur1={val_acc.get('cur1_top1', 0):.3f}/{val_acc.get('cur1_delta', 0):+.3f}/"
             f"{val_acc.get('cur1_agree', 0):.3f}/{val_acc.get('cur1_kl', 0):.3f} "
             f"val_stateless={val_acc.get('stateless_top1', 0):.3f}/{val_acc.get('stateless_delta', 0):+.3f}/"
@@ -780,13 +1142,32 @@ def main() -> None:
             f"val_boost={val_loss.get('weight_boost', 0):.2f} "
             f"val_dcaW={val_loss.get('dca_weight_share', 0):.2f} val_m2W={val_loss.get('multi_weight_share', 0):.2f} "
             f"val_nextL={val_loss.get('next_type', 0):.3f} val_dplanL={val_loss.get('dca_plan', 0):.3f} "
+            f"val_knownL={val_loss.get('known_action', 0):.3f} "
+            f"val_turnTermL={val_loss.get('turn_terminal', 0):.3f} "
+            f"val_turnNextL={val_loss.get('turn_next_plan', 0):.3f}/"
+            f"{val_loss.get('turn_next_type', 0):.3f}/"
+            f"{val_loss.get('turn_next_card', 0):.3f}/"
+            f"{val_loss.get('turn_next_attack', 0):.3f}/"
+            f"{val_loss.get('turn_next_context', 0):.3f} "
+            f"val_oppTypeL={val_loss.get('opportunity_type', 0):.3f}/"
+            f"{val_loss.get('opportunity_type_rows', 0):.0f}/"
+            f"{val_loss.get('opportunity_key_share', 0):.2f} "
+            f"val_oppMarginL={val_loss.get('opportunity_margin', 0):.3f}/"
+            f"{val_loss.get('opportunity_margin_rows', 0):.0f}/"
+            f"{val_loss.get('opportunity_margin_violation', 0):.2f} "
+            f"val_rankMarginL={val_loss.get('current_rank_margin', 0):.3f}/"
+            f"{val_loss.get('current_rank_margin_rows', 0):.0f}/"
+            f"{val_loss.get('current_rank_margin_violation', 0):.2f} "
             f"val_dposW={val_loss.get('dca_spread_pos_weight', 0):.1f} "
             f"val_curA={val_loss.get('current_action', 0):.3f}/{val_loss.get('prefix_action', 0):.3f} "
             f"val_curHead={val_loss.get('action_current_head', 0):.3f}/{val_loss.get('action_prefix_head', 0):.3f} "
             f"val_dcaA={val_loss.get('dca_action', 0):.3f}/{val_loss.get('non_dca_action', 0):.3f} "
             f"val_cond=h{val_loss.get('hist_query_ratio', 0):.2f}/p{val_loss.get('plan_query_ratio', 0):.2f}/"
             f"n{val_loss.get('next_query_ratio', 0):.2f}/d{val_loss.get('dca_query_ratio', 0):.2f}/"
-            f"k{val_loss.get('known_query_ratio', 0):.2f}/t{val_loss.get('type_prior_abs', 0):.2f} "
+            f"k{val_loss.get('known_query_ratio', 0):.2f}/u{val_loss.get('turn_query_ratio', 0):.2f}/"
+            f"tn{val_loss.get('turn_next_query_ratio', 0):.2f}/"
+            f"q{val_loss.get('conditioned_query_ratio', 0):.2f}/"
+            f"t{val_loss.get('type_prior_abs', 0):.2f} "
             f"val_out={val_acc.get('outcome_acc', 0):.3f}/{val_acc.get('outcome_brier', 0):.3f}/"
             f"{val_acc.get('outcome_pos_rate', 0):.2f}->{val_acc.get('outcome_pred_pos_rate', 0):.2f} "
             f"val_types=p{val_acc.get('play_top1', 0):.2f},at{val_acc.get('attach_top1', 0):.2f},"
@@ -828,19 +1209,85 @@ def main() -> None:
             f"dplan_f1={val_acc.get('dca_plan_spread_f1', 0):.3f} "
             f"ambig_top1={val_acc.get('ambig_type_top1', 0):.3f} "
             f"train_grad={train_loss.get('grad_norm', 0):.2f} "
+            f"grad_skip={train_loss.get('grad_nonfinite', 0):.3f} "
             f"dca_weight_share={val_loss.get('dca_weight_share', 0):.3f} "
             f"multi_weight_share={val_loss.get('multi_weight_share', 0):.3f} "
             f"current_weight_share={val_loss.get('current_weight_share', 0):.3f} "
             f"current_row_share={val_loss.get('current_row_share', 0):.3f} "
+            f"current_complexity={val_loss.get('current_complexity_mean', 0):.3f}/"
+            f"{val_loss.get('current_complexity_max', 0):.3f} "
+            f"cur_entropy={val_acc.get('cur_entropy', 0):.3f} "
+            f"cur_margin={val_acc.get('cur_margin', 0):.3f} "
+            f"cur_rank_margin={val_acc.get('cur_target_margin_best', 0):.3f}/"
+            f"{val_acc.get('cur_rank_violation_025', 0):.3f}/"
+            f"{val_acc.get('cur_ambig_target_margin_best', 0):.3f} "
+            f"cur_forced={val_acc.get('cur_forced_rate', 0):.3f} "
+            f"cur_nonforced={val_acc.get('cur_nonforced_top1', 0):.3f} "
+            f"cur_bigopt={val_acc.get('cur_bigopt_rate', 0):.3f}/{val_acc.get('cur_bigopt_top1', 0):.3f} "
+            f"cur_ambig={val_acc.get('cur_ambig_type_rate', 0):.3f}/{val_acc.get('cur_ambig_type_top1', 0):.3f} "
+            f"cur_end={val_acc.get('cur_target_end_rate', 0):.3f}/{val_acc.get('cur_pred_end_rate', 0):.3f}/"
+            f"{val_acc.get('cur_pred_end_when_nonend_legal', 0):.3f}/{val_acc.get('cur_pred_end_when_target_nonend', 0):.3f} "
+            f"cur_opp_at={val_acc.get('cur_attach_legal_rate', 0):.3f}/"
+            f"{val_acc.get('cur_attach_target_if_legal', 0):.3f}/{val_acc.get('cur_attach_pred_if_legal', 0):.3f}/"
+            f"{val_acc.get('cur_attach_miss_if_target', 0):.3f} "
+            f"cur_opp_ev={val_acc.get('cur_evolve_legal_rate', 0):.3f}/"
+            f"{val_acc.get('cur_evolve_target_if_legal', 0):.3f}/{val_acc.get('cur_evolve_pred_if_legal', 0):.3f}/"
+            f"{val_acc.get('cur_evolve_miss_if_target', 0):.3f} "
+            f"cur_opp_ak={val_acc.get('cur_attack_legal_rate', 0):.3f}/"
+            f"{val_acc.get('cur_attack_target_if_legal', 0):.3f}/{val_acc.get('cur_attack_pred_if_legal', 0):.3f}/"
+            f"{val_acc.get('cur_attack_miss_if_target', 0):.3f} "
+            f"cur_opp_mass=at{val_acc.get('cur_attach_target_mass', 0):.3f}/"
+            f"ev{val_acc.get('cur_evolve_target_mass', 0):.3f}/"
+            f"ab{val_acc.get('cur_ability_target_mass', 0):.3f}/"
+            f"ak{val_acc.get('cur_attack_target_mass', 0):.3f} "
+            f"cur_opp_margin=at{val_acc.get('cur_attach_target_margin_other', 0):.3f}/"
+            f"ev{val_acc.get('cur_evolve_target_margin_other', 0):.3f}/"
+            f"ab{val_acc.get('cur_ability_target_margin_other', 0):.3f}/"
+            f"ak{val_acc.get('cur_attack_target_margin_other', 0):.3f} "
+            f"opp_margin_loss={val_loss.get('opportunity_margin', 0):.3f}/"
+            f"{val_loss.get('opportunity_margin_rows', 0):.0f}/"
+            f"{val_loss.get('opportunity_margin_violation', 0):.3f} "
+            f"rank_margin_loss={val_loss.get('current_rank_margin', 0):.3f}/"
+            f"{val_loss.get('current_rank_margin_rows', 0):.0f}/"
+            f"{val_loss.get('current_rank_margin_violation', 0):.3f} "
             f"known_rate={val_acc.get('known_opp_rate', 0):.3f} "
             f"known_slots={val_acc.get('known_opp_slots_mean', 0):.2f} "
+            f"known_action_top1={val_acc.get('known_action_top1', 0):.3f} "
+            f"turn_acc={val_acc.get('turn_continue_acc', 0):.3f} "
+            f"turn_f1={val_acc.get('turn_continue_f1', 0):.3f} "
+            f"turn_rate={val_acc.get('turn_continue_target_rate', 0):.3f}->{val_acc.get('turn_continue_pred_rate', 0):.3f} "
+            f"turn_rem_mae={val_acc.get('turn_remaining_mae', 0):.3f} "
+            f"turn_type_f1={val_acc.get('turn_future_type_f1', 0):.3f} "
+            f"turn_next={val_acc.get('turn_next_exists_rate', 0):.3f}/"
+            f"{val_acc.get('turn_next_type_acc', 0):.3f}/"
+            f"{val_acc.get('turn_next_type_pos_acc', 0):.3f}/"
+            f"none{val_acc.get('turn_next_none_acc', 0):.3f}/"
+            f"card{val_acc.get('turn_next_card_acc', 0):.3f}/"
+            f"atk{val_acc.get('turn_next_attack_acc', 0):.3f}/"
+            f"ctx{val_acc.get('turn_next_context_acc', 0):.3f} "
+            f"cur_turn={val_acc.get('cur_turn_continue_f1', 0):.3f}/"
+            f"{val_acc.get('cur_turn_continue_target_rate', 0):.3f}->{val_acc.get('cur_turn_continue_pred_rate', 0):.3f}/"
+            f"miss{val_acc.get('cur_turn_continue_miss', 0):.3f}/"
+            f"term{val_acc.get('cur_terminal_when_continue', 0):.3f}/"
+            f"pterm{val_acc.get('cur_terminal_prob_when_continue', 0):.3f}/"
+            f"stopT{val_acc.get('cur_terminal_prob_when_stop', 0):.3f}/"
+            f"over{val_acc.get('cur_nonterminal_when_stop', 0):.3f} "
+            f"cur_turn_next={val_acc.get('cur_turn_next_exists_rate', 0):.3f}/"
+            f"{val_acc.get('cur_turn_next_type_acc', 0):.3f}/"
+            f"{val_acc.get('cur_turn_next_type_pos_acc', 0):.3f}/"
+            f"card{val_acc.get('cur_turn_next_card_acc', 0):.3f}/"
+            f"atk{val_acc.get('cur_turn_next_attack_acc', 0):.3f} "
             f"cond=h{val_loss.get('hist_query_ratio', 0):.3f}/p{val_loss.get('plan_query_ratio', 0):.3f}/"
             f"n{val_loss.get('next_query_ratio', 0):.3f}/d{val_loss.get('dca_query_ratio', 0):.3f}/"
-            f"k{val_loss.get('known_query_ratio', 0):.3f}/t{val_loss.get('type_prior_abs', 0):.3f} "
+            f"k{val_loss.get('known_query_ratio', 0):.3f}/u{val_loss.get('turn_query_ratio', 0):.3f}/"
+            f"tn{val_loss.get('turn_next_query_ratio', 0):.3f}/"
+            f"q{val_loss.get('conditioned_query_ratio', 0):.3f}/"
+            f"t{val_loss.get('type_prior_abs', 0):.3f} "
             f"warnings={','.join(warnings) if warnings else 'none'}",
             flush=True,
         )
         save_checkpoint(last_path, model=model, args=args, corpus=corpus, epoch=epoch, val_loss=val)
+        _run_random_smoke(args, last_path, epoch)
         if val < best:
             best = val
             save_checkpoint(best_path, model=model, args=args, corpus=corpus, epoch=epoch, val_loss=val)

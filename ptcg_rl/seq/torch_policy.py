@@ -5,7 +5,7 @@ import torch
 import warnings
 
 from ptcg_rl.encoder import FastEncoder, OPT_FEAT_DIM, STATE_FEAT_DIM, STATE_TOKEN_FEAT_DIM
-from ptcg_rl.seq.constants import FUTURE_PLAN_DIM, KNOWN_OPP_CARDS, LEDGER_FEAT_DIM, MAX_SELECT_COUNT
+from ptcg_rl.seq.constants import FUTURE_PLAN_DIM, KNOWN_OPP_CARDS, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, N_ACTION_TYPES, TURN_PLAN_STEPS
 from ptcg_rl.seq.data import SequenceBatch
 from ptcg_rl.seq.features import SequenceLedger
 from ptcg_rl.seq.model import SequencePolicyNet
@@ -242,6 +242,7 @@ class TorchSequencePolicy:
         dummy_dca = np.zeros((1, seq_len), dtype=np.int64)
         dummy_dca_neg = np.full((1, seq_len), -1, dtype=np.int64)
         dummy_dca_float = np.zeros((1, seq_len), dtype=np.float32)
+        dummy_turn_types = np.zeros((1, seq_len, N_ACTION_TYPES), dtype=np.float32)
         return SequenceBatch(
             board=torch.from_numpy(board),
             hand=torch.from_numpy(hand),
@@ -278,6 +279,20 @@ class TorchSequencePolicy:
             dca_prior_max_repeat=torch.from_numpy(dummy_dca),
             dca_group_unique_slots=torch.from_numpy(dummy_dca),
             dca_group_focus_frac=torch.from_numpy(dummy_dca_float),
+            turn_continue=torch.zeros((1, seq_len), dtype=torch.float32),
+            turn_remaining=torch.zeros((1, seq_len), dtype=torch.int64),
+            turn_future_types=torch.from_numpy(dummy_turn_types),
+            turn_next_exists=torch.zeros((1, seq_len), dtype=torch.float32),
+            turn_next_type=torch.full((1, seq_len), N_ACTION_TYPES, dtype=torch.int64),
+            turn_next_card=torch.zeros((1, seq_len), dtype=torch.int64),
+            turn_next_card2=torch.zeros((1, seq_len), dtype=torch.int64),
+            turn_next_attack=torch.zeros((1, seq_len), dtype=torch.int64),
+            turn_next_context=torch.zeros((1, seq_len), dtype=torch.int64),
+            turn_plan_mask=torch.zeros((1, seq_len, TURN_PLAN_STEPS), dtype=torch.float32),
+            turn_plan_types=torch.full((1, seq_len, TURN_PLAN_STEPS), N_ACTION_TYPES, dtype=torch.int64),
+            turn_plan_cards=torch.zeros((1, seq_len, TURN_PLAN_STEPS), dtype=torch.int64),
+            turn_plan_attacks=torch.zeros((1, seq_len, TURN_PLAN_STEPS), dtype=torch.int64),
+            turn_plan_contexts=torch.zeros((1, seq_len, TURN_PLAN_STEPS), dtype=torch.int64),
             min_count=torch.zeros((1, seq_len), dtype=torch.int64),
             max_count=torch.ones((1, seq_len), dtype=torch.int64),
             step_mask=torch.from_numpy(step_mask),

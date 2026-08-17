@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 from ptcg_rl.encoder import BOARD_SLOTS, MAX_HAND, OPT_FEAT_DIM, STATE_FEAT_DIM, STATE_TOKEN_FEAT_DIM
-from ptcg_rl.seq.constants import DAMAGE_COUNTER_ANY_CONTEXT, FUTURE_PLAN_DIM, KNOWN_OPP_CARDS, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, TYPE_END
+from ptcg_rl.seq.constants import DAMAGE_COUNTER_ANY_CONTEXT, FUTURE_PLAN_DIM, KNOWN_OPP_CARDS, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, N_ACTION_TYPES, TURN_PLAN_STEPS, TYPE_END
 from ptcg_rl.seq.constants import TYPE_ABILITY, TYPE_ATTACH, TYPE_ATTACK, TYPE_EVOLVE, TYPE_PLAY, TYPE_RETREAT
 
 _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
@@ -63,6 +63,20 @@ class SequenceBatch:
     dca_prior_max_repeat: torch.Tensor
     dca_group_unique_slots: torch.Tensor
     dca_group_focus_frac: torch.Tensor
+    turn_continue: torch.Tensor
+    turn_remaining: torch.Tensor
+    turn_future_types: torch.Tensor
+    turn_next_exists: torch.Tensor
+    turn_next_type: torch.Tensor
+    turn_next_card: torch.Tensor
+    turn_next_card2: torch.Tensor
+    turn_next_attack: torch.Tensor
+    turn_next_context: torch.Tensor
+    turn_plan_mask: torch.Tensor
+    turn_plan_types: torch.Tensor
+    turn_plan_cards: torch.Tensor
+    turn_plan_attacks: torch.Tensor
+    turn_plan_contexts: torch.Tensor
     min_count: torch.Tensor
     max_count: torch.Tensor
     step_mask: torch.Tensor
@@ -156,6 +170,19 @@ class SequenceCorpus:
         self.files: list[dict[str, np.ndarray]] = []
         self.games: list[list[tuple[int, int]]] = []
         self.samples: list[tuple[int, int]] = []
+        self._turn_remaining_by_game: list[np.ndarray] = []
+        self._turn_future_types_by_game: list[np.ndarray] = []
+        self._turn_next_exists_by_game: list[np.ndarray] = []
+        self._turn_next_type_by_game: list[np.ndarray] = []
+        self._turn_next_card_by_game: list[np.ndarray] = []
+        self._turn_next_card2_by_game: list[np.ndarray] = []
+        self._turn_next_attack_by_game: list[np.ndarray] = []
+        self._turn_next_context_by_game: list[np.ndarray] = []
+        self._turn_plan_mask_by_game: list[np.ndarray] = []
+        self._turn_plan_types_by_game: list[np.ndarray] = []
+        self._turn_plan_cards_by_game: list[np.ndarray] = []
+        self._turn_plan_attacks_by_game: list[np.ndarray] = []
+        self._turn_plan_contexts_by_game: list[np.ndarray] = []
         self._game_lengths: list[int] = []
         self.stats = {
             "files": 0,
@@ -182,6 +209,16 @@ class SequenceCorpus:
             "known_opp_slots": 0.0,
             "known_opp_count_sum": 0.0,
             "known_opp_max_slots": 0.0,
+            "turn_continue_rows": 0,
+            "turn_remaining_sum": 0,
+            "turn_future_type_sum": 0,
+            "turn_next_rows": 0,
+            "turn_next_card_rows": 0,
+            "turn_next_attack_rows": 0,
+            "turn_next_context_rows": 0,
+            "turn_plan_seq_slots": 0,
+            "turn_plan_seq_card_slots": 0,
+            "turn_plan_seq_attack_slots": 0,
             "plan_rows": 0,
             "plan_pos_sum": 0,
             "plan_value_sum": 0.0,
@@ -221,6 +258,7 @@ class SequenceCorpus:
         self.stats["samples"] = len(self.samples)
         if not self.samples:
             raise FileNotFoundError("v14 sequence corpus filters kept no samples")
+        self._precompute_turn_signals()
         self._finalize_signal_stats()
 
     def _keep(self, data: dict[str, np.ndarray], i: int) -> bool:
@@ -314,6 +352,19 @@ class SequenceCorpus:
         self.stats["known_opp_rate"] = float(self.stats.get("known_opp_rows", 0)) / kept
         self.stats["known_opp_slots_mean"] = float(self.stats.get("known_opp_slots", 0.0)) / known_rows
         self.stats["known_opp_count_mean"] = float(self.stats.get("known_opp_count_sum", 0.0)) / known_rows
+        self.stats["turn_continue_rate"] = float(self.stats.get("turn_continue_rows", 0)) / kept
+        self.stats["turn_remaining_mean"] = float(self.stats.get("turn_remaining_sum", 0)) / kept
+        self.stats["turn_future_type_density"] = float(self.stats.get("turn_future_type_sum", 0)) / (kept * max(N_ACTION_TYPES, 1))
+        turn_next_rows = max(float(self.stats.get("turn_next_rows", 0)), 1.0)
+        self.stats["turn_next_rate"] = float(self.stats.get("turn_next_rows", 0)) / kept
+        self.stats["turn_next_card_rate"] = float(self.stats.get("turn_next_card_rows", 0)) / turn_next_rows
+        self.stats["turn_next_attack_rate"] = float(self.stats.get("turn_next_attack_rows", 0)) / turn_next_rows
+        self.stats["turn_next_context_rate"] = float(self.stats.get("turn_next_context_rows", 0)) / turn_next_rows
+        kept_steps = kept * max(TURN_PLAN_STEPS, 1)
+        plan_seq_slots = max(float(self.stats.get("turn_plan_seq_slots", 0)), 1.0)
+        self.stats["turn_plan_seq_density"] = float(self.stats.get("turn_plan_seq_slots", 0)) / kept_steps
+        self.stats["turn_plan_seq_card_rate"] = float(self.stats.get("turn_plan_seq_card_slots", 0)) / plan_seq_slots
+        self.stats["turn_plan_seq_attack_rate"] = float(self.stats.get("turn_plan_seq_attack_slots", 0)) / plan_seq_slots
         if self._game_lengths:
             lengths = np.asarray(self._game_lengths, dtype=np.float32)
             self.stats["game_len_mean"] = float(lengths.mean())
@@ -325,6 +376,92 @@ class SequenceCorpus:
             self.stats["game_len_p90"] = 0.0
         for _, name in _STAT_TYPES:
             self.stats[f"type_{name}_rate"] = float(self.stats.get(f"type_{name}_rows", 0)) / target
+
+    def _precompute_turn_signals(self) -> None:
+        for refs in self.games:
+            n = len(refs)
+            remaining = np.zeros(n, dtype=np.int16)
+            future_types = np.zeros((n, N_ACTION_TYPES), dtype=np.float16)
+            next_exists = np.zeros(n, dtype=np.float16)
+            next_type = np.full(n, N_ACTION_TYPES, dtype=np.int16)
+            next_card = np.zeros(n, dtype=np.int16)
+            next_card2 = np.zeros(n, dtype=np.int16)
+            next_attack = np.zeros(n, dtype=np.int16)
+            next_context = np.zeros(n, dtype=np.int16)
+            plan_mask = np.zeros((n, TURN_PLAN_STEPS), dtype=np.float16)
+            plan_types = np.full((n, TURN_PLAN_STEPS), N_ACTION_TYPES, dtype=np.int16)
+            plan_cards = np.zeros((n, TURN_PLAN_STEPS), dtype=np.int16)
+            plan_attacks = np.zeros((n, TURN_PLAN_STEPS), dtype=np.int16)
+            plan_contexts = np.zeros((n, TURN_PLAN_STEPS), dtype=np.int16)
+            turns = np.zeros(n, dtype=np.int16)
+            types = np.zeros(n, dtype=np.int16)
+            cards = np.zeros(n, dtype=np.int16)
+            cards2 = np.zeros(n, dtype=np.int16)
+            attacks = np.zeros(n, dtype=np.int16)
+            contexts = np.zeros(n, dtype=np.int16)
+            for pos, (di, ri) in enumerate(refs):
+                data = self.files[di]
+                turns[pos] = self._row_turn(data, ri)
+                types[pos] = int(_get_row(data, "act_type", ri, 0))
+                cards[pos] = int(_get_row(data, "act_card", ri, 0))
+                cards2[pos] = int(_get_row(data, "act_card2", ri, 0))
+                attacks[pos] = int(_get_row(data, "act_attack", ri, 0))
+                contexts[pos] = int(_get_row(data, "act_context", ri, 0))
+            start = 0
+            while start < n:
+                end = start + 1
+                while end < n and int(turns[end]) == int(turns[start]):
+                    end += 1
+                for pos in range(start, end - 1):
+                    nxt = pos + 1
+                    next_exists[pos] = 1.0
+                    typ = int(types[nxt])
+                    next_type[pos] = typ if 0 <= typ < N_ACTION_TYPES else N_ACTION_TYPES
+                    next_card[pos] = max(0, int(cards[nxt]))
+                    next_card2[pos] = max(0, int(cards2[nxt]))
+                    next_attack[pos] = max(0, int(attacks[nxt]))
+                    next_context[pos] = max(0, int(contexts[nxt]))
+                    plan_end = min(end, pos + 1 + TURN_PLAN_STEPS)
+                    for step, fpos in enumerate(range(pos + 1, plan_end)):
+                        plan_mask[pos, step] = 1.0
+                        typ_f = int(types[fpos])
+                        plan_types[pos, step] = typ_f if 0 <= typ_f < N_ACTION_TYPES else N_ACTION_TYPES
+                        plan_cards[pos, step] = max(0, int(cards[fpos]))
+                        plan_attacks[pos, step] = max(0, int(attacks[fpos]))
+                        plan_contexts[pos, step] = max(0, int(contexts[fpos]))
+                suffix_types = np.zeros(N_ACTION_TYPES, dtype=np.float32)
+                suffix_count = 0
+                for pos in range(end - 1, start - 1, -1):
+                    remaining[pos] = min(suffix_count, MAX_SELECT_COUNT)
+                    future_types[pos] = suffix_types.astype(np.float16)
+                    typ = int(types[pos])
+                    if 0 <= typ < N_ACTION_TYPES:
+                        suffix_types[typ] = 1.0
+                    suffix_count += 1
+                start = end
+            self._turn_remaining_by_game.append(remaining)
+            self._turn_future_types_by_game.append(future_types)
+            self._turn_next_exists_by_game.append(next_exists)
+            self._turn_next_type_by_game.append(next_type)
+            self._turn_next_card_by_game.append(next_card)
+            self._turn_next_card2_by_game.append(next_card2)
+            self._turn_next_attack_by_game.append(next_attack)
+            self._turn_next_context_by_game.append(next_context)
+            self._turn_plan_mask_by_game.append(plan_mask)
+            self._turn_plan_types_by_game.append(plan_types)
+            self._turn_plan_cards_by_game.append(plan_cards)
+            self._turn_plan_attacks_by_game.append(plan_attacks)
+            self._turn_plan_contexts_by_game.append(plan_contexts)
+            self.stats["turn_continue_rows"] += int((remaining > 0).sum())
+            self.stats["turn_remaining_sum"] += int(remaining.sum())
+            self.stats["turn_future_type_sum"] += int((future_types > 0).sum())
+            self.stats["turn_next_rows"] += int((next_exists > 0).sum())
+            self.stats["turn_next_card_rows"] += int(((next_exists > 0) & (next_card > 0)).sum())
+            self.stats["turn_next_attack_rows"] += int(((next_exists > 0) & (next_attack > 0)).sum())
+            self.stats["turn_next_context_rows"] += int(((next_exists > 0) & (next_context > 0)).sum())
+            self.stats["turn_plan_seq_slots"] += int((plan_mask > 0).sum())
+            self.stats["turn_plan_seq_card_slots"] += int(((plan_mask > 0) & (plan_cards > 0)).sum())
+            self.stats["turn_plan_seq_attack_slots"] += int(((plan_mask > 0) & (plan_attacks > 0)).sum())
 
     def split_samples(self, val_fraction: float = 0.1, seed: int = 7) -> tuple[list[int], list[int]]:
         rng = np.random.default_rng(seed)
@@ -396,10 +533,30 @@ class SequenceCorpus:
         step_mask = np.zeros(shape_bt, dtype=np.float32)
         sample_weight = np.ones(shape_bt, dtype=np.float32)
         future_plan = np.zeros((*shape_bt, self.future_plan_dim), dtype=np.float32)
+        turn_continue = np.zeros(shape_bt, dtype=np.float32)
+        turn_remaining = np.zeros(shape_bt, dtype=np.int64)
+        turn_future_types = np.zeros((*shape_bt, N_ACTION_TYPES), dtype=np.float32)
+        turn_next_exists = np.zeros(shape_bt, dtype=np.float32)
+        turn_next_type = np.full(shape_bt, N_ACTION_TYPES, dtype=np.int64)
+        turn_next_card = np.zeros(shape_bt, dtype=np.int64)
+        turn_next_card2 = np.zeros(shape_bt, dtype=np.int64)
+        turn_next_attack = np.zeros(shape_bt, dtype=np.int64)
+        turn_next_context = np.zeros(shape_bt, dtype=np.int64)
+        turn_plan_mask = np.zeros((*shape_bt, TURN_PLAN_STEPS), dtype=np.float32)
+        turn_plan_types = np.full((*shape_bt, TURN_PLAN_STEPS), N_ACTION_TYPES, dtype=np.int64)
+        turn_plan_cards = np.zeros((*shape_bt, TURN_PLAN_STEPS), dtype=np.int64)
+        turn_plan_attacks = np.zeros((*shape_bt, TURN_PLAN_STEPS), dtype=np.int64)
+        turn_plan_contexts = np.zeros((*shape_bt, TURN_PLAN_STEPS), dtype=np.int64)
         outcome = np.zeros(shape_bt, dtype=np.float32)
         game_keys: list[str] = []
+        game_indices: list[int] = []
+        global_positions: list[list[int]] = []
 
         for bi, refs in enumerate(windows):
+            gi, end_pos = self.samples[int(sample_ids[bi])]
+            start_pos = max(0, end_pos - self.seq_len + 1)
+            game_indices.append(gi)
+            global_positions.append(list(range(start_pos, end_pos + 1)))
             offset = self.seq_len - len(refs)
             if refs:
                 di0, ri0 = refs[-1]
@@ -471,6 +628,23 @@ class SequenceCorpus:
                 sample_weight[bi, local_t] = self._row_weight(data, ri)
                 if "future_plan" in data:
                     future_plan[bi, local_t] = _fit_1d(data["future_plan"][ri], self.future_plan_dim, dtype=np.float32)
+                game_pos = global_positions[bi][local_t - offset]
+                gi = game_indices[bi]
+                remaining = int(self._turn_remaining_by_game[gi][game_pos])
+                turn_continue[bi, local_t] = 1.0 if remaining > 0 else 0.0
+                turn_remaining[bi, local_t] = min(remaining, MAX_SELECT_COUNT)
+                turn_future_types[bi, local_t] = self._turn_future_types_by_game[gi][game_pos]
+                turn_next_exists[bi, local_t] = self._turn_next_exists_by_game[gi][game_pos]
+                turn_next_type[bi, local_t] = self._turn_next_type_by_game[gi][game_pos]
+                turn_next_card[bi, local_t] = self._turn_next_card_by_game[gi][game_pos]
+                turn_next_card2[bi, local_t] = self._turn_next_card2_by_game[gi][game_pos]
+                turn_next_attack[bi, local_t] = self._turn_next_attack_by_game[gi][game_pos]
+                turn_next_context[bi, local_t] = self._turn_next_context_by_game[gi][game_pos]
+                turn_plan_mask[bi, local_t] = self._turn_plan_mask_by_game[gi][game_pos]
+                turn_plan_types[bi, local_t] = self._turn_plan_types_by_game[gi][game_pos]
+                turn_plan_cards[bi, local_t] = self._turn_plan_cards_by_game[gi][game_pos]
+                turn_plan_attacks[bi, local_t] = self._turn_plan_attacks_by_game[gi][game_pos]
+                turn_plan_contexts[bi, local_t] = self._turn_plan_contexts_by_game[gi][game_pos]
                 outcome[bi, local_t] = float(data.get("won", np.zeros(len(data["board"]), dtype=np.float32))[ri])
 
         return SequenceBatch(
@@ -509,6 +683,20 @@ class SequenceCorpus:
             dca_prior_max_repeat=torch.from_numpy(dca_prior_max_repeat),
             dca_group_unique_slots=torch.from_numpy(dca_group_unique_slots),
             dca_group_focus_frac=torch.from_numpy(dca_group_focus_frac),
+            turn_continue=torch.from_numpy(turn_continue),
+            turn_remaining=torch.from_numpy(turn_remaining),
+            turn_future_types=torch.from_numpy(turn_future_types),
+            turn_next_exists=torch.from_numpy(turn_next_exists),
+            turn_next_type=torch.from_numpy(turn_next_type),
+            turn_next_card=torch.from_numpy(turn_next_card),
+            turn_next_card2=torch.from_numpy(turn_next_card2),
+            turn_next_attack=torch.from_numpy(turn_next_attack),
+            turn_next_context=torch.from_numpy(turn_next_context),
+            turn_plan_mask=torch.from_numpy(turn_plan_mask),
+            turn_plan_types=torch.from_numpy(turn_plan_types),
+            turn_plan_cards=torch.from_numpy(turn_plan_cards),
+            turn_plan_attacks=torch.from_numpy(turn_plan_attacks),
+            turn_plan_contexts=torch.from_numpy(turn_plan_contexts),
             min_count=torch.from_numpy(min_count),
             max_count=torch.from_numpy(max_count),
             step_mask=torch.from_numpy(step_mask),
@@ -525,6 +713,15 @@ class SequenceCorpus:
         if draw:
             return self.draw_weight
         return self.win_weight if won else self.loss_weight
+
+    @staticmethod
+    def _row_turn(data: dict[str, np.ndarray], i: int) -> int:
+        if "turn_number" in data:
+            return int(data["turn_number"][i])
+        feats = np.asarray(data.get("feats", np.zeros((1, STATE_FEAT_DIM), dtype=np.float32))[i], dtype=np.float32).reshape(-1)
+        if feats.size:
+            return int(round(float(feats[0]) * 30.0))
+        return 0
 
 
 def _get_row(data: dict[str, np.ndarray], key: str, i: int, default: float | int) -> float | int:

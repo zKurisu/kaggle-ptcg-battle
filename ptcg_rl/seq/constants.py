@@ -8,6 +8,7 @@ DEFAULT_FUTURE_HORIZON = 12
 LEDGER_FEAT_DIM = 128
 FUTURE_PLAN_DIM = 24
 MAX_SELECT_COUNT = 10
+TURN_PLAN_STEPS = 4
 KNOWN_OPP_CARDS = 12
 
 # ``ToJson`` exports enum ids minus one.  The C++ engine uses

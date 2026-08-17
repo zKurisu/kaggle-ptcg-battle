@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import torch
@@ -16,7 +17,7 @@ from ptcg_rl.encoder import (
     STATE_FEAT_DIM,
     STATE_TOKEN_FEAT_DIM,
 )
-from ptcg_rl.seq.constants import DAMAGE_COUNTER_ANY_CONTEXT, FUTURE_PLAN_DIM, KNOWN_OPP_CARDS, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, N_ACTION_TYPES
+from ptcg_rl.seq.constants import DAMAGE_COUNTER_ANY_CONTEXT, FUTURE_PLAN_DIM, KNOWN_OPP_CARDS, LEDGER_FEAT_DIM, MAX_SELECT_COUNT, N_ACTION_TYPES, TURN_PLAN_STEPS
 from ptcg_rl.seq.constants import TYPE_ABILITY, TYPE_ATTACH, TYPE_ATTACK, TYPE_END, TYPE_EVOLVE, TYPE_PLAY, TYPE_RETREAT
 from ptcg_rl.seq.data import SequenceBatch
 
@@ -34,6 +35,17 @@ _MONITORED_TYPES = (
     (TYPE_END, "end"),
 )
 
+_OPPORTUNITY_TYPES = (
+    TYPE_PLAY,
+    TYPE_ATTACH,
+    TYPE_EVOLVE,
+    TYPE_ABILITY,
+    TYPE_RETREAT,
+    TYPE_ATTACK,
+    TYPE_END,
+)
+_KEY_OPPORTUNITY_TYPES = (TYPE_ATTACH, TYPE_EVOLVE, TYPE_ABILITY, TYPE_ATTACK)
+
 
 @dataclass
 class SequenceLossConfig:
@@ -46,6 +58,26 @@ class SequenceLossConfig:
     plan_weight: float = 0.35
     next_type_weight: float = 0.25
     dca_plan_weight: float = 0.25
+    known_action_weight: float = 0.0
+    turn_plan_weight: float = 0.0
+    turn_terminal_weight: float = 0.0
+    turn_next_plan_weight: float = 0.0
+    turn_next_type_weight: float = 1.0
+    turn_next_card_weight: float = 0.25
+    turn_next_attack_weight: float = 0.25
+    turn_next_context_weight: float = 0.10
+    turn_seq_plan_weight: float = 0.0
+    turn_seq_type_weight: float = 1.0
+    turn_seq_card_weight: float = 0.15
+    turn_seq_attack_weight: float = 0.15
+    turn_seq_context_weight: float = 0.05
+    opportunity_type_weight: float = 0.0
+    opportunity_margin_weight: float = 0.0
+    opportunity_margin: float = 0.25
+    current_rank_margin_weight: float = 0.0
+    current_rank_margin: float = 0.25
+    current_rank_margin_min_options: int = 2
+    current_complexity_weight: float = 0.0
     outcome_weight: float = 0.10
     type_weight: float = 0.10
     multi_target_weight: float = 1.0
@@ -80,6 +112,10 @@ class SequencePolicyNet(nn.Module):
         next_type_condition_scale: float = 0.0,
         dca_condition_scale: float = 0.0,
         known_condition_scale: float = 0.0,
+        known_logit_scale: float = 0.0,
+        turn_condition_scale: float = 0.0,
+        turn_next_condition_scale: float = 0.0,
+        turn_seq_condition_scale: float = 0.0,
         type_prior_scale: float = 0.0,
     ):
         super().__init__()
@@ -101,6 +137,10 @@ class SequencePolicyNet(nn.Module):
         self.next_type_condition_scale = float(next_type_condition_scale)
         self.dca_condition_scale = float(dca_condition_scale)
         self.known_condition_scale = float(known_condition_scale)
+        self.known_logit_scale = float(known_logit_scale)
+        self.turn_condition_scale = float(turn_condition_scale)
+        self.turn_next_condition_scale = float(turn_next_condition_scale)
+        self.turn_seq_condition_scale = float(turn_seq_condition_scale)
         self.type_prior_scale = float(type_prior_scale)
 
         card_dim = width // 4
@@ -221,9 +261,39 @@ class SequencePolicyNet(nn.Module):
             nn.GELU(),
             nn.Linear(width, width),
         )
+        self.turn_query = nn.Sequential(
+            nn.Linear(N_ACTION_TYPES + 2, width),
+            nn.LayerNorm(width),
+            nn.GELU(),
+            nn.Linear(width, width),
+        )
+        self.turn_next_query = nn.Sequential(
+            nn.Linear(type_dim + card_dim * 2 + attack_dim + ctx_dim, width),
+            nn.LayerNorm(width),
+            nn.GELU(),
+            nn.Linear(width, width),
+        )
+        self.turn_seq_step_emb = nn.Embedding(TURN_PLAN_STEPS, width)
+        self.turn_seq_token_fc = nn.Sequential(
+            nn.Linear(type_dim + card_dim + attack_dim + ctx_dim, width),
+            nn.LayerNorm(width),
+            nn.GELU(),
+        )
+        self.turn_seq_query = nn.Sequential(
+            nn.Linear(width, width),
+            nn.LayerNorm(width),
+            nn.GELU(),
+            nn.Linear(width, width),
+        )
         self.action_query_norm = nn.LayerNorm(width)
         self.order_pos_emb = nn.Embedding(MAX_SELECT_COUNT, width)
         self.action_score = nn.Sequential(
+            nn.Linear(width * 3, width),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(width, 1),
+        )
+        self.known_action_score = nn.Sequential(
             nn.Linear(width * 3, width),
             nn.GELU(),
             nn.Dropout(dropout),
@@ -253,6 +323,66 @@ class SequencePolicyNet(nn.Module):
             nn.Linear(width, width // 2),
             nn.GELU(),
             nn.Linear(width // 2, 1),
+        )
+        self.turn_continue_head = nn.Sequential(
+            nn.Linear(width, width // 2),
+            nn.GELU(),
+            nn.Linear(width // 2, 1),
+        )
+        self.turn_remaining_head = nn.Sequential(
+            nn.Linear(width, width // 2),
+            nn.GELU(),
+            nn.Linear(width // 2, MAX_SELECT_COUNT + 1),
+        )
+        self.turn_future_type_head = nn.Sequential(
+            nn.Linear(width, width // 2),
+            nn.GELU(),
+            nn.Linear(width // 2, N_ACTION_TYPES),
+        )
+        self.turn_next_type_head = nn.Sequential(
+            nn.Linear(width, width // 2),
+            nn.GELU(),
+            nn.Linear(width // 2, N_ACTION_TYPES + 1),
+        )
+        self.turn_next_card_head = nn.Sequential(
+            nn.Linear(width, width // 2),
+            nn.GELU(),
+            nn.Linear(width // 2, N_CARDS + 2),
+        )
+        self.turn_next_card2_head = nn.Sequential(
+            nn.Linear(width, width // 2),
+            nn.GELU(),
+            nn.Linear(width // 2, N_CARDS + 2),
+        )
+        self.turn_next_attack_head = nn.Sequential(
+            nn.Linear(width, width // 2),
+            nn.GELU(),
+            nn.Linear(width // 2, N_ATTACKS + 1),
+        )
+        self.turn_next_context_head = nn.Sequential(
+            nn.Linear(width, width // 2),
+            nn.GELU(),
+            nn.Linear(width // 2, 66),
+        )
+        self.turn_seq_type_head = nn.Sequential(
+            nn.Linear(width, width // 2),
+            nn.GELU(),
+            nn.Linear(width // 2, TURN_PLAN_STEPS * (N_ACTION_TYPES + 1)),
+        )
+        self.turn_seq_card_head = nn.Sequential(
+            nn.Linear(width, width // 2),
+            nn.GELU(),
+            nn.Linear(width // 2, TURN_PLAN_STEPS * (N_CARDS + 2)),
+        )
+        self.turn_seq_attack_head = nn.Sequential(
+            nn.Linear(width, width // 2),
+            nn.GELU(),
+            nn.Linear(width // 2, TURN_PLAN_STEPS * (N_ATTACKS + 1)),
+        )
+        self.turn_seq_context_head = nn.Sequential(
+            nn.Linear(width, width // 2),
+            nn.GELU(),
+            nn.Linear(width // 2, TURN_PLAN_STEPS * 66),
         )
         self.outcome_head = nn.Sequential(
             nn.Linear(width, width // 2),
@@ -298,6 +428,10 @@ class SequencePolicyNet(nn.Module):
             "next_type_condition_scale": self.next_type_condition_scale,
             "dca_condition_scale": self.dca_condition_scale,
             "known_condition_scale": self.known_condition_scale,
+            "known_logit_scale": self.known_logit_scale,
+            "turn_condition_scale": self.turn_condition_scale,
+            "turn_next_condition_scale": self.turn_next_condition_scale,
+            "turn_seq_condition_scale": self.turn_seq_condition_scale,
             "type_prior_scale": self.type_prior_scale,
         }
 
@@ -349,6 +483,38 @@ class SequencePolicyNet(nn.Module):
         dca_spread_logits = self.dca_spread_head(seq).squeeze(-1)
         dca_unique_logits = self.dca_unique_head(seq)
         dca_focus_logits = self.dca_focus_head(seq).squeeze(-1)
+        turn_continue_logits = self.turn_continue_head(seq).squeeze(-1)
+        turn_remaining_logits = self.turn_remaining_head(seq)
+        turn_future_type_logits = self.turn_future_type_head(seq)
+        turn_next_type_logits = self.turn_next_type_head(seq)
+        turn_next_card_logits = self.turn_next_card_head(seq)
+        turn_next_card2_logits = self.turn_next_card2_head(seq)
+        turn_next_attack_logits = self.turn_next_attack_head(seq)
+        turn_next_context_logits = self.turn_next_context_head(seq)
+        turn_seq_type_logits = self.turn_seq_type_head(seq).view(
+            bsz,
+            seq_len,
+            TURN_PLAN_STEPS,
+            N_ACTION_TYPES + 1,
+        )
+        turn_seq_card_logits = self.turn_seq_card_head(seq).view(
+            bsz,
+            seq_len,
+            TURN_PLAN_STEPS,
+            N_CARDS + 2,
+        )
+        turn_seq_attack_logits = self.turn_seq_attack_head(seq).view(
+            bsz,
+            seq_len,
+            TURN_PLAN_STEPS,
+            N_ATTACKS + 1,
+        )
+        turn_seq_context_logits = self.turn_seq_context_head(seq).view(
+            bsz,
+            seq_len,
+            TURN_PLAN_STEPS,
+            66,
+        )
         type_logits = self.type_head(seq)
         count_logits = self.count_head(seq)
 
@@ -373,22 +539,90 @@ class SequencePolicyNet(nn.Module):
             torch.sigmoid(dca_focus_logits).unsqueeze(-1),
         ], dim=-1))
         known_ctx_q = self.known_query(known_ctx)
+        remain_bins = torch.arange(MAX_SELECT_COUNT + 1, device=seq.device, dtype=seq.dtype)
+        remain_bins = remain_bins / float(max(MAX_SELECT_COUNT, 1))
+        turn_remaining_mean = (
+            torch.softmax(turn_remaining_logits, dim=-1) * remain_bins.view(1, 1, -1)
+        ).sum(dim=-1, keepdim=True)
+        turn_ctx = self.turn_query(torch.cat([
+            torch.sigmoid(turn_future_type_logits),
+            torch.sigmoid(turn_continue_logits).unsqueeze(-1),
+            turn_remaining_mean,
+        ], dim=-1))
+        next_type_prob = torch.softmax(turn_next_type_logits.float(), dim=-1).to(seq.dtype)
+        next_card_prob = torch.softmax(turn_next_card_logits.float(), dim=-1).to(seq.dtype)
+        next_card2_prob = torch.softmax(turn_next_card2_logits.float(), dim=-1).to(seq.dtype)
+        next_attack_prob = torch.softmax(turn_next_attack_logits.float(), dim=-1).to(seq.dtype)
+        next_context_prob = torch.softmax(turn_next_context_logits.float(), dim=-1).to(seq.dtype)
+        next_type_emb = torch.matmul(next_type_prob, self.prev_type_emb.weight[1:N_ACTION_TYPES + 2])
+        next_card_emb = torch.matmul(next_card_prob, self.card_emb.weight[:N_CARDS + 2])
+        next_card2_emb = torch.matmul(next_card2_prob, self.card_emb.weight[:N_CARDS + 2])
+        next_attack_emb = torch.matmul(next_attack_prob, self.attack_emb.weight[:N_ATTACKS + 1])
+        next_context_emb = torch.matmul(next_context_prob, self.context_emb.weight[:66])
+        turn_next_ctx = self.turn_next_query(torch.cat([
+            next_type_emb,
+            next_card_emb,
+            next_card2_emb,
+            next_attack_emb,
+            next_context_emb,
+        ], dim=-1))
+        seq_type_prob = torch.softmax(turn_seq_type_logits.float(), dim=-1).to(seq.dtype)
+        seq_card_prob = torch.softmax(turn_seq_card_logits.float(), dim=-1).to(seq.dtype)
+        seq_attack_prob = torch.softmax(turn_seq_attack_logits.float(), dim=-1).to(seq.dtype)
+        seq_context_prob = torch.softmax(turn_seq_context_logits.float(), dim=-1).to(seq.dtype)
+        seq_type_emb = torch.matmul(seq_type_prob, self.prev_type_emb.weight[1:N_ACTION_TYPES + 2])
+        seq_card_emb = torch.matmul(seq_card_prob, self.card_emb.weight[:N_CARDS + 2])
+        seq_attack_emb = torch.matmul(seq_attack_prob, self.attack_emb.weight[:N_ATTACKS + 1])
+        seq_context_emb = torch.matmul(seq_context_prob, self.context_emb.weight[:66])
+        step_ids = torch.arange(TURN_PLAN_STEPS, device=seq.device)
+        seq_tokens = self.turn_seq_token_fc(torch.cat([
+            seq_type_emb,
+            seq_card_emb,
+            seq_attack_emb,
+            seq_context_emb,
+        ], dim=-1))
+        seq_tokens = seq_tokens + self.turn_seq_step_emb(step_ids).view(1, 1, TURN_PLAN_STEPS, self.width)
+        seq_step_weight = (1.0 - seq_type_prob[..., N_ACTION_TYPES]).clamp(0.0, 1.0).unsqueeze(-1)
+        turn_seq_ctx = (seq_tokens * seq_step_weight).sum(dim=2) / seq_step_weight.sum(dim=2).clamp(min=1e-3)
+        turn_seq_ctx = self.turn_seq_query(turn_seq_ctx)
 
-        q_base = self.option_query(seq)
+        q_raw = self.option_query(seq)
         hist_applied = hist_ctx * self.history_condition_scale
         plan_applied = plan_ctx * self.plan_condition_scale
         next_applied = next_ctx * self.next_type_condition_scale
         dca_applied = dca_ctx * self.dca_condition_scale
         known_applied = known_ctx_q * self.known_condition_scale
-        q_base = self.action_query_norm(q_base + hist_applied + plan_applied + next_applied + dca_applied + known_applied)
+        turn_applied = turn_ctx * self.turn_condition_scale
+        turn_next_applied = turn_next_ctx * self.turn_next_condition_scale
+        turn_seq_applied = turn_seq_ctx * self.turn_seq_condition_scale
+        q_base = self.action_query_norm(
+            q_raw
+            + hist_applied
+            + plan_applied
+            + next_applied
+            + dca_applied
+            + known_applied
+            + turn_applied
+            + turn_next_applied
+            + turn_seq_applied
+        )
         q = q_base.unsqueeze(2)
         k = self.option_key(opt_emb)
         scores = self.action_score(torch.cat([q.expand_as(k), k, q.expand_as(k) * k], dim=-1)).squeeze(-1)
+        known_q = known_ctx_q.unsqueeze(2)
+        known_scores = self.known_action_score(torch.cat([
+            known_q.expand_as(k),
+            k,
+            known_q.expand_as(k) * k,
+        ], dim=-1)).squeeze(-1)
+        if self.known_logit_scale != 0.0:
+            scores = scores + known_scores * self.known_logit_scale
         if self.type_prior_scale != 0.0:
             opt_type = batch.opt_type.long().clamp(0, N_OPT_TYPES)
             type_prior = F.log_softmax(type_logits.float(), dim=-1).gather(-1, opt_type)
             scores = scores + type_prior.to(scores.dtype) * self.type_prior_scale
         scores = scores.masked_fill(opt_mask <= 0, NEG_INF)
+        known_scores = known_scores.masked_fill(opt_mask <= 0, NEG_INF)
         order_queries = q_base.unsqueeze(2) + self.order_pos_emb(
             torch.arange(MAX_SELECT_COUNT, device=seq.device)
         ).view(1, 1, MAX_SELECT_COUNT, self.width)
@@ -402,21 +636,38 @@ class SequencePolicyNet(nn.Module):
         order_scores = order_scores.masked_fill(opt_mask.unsqueeze(2) <= 0, NEG_INF)
         return {
             "action_logits": scores,
+            "known_action_logits": known_scores,
             "order_logits": order_scores,
             "plan_logits": plan_logits,
             "next_type_logits": next_type_logits,
             "dca_spread_logits": dca_spread_logits,
             "dca_unique_logits": dca_unique_logits,
             "dca_focus_logits": dca_focus_logits,
+            "turn_continue_logits": turn_continue_logits,
+            "turn_remaining_logits": turn_remaining_logits,
+            "turn_future_type_logits": turn_future_type_logits,
+            "turn_next_type_logits": turn_next_type_logits,
+            "turn_next_card_logits": turn_next_card_logits,
+            "turn_next_card2_logits": turn_next_card2_logits,
+            "turn_next_attack_logits": turn_next_attack_logits,
+            "turn_next_context_logits": turn_next_context_logits,
+            "turn_seq_type_logits": turn_seq_type_logits,
+            "turn_seq_card_logits": turn_seq_card_logits,
+            "turn_seq_attack_logits": turn_seq_attack_logits,
+            "turn_seq_context_logits": turn_seq_context_logits,
             "outcome_logits": self.outcome_head(seq).squeeze(-1),
             "type_logits": type_logits,
             "count_logits": count_logits,
-            "base_query_norm": q_base.detach().float().norm(dim=-1),
+            "base_query_norm": q_raw.detach().float().norm(dim=-1),
+            "conditioned_query_norm": q_base.detach().float().norm(dim=-1),
             "history_query_norm": hist_applied.detach().float().norm(dim=-1),
             "plan_query_norm": plan_applied.detach().float().norm(dim=-1),
             "next_type_query_norm": next_applied.detach().float().norm(dim=-1),
             "dca_query_norm": dca_applied.detach().float().norm(dim=-1),
             "known_query_norm": known_applied.detach().float().norm(dim=-1),
+            "turn_query_norm": turn_applied.detach().float().norm(dim=-1),
+            "turn_next_query_norm": turn_next_applied.detach().float().norm(dim=-1),
+            "turn_seq_query_norm": turn_seq_applied.detach().float().norm(dim=-1),
             "prefix_summary_norm": prefix_summary.detach().float().norm(dim=-1),
             "known_opp_card_slots": batch.known_opp_mask.detach().float().sum(dim=-1),
             "type_prior_abs": (
@@ -494,6 +745,15 @@ def sequence_policy_loss(
     target_count = batch.target_multi.float().sum(dim=-1).long().clamp(0, MAX_SELECT_COUNT)
     multi_target = (target_count > 1) & (step_mask > 0)
     damage_counter = (batch.target_context.long() == DAMAGE_COUNTER_ANY_CONTEXT) & (step_mask > 0)
+    known_present = (batch.known_opp_mask.float().sum(dim=-1) > 0) & (step_mask > 0)
+    option_count = batch.option_mask.float().sum(dim=-1).clamp(min=1.0)
+    if float(cfg.current_complexity_weight) != 0.0:
+        max_opt = max(int(batch.option_mask.shape[-1]), 1)
+        current_complexity = 1.0 + float(cfg.current_complexity_weight) * (
+            torch.log1p(option_count) / math.log1p(float(max_opt))
+        )
+    else:
+        current_complexity = torch.ones_like(option_count)
     multi_boost = torch.where(
         multi_target,
         torch.full_like(weights, max(float(cfg.multi_target_weight), 1.0)),
@@ -522,8 +782,10 @@ def sequence_policy_loss(
         valid_prefix = ~valid_current
         if bool(valid_current.any()):
             current_action_loss = (
-                raw_action_loss[valid_current] * valid_decision_weights[valid_current]
-            ).sum() / valid_decision_weights[valid_current].sum().clamp(min=1.0)
+                raw_action_loss[valid_current]
+                * valid_decision_weights[valid_current]
+                * current_complexity[valid_action][valid_current]
+            ).sum() / (valid_decision_weights[valid_current] * current_complexity[valid_action][valid_current]).sum().clamp(min=1.0)
         else:
             current_action_loss = outputs["action_logits"].sum() * 0.0
         if bool(valid_prefix.any()) and float(cfg.prefix_action_weight) > 0.0:
@@ -542,6 +804,18 @@ def sequence_policy_loss(
         current_action_loss = outputs["action_logits"].sum() * 0.0
         prefix_action_loss = outputs["action_logits"].sum() * 0.0
         action_loss = outputs["action_logits"].sum() * 0.0
+
+    known_action_mask = valid_action & known_present
+    if bool(known_action_mask.any()) and "known_action_logits" in outputs:
+        known_action_raw = F.cross_entropy(
+            outputs["known_action_logits"][known_action_mask].float().clamp(min=-50.0, max=50.0),
+            batch.target_first.long()[known_action_mask],
+            reduction="none",
+        )
+        known_w = decision_weights[known_action_mask]
+        known_action_loss = (known_action_raw * known_w).sum() / known_w.sum().clamp(min=1.0)
+    else:
+        known_action_loss = outputs["action_logits"].sum() * 0.0
 
     order_logits = outputs.get("order_logits")
     if order_logits is not None and float(cfg.order_weight) > 0.0:
@@ -649,6 +923,347 @@ def sequence_policy_loss(
             (spread_loss + 0.50 * unique_loss + 0.50 * focus_loss) * dca_w
         ).sum() / dca_w.sum().clamp(min=1.0)
 
+    turn_plan_loss = outputs["action_logits"].sum() * 0.0
+    turn_continue_loss = outputs["action_logits"].sum() * 0.0
+    turn_remaining_loss = outputs["action_logits"].sum() * 0.0
+    turn_future_type_loss = outputs["action_logits"].sum() * 0.0
+    turn_terminal_loss = outputs["action_logits"].sum() * 0.0
+    if (
+        float(cfg.turn_plan_weight) > 0.0
+        and "turn_continue_logits" in outputs
+        and "turn_remaining_logits" in outputs
+        and "turn_future_type_logits" in outputs
+    ):
+        turn_target = batch.turn_continue.float().clamp(0.0, 1.0)
+        turn_continue_raw = F.binary_cross_entropy_with_logits(
+            outputs["turn_continue_logits"].float().clamp(min=-30.0, max=30.0),
+            turn_target,
+            reduction="none",
+        )
+        turn_continue_loss = (turn_continue_raw * weights).sum() / weights.sum().clamp(min=1.0)
+        turn_remaining_raw = F.cross_entropy(
+            outputs["turn_remaining_logits"].reshape(-1, outputs["turn_remaining_logits"].shape[-1]).float().clamp(min=-50.0, max=50.0),
+            batch.turn_remaining.long().reshape(-1).clamp(0, MAX_SELECT_COUNT),
+            reduction="none",
+        ).reshape_as(step_mask)
+        turn_remaining_loss = (turn_remaining_raw * weights).sum() / weights.sum().clamp(min=1.0)
+        turn_future_raw = F.binary_cross_entropy_with_logits(
+            outputs["turn_future_type_logits"].float().clamp(min=-30.0, max=30.0),
+            batch.turn_future_types.float().clamp(0.0, 1.0),
+            reduction="none",
+        )
+        turn_future_type_loss = (
+            turn_future_raw * weights.unsqueeze(-1)
+        ).sum() / (weights.sum().clamp(min=1.0) * max(batch.turn_future_types.shape[-1], 1))
+        turn_plan_loss = turn_continue_loss + 0.25 * turn_remaining_loss + 0.50 * turn_future_type_loss
+
+    if float(cfg.turn_terminal_weight) > 0.0:
+        opt_mask_for_terminal = batch.option_mask.float() * step_mask.unsqueeze(-1)
+        terminal_options = (
+            ((batch.opt_type.long() == TYPE_END) | (batch.opt_type.long() == TYPE_ATTACK))
+            & (opt_mask_for_terminal > 0)
+        )
+        nonterminal_options = (
+            ((batch.opt_type.long() != TYPE_END) & (batch.opt_type.long() != TYPE_ATTACK))
+            & (opt_mask_for_terminal > 0)
+        )
+        terminal_valid = valid_action & terminal_options.any(dim=-1) & nonterminal_options.any(dim=-1)
+        if bool(terminal_valid.any()):
+            probs_terminal = torch.softmax(outputs["action_logits"].float(), dim=-1)
+            terminal_prob = (probs_terminal * terminal_options.float()).sum(dim=-1).clamp(1e-5, 1.0 - 1e-5)
+            terminal_target = (
+                (batch.target_type.long() == TYPE_END) | (batch.target_type.long() == TYPE_ATTACK)
+            ).float()
+            terminal_raw = F.binary_cross_entropy(
+                terminal_prob[terminal_valid],
+                terminal_target[terminal_valid],
+                reduction="none",
+            )
+            cont_boost = 1.0 + 2.0 * batch.turn_continue.float().clamp(0.0, 1.0)[terminal_valid]
+            terminal_w = decision_weights[terminal_valid] * cont_boost
+            turn_terminal_loss = (terminal_raw * terminal_w).sum() / terminal_w.sum().clamp(min=1.0)
+
+    turn_next_plan_loss = outputs["action_logits"].sum() * 0.0
+    turn_next_type_loss = outputs["action_logits"].sum() * 0.0
+    turn_next_card_loss = outputs["action_logits"].sum() * 0.0
+    turn_next_card2_loss = outputs["action_logits"].sum() * 0.0
+    turn_next_attack_loss = outputs["action_logits"].sum() * 0.0
+    turn_next_context_loss = outputs["action_logits"].sum() * 0.0
+    turn_next_rows = torch.tensor(0.0, device=weights.device)
+    turn_next_card_rows = torch.tensor(0.0, device=weights.device)
+    turn_next_attack_rows = torch.tensor(0.0, device=weights.device)
+    if (
+        float(cfg.turn_next_plan_weight) > 0.0
+        and "turn_next_type_logits" in outputs
+        and "turn_next_card_logits" in outputs
+        and "turn_next_attack_logits" in outputs
+    ):
+        turn_next_exists = batch.turn_next_exists.float().clamp(0.0, 1.0)
+        next_step_valid = step_mask > 0
+        next_type_target = torch.where(
+            turn_next_exists > 0.5,
+            batch.turn_next_type.long().clamp(0, N_ACTION_TYPES),
+            torch.full_like(batch.turn_next_type.long(), N_ACTION_TYPES),
+        )
+        next_type_raw = F.cross_entropy(
+            outputs["turn_next_type_logits"].reshape(-1, outputs["turn_next_type_logits"].shape[-1]).float().clamp(min=-50.0, max=50.0),
+            next_type_target.reshape(-1),
+            reduction="none",
+        ).reshape_as(step_mask)
+        next_type_w = weights * torch.where(
+            turn_next_exists > 0.5,
+            torch.ones_like(weights),
+            torch.full_like(weights, 0.25),
+        )
+        turn_next_type_loss = (
+            next_type_raw[next_step_valid] * next_type_w[next_step_valid]
+        ).sum() / next_type_w[next_step_valid].sum().clamp(min=1.0)
+        turn_next_rows = (next_step_valid & (turn_next_exists > 0.5)).float().sum()
+
+        next_card_valid = next_step_valid & (turn_next_exists > 0.5) & (batch.turn_next_card.long() > 0)
+        if bool(next_card_valid.any()):
+            card_raw = F.cross_entropy(
+                outputs["turn_next_card_logits"][next_card_valid].float().clamp(min=-50.0, max=50.0),
+                batch.turn_next_card.long()[next_card_valid].clamp(0, N_CARDS + 1),
+                reduction="none",
+            )
+            card_w = weights[next_card_valid]
+            turn_next_card_loss = (card_raw * card_w).sum() / card_w.sum().clamp(min=1.0)
+            turn_next_card_rows = next_card_valid.float().sum()
+
+        next_card2_valid = next_step_valid & (turn_next_exists > 0.5) & (batch.turn_next_card2.long() > 0)
+        if bool(next_card2_valid.any()):
+            card2_raw = F.cross_entropy(
+                outputs["turn_next_card2_logits"][next_card2_valid].float().clamp(min=-50.0, max=50.0),
+                batch.turn_next_card2.long()[next_card2_valid].clamp(0, N_CARDS + 1),
+                reduction="none",
+            )
+            card2_w = weights[next_card2_valid]
+            turn_next_card2_loss = (card2_raw * card2_w).sum() / card2_w.sum().clamp(min=1.0)
+
+        next_attack_valid = next_step_valid & (turn_next_exists > 0.5) & (batch.turn_next_attack.long() > 0)
+        if bool(next_attack_valid.any()):
+            attack_raw = F.cross_entropy(
+                outputs["turn_next_attack_logits"][next_attack_valid].float().clamp(min=-50.0, max=50.0),
+                batch.turn_next_attack.long()[next_attack_valid].clamp(0, N_ATTACKS),
+                reduction="none",
+            )
+            attack_w = weights[next_attack_valid]
+            turn_next_attack_loss = (attack_raw * attack_w).sum() / attack_w.sum().clamp(min=1.0)
+            turn_next_attack_rows = next_attack_valid.float().sum()
+
+        next_context_valid = next_step_valid & (turn_next_exists > 0.5) & (batch.turn_next_context.long() > 0)
+        if bool(next_context_valid.any()):
+            context_raw = F.cross_entropy(
+                outputs["turn_next_context_logits"][next_context_valid].float().clamp(min=-50.0, max=50.0),
+                batch.turn_next_context.long()[next_context_valid].clamp(0, 65),
+                reduction="none",
+            )
+            context_w = weights[next_context_valid]
+            turn_next_context_loss = (context_raw * context_w).sum() / context_w.sum().clamp(min=1.0)
+
+        turn_next_plan_loss = (
+            float(cfg.turn_next_type_weight) * turn_next_type_loss
+            + float(cfg.turn_next_card_weight) * (turn_next_card_loss + 0.50 * turn_next_card2_loss)
+            + float(cfg.turn_next_attack_weight) * turn_next_attack_loss
+            + float(cfg.turn_next_context_weight) * turn_next_context_loss
+        )
+
+    turn_seq_plan_loss = outputs["action_logits"].sum() * 0.0
+    turn_seq_type_loss = outputs["action_logits"].sum() * 0.0
+    turn_seq_card_loss = outputs["action_logits"].sum() * 0.0
+    turn_seq_attack_loss = outputs["action_logits"].sum() * 0.0
+    turn_seq_context_loss = outputs["action_logits"].sum() * 0.0
+    turn_seq_slots = torch.tensor(0.0, device=weights.device)
+    if (
+        float(cfg.turn_seq_plan_weight) > 0.0
+        and "turn_seq_type_logits" in outputs
+        and "turn_seq_card_logits" in outputs
+    ):
+        seq_mask = batch.turn_plan_mask.float().clamp(0.0, 1.0)
+        seq_step_valid = (step_mask > 0).unsqueeze(-1).expand_as(seq_mask)
+        seq_type_target = torch.where(
+            seq_mask > 0.5,
+            batch.turn_plan_types.long().clamp(0, N_ACTION_TYPES),
+            torch.full_like(batch.turn_plan_types.long(), N_ACTION_TYPES),
+        )
+        seq_type_raw = F.cross_entropy(
+            outputs["turn_seq_type_logits"].reshape(-1, outputs["turn_seq_type_logits"].shape[-1]).float().clamp(min=-50.0, max=50.0),
+            seq_type_target.reshape(-1),
+            reduction="none",
+        ).reshape_as(seq_mask)
+        seq_w = weights.unsqueeze(-1) * torch.where(
+            seq_mask > 0.5,
+            torch.ones_like(seq_mask),
+            torch.full_like(seq_mask, 0.25),
+        )
+        turn_seq_type_loss = (
+            seq_type_raw[seq_step_valid] * seq_w[seq_step_valid]
+        ).sum() / seq_w[seq_step_valid].sum().clamp(min=1.0)
+        turn_seq_slots = (seq_step_valid & (seq_mask > 0.5)).float().sum()
+
+        seq_card_valid = seq_step_valid & (seq_mask > 0.5) & (batch.turn_plan_cards.long() > 0)
+        if bool(seq_card_valid.any()):
+            card_raw = F.cross_entropy(
+                outputs["turn_seq_card_logits"][seq_card_valid].float().clamp(min=-50.0, max=50.0),
+                batch.turn_plan_cards.long()[seq_card_valid].clamp(0, N_CARDS + 1),
+                reduction="none",
+            )
+            card_w = weights.unsqueeze(-1).expand_as(seq_mask)[seq_card_valid]
+            turn_seq_card_loss = (card_raw * card_w).sum() / card_w.sum().clamp(min=1.0)
+
+        seq_attack_valid = seq_step_valid & (seq_mask > 0.5) & (batch.turn_plan_attacks.long() > 0)
+        if bool(seq_attack_valid.any()):
+            attack_raw = F.cross_entropy(
+                outputs["turn_seq_attack_logits"][seq_attack_valid].float().clamp(min=-50.0, max=50.0),
+                batch.turn_plan_attacks.long()[seq_attack_valid].clamp(0, N_ATTACKS),
+                reduction="none",
+            )
+            attack_w = weights.unsqueeze(-1).expand_as(seq_mask)[seq_attack_valid]
+            turn_seq_attack_loss = (attack_raw * attack_w).sum() / attack_w.sum().clamp(min=1.0)
+
+        seq_context_valid = seq_step_valid & (seq_mask > 0.5) & (batch.turn_plan_contexts.long() > 0)
+        if bool(seq_context_valid.any()):
+            context_raw = F.cross_entropy(
+                outputs["turn_seq_context_logits"][seq_context_valid].float().clamp(min=-50.0, max=50.0),
+                batch.turn_plan_contexts.long()[seq_context_valid].clamp(0, 65),
+                reduction="none",
+            )
+            context_w = weights.unsqueeze(-1).expand_as(seq_mask)[seq_context_valid]
+            turn_seq_context_loss = (context_raw * context_w).sum() / context_w.sum().clamp(min=1.0)
+
+        turn_seq_plan_loss = (
+            float(cfg.turn_seq_type_weight) * turn_seq_type_loss
+            + float(cfg.turn_seq_card_weight) * turn_seq_card_loss
+            + float(cfg.turn_seq_attack_weight) * turn_seq_attack_loss
+            + float(cfg.turn_seq_context_weight) * turn_seq_context_loss
+        )
+
+    opportunity_type_loss = outputs["action_logits"].sum() * 0.0
+    opportunity_type_rows = torch.tensor(0.0, device=weights.device)
+    opportunity_key_share = torch.tensor(0.0, device=weights.device)
+    if float(cfg.opportunity_type_weight) > 0.0:
+        opt_valid = batch.option_mask.float() > 0
+        action_probs = torch.softmax(
+            outputs["action_logits"].float().masked_fill(~opt_valid, NEG_INF),
+            dim=-1,
+        )
+        opt_type = batch.opt_type.long()
+        type_mass = torch.stack([
+            (action_probs * ((opt_type == typ) & opt_valid).float()).sum(dim=-1)
+            for typ in _OPPORTUNITY_TYPES
+        ], dim=-1).clamp(1e-5, 1.0)
+        target_slot = torch.full_like(batch.target_type.long(), -1)
+        for j, typ in enumerate(_OPPORTUNITY_TYPES):
+            target_slot = torch.where(batch.target_type.long() == typ, torch.full_like(target_slot, j), target_slot)
+        legal_type_count = torch.stack([
+            ((opt_type == typ) & opt_valid).any(dim=-1)
+            for typ in _OPPORTUNITY_TYPES
+        ], dim=-1).sum(dim=-1)
+        opportunity_valid = (
+            valid_action
+            & current_step
+            & (target_slot >= 0)
+            & (legal_type_count > 1)
+            & (option_count > 1)
+        )
+        if bool(opportunity_valid.any()):
+            target_mass = type_mass.gather(-1, target_slot.clamp(min=0).unsqueeze(-1)).squeeze(-1)
+            opportunity_raw = -torch.log(target_mass)
+            key_target = torch.zeros_like(opportunity_raw, dtype=torch.bool)
+            for typ in _KEY_OPPORTUNITY_TYPES:
+                key_target |= batch.target_type.long() == typ
+            key_boost = torch.where(
+                key_target,
+                torch.full_like(decision_weights, 2.0),
+                torch.ones_like(decision_weights),
+            )
+            opportunity_w = decision_weights * current_complexity * key_boost
+            opportunity_type_loss = (
+                opportunity_raw[opportunity_valid] * opportunity_w[opportunity_valid]
+            ).sum() / opportunity_w[opportunity_valid].sum().clamp(min=1.0)
+            opportunity_type_rows = opportunity_valid.float().sum()
+            opportunity_key_share = (
+                key_target[opportunity_valid].float().sum() / opportunity_type_rows.clamp(min=1.0)
+            )
+
+    opportunity_margin_loss = outputs["action_logits"].sum() * 0.0
+    opportunity_margin_rows = torch.tensor(0.0, device=weights.device)
+    opportunity_margin_violation = torch.tensor(0.0, device=weights.device)
+    if float(cfg.opportunity_margin_weight) > 0.0:
+        opt_valid = batch.option_mask.float() > 0
+        action_logits = outputs["action_logits"].float().masked_fill(~opt_valid, NEG_INF)
+        target_idx = batch.target_first.long().clamp(min=0, max=action_logits.shape[-1] - 1)
+        target_logit = action_logits.gather(-1, target_idx.unsqueeze(-1)).squeeze(-1)
+        target_type = batch.target_type.long()
+        key_target = torch.zeros_like(valid_action, dtype=torch.bool)
+        for typ in _KEY_OPPORTUNITY_TYPES:
+            key_target |= target_type == typ
+        other_type_mask = opt_valid & (batch.opt_type.long() != target_type.unsqueeze(-1))
+        has_other_type = other_type_mask.any(dim=-1)
+        best_other = action_logits.masked_fill(~other_type_mask, NEG_INF).max(dim=-1).values
+        margin_valid = (
+            valid_action
+            & current_step
+            & key_target
+            & has_other_type
+            & (option_count > 1)
+        )
+        if bool(margin_valid.any()):
+            margin_raw = F.softplus(best_other - target_logit + float(cfg.opportunity_margin))
+            key_boost = torch.full_like(decision_weights, 2.0)
+            margin_w = decision_weights * current_complexity * key_boost
+            opportunity_margin_loss = (
+                margin_raw[margin_valid] * margin_w[margin_valid]
+            ).sum() / margin_w[margin_valid].sum().clamp(min=1.0)
+            opportunity_margin_rows = margin_valid.float().sum()
+            opportunity_margin_violation = (
+                (target_logit[margin_valid] < best_other[margin_valid] + float(cfg.opportunity_margin))
+                .float()
+                .mean()
+            )
+
+    current_rank_margin_loss = outputs["action_logits"].sum() * 0.0
+    current_rank_margin_rows = torch.tensor(0.0, device=weights.device)
+    current_rank_margin_violation = torch.tensor(0.0, device=weights.device)
+    if float(cfg.current_rank_margin_weight) > 0.0:
+        opt_valid = batch.option_mask.float() > 0
+        action_logits = outputs["action_logits"].float().masked_fill(~opt_valid, NEG_INF)
+        target_idx = batch.target_first.long().clamp(min=0, max=action_logits.shape[-1] - 1)
+        target_logit = action_logits.gather(-1, target_idx.unsqueeze(-1)).squeeze(-1)
+        non_target_mask = opt_valid.clone()
+        non_target_mask.scatter_(-1, target_idx.unsqueeze(-1), False)
+        has_non_target = non_target_mask.any(dim=-1)
+        best_non_target = action_logits.masked_fill(~non_target_mask, NEG_INF).max(dim=-1).values
+        rank_valid = (
+            valid_action
+            & current_step
+            & has_non_target
+            & (option_count >= float(max(2, int(cfg.current_rank_margin_min_options))))
+        )
+        if bool(rank_valid.any()):
+            rank_raw = F.softplus(best_non_target - target_logit + float(cfg.current_rank_margin))
+            same_type_count = (
+                ((batch.opt_type.long() == batch.target_type.long().unsqueeze(-1)) & opt_valid)
+                .sum(dim=-1)
+                .float()
+            )
+            same_type_boost = torch.where(
+                same_type_count > 1,
+                torch.full_like(decision_weights, 1.5),
+                torch.ones_like(decision_weights),
+            )
+            rank_w = decision_weights * current_complexity * same_type_boost
+            current_rank_margin_loss = (
+                rank_raw[rank_valid] * rank_w[rank_valid]
+            ).sum() / rank_w[rank_valid].sum().clamp(min=1.0)
+            current_rank_margin_rows = rank_valid.float().sum()
+            current_rank_margin_violation = (
+                (target_logit[rank_valid] < best_non_target[rank_valid] + float(cfg.current_rank_margin))
+                .float()
+                .mean()
+            )
+
     outcome_loss_raw = F.binary_cross_entropy_with_logits(outputs["outcome_logits"], batch.outcome.float(), reduction="none")
     outcome_loss = (outcome_loss_raw * weights).sum() / weights.sum().clamp(min=1.0)
 
@@ -667,6 +1282,14 @@ def sequence_policy_loss(
         + cfg.plan_weight * plan_loss
         + cfg.next_type_weight * next_type_loss
         + cfg.dca_plan_weight * dca_plan_loss
+        + cfg.known_action_weight * known_action_loss
+        + cfg.turn_plan_weight * turn_plan_loss
+        + cfg.turn_terminal_weight * turn_terminal_loss
+        + cfg.turn_next_plan_weight * turn_next_plan_loss
+        + cfg.turn_seq_plan_weight * turn_seq_plan_loss
+        + cfg.opportunity_type_weight * opportunity_type_loss
+        + cfg.opportunity_margin_weight * opportunity_margin_loss
+        + cfg.current_rank_margin_weight * current_rank_margin_loss
         + cfg.outcome_weight * outcome_loss
         + cfg.type_weight * type_loss
     )
@@ -723,10 +1346,45 @@ def sequence_policy_loss(
         "plan": float(plan_loss.detach().cpu()),
         "next_type": float(next_type_loss.detach().cpu()),
         "dca_plan": float(dca_plan_loss.detach().cpu()),
+        "known_action": float(known_action_loss.detach().cpu()),
+        "turn_plan": float(turn_plan_loss.detach().cpu()),
+        "turn_continue": float(turn_continue_loss.detach().cpu()),
+        "turn_remaining": float(turn_remaining_loss.detach().cpu()),
+        "turn_future_type": float(turn_future_type_loss.detach().cpu()),
+        "turn_terminal": float(turn_terminal_loss.detach().cpu()),
+        "turn_next_plan": float(turn_next_plan_loss.detach().cpu()),
+        "turn_next_type": float(turn_next_type_loss.detach().cpu()),
+        "turn_next_card": float(turn_next_card_loss.detach().cpu()),
+        "turn_next_card2": float(turn_next_card2_loss.detach().cpu()),
+        "turn_next_attack": float(turn_next_attack_loss.detach().cpu()),
+        "turn_next_context": float(turn_next_context_loss.detach().cpu()),
+        "turn_next_rows": float(turn_next_rows.detach().cpu()),
+        "turn_next_card_rows": float(turn_next_card_rows.detach().cpu()),
+        "turn_next_attack_rows": float(turn_next_attack_rows.detach().cpu()),
+        "turn_seq_plan": float(turn_seq_plan_loss.detach().cpu()),
+        "turn_seq_type": float(turn_seq_type_loss.detach().cpu()),
+        "turn_seq_card": float(turn_seq_card_loss.detach().cpu()),
+        "turn_seq_attack": float(turn_seq_attack_loss.detach().cpu()),
+        "turn_seq_context": float(turn_seq_context_loss.detach().cpu()),
+        "turn_seq_slots": float(turn_seq_slots.detach().cpu()),
+        "opportunity_type": float(opportunity_type_loss.detach().cpu()),
+        "opportunity_type_rows": float(opportunity_type_rows.detach().cpu()),
+        "opportunity_key_share": float(opportunity_key_share.detach().cpu()),
+        "opportunity_margin": float(opportunity_margin_loss.detach().cpu()),
+        "opportunity_margin_rows": float(opportunity_margin_rows.detach().cpu()),
+        "opportunity_margin_violation": float(opportunity_margin_violation.detach().cpu()),
+        "current_rank_margin": float(current_rank_margin_loss.detach().cpu()),
+        "current_rank_margin_rows": float(current_rank_margin_rows.detach().cpu()),
+        "current_rank_margin_violation": float(current_rank_margin_violation.detach().cpu()),
         "outcome": float(outcome_loss.detach().cpu()),
         "type": float(type_loss.detach().cpu()),
         "multi_target_rate": float((multi_target.float().sum() / step_mask.sum().clamp(min=1.0)).detach().cpu()),
         "damage_counter_rate": float((damage_counter.float().sum() / step_mask.sum().clamp(min=1.0)).detach().cpu()),
+        "known_present_rate": float((known_present.float().sum() / step_mask.sum().clamp(min=1.0)).detach().cpu()),
+        "turn_continue_rate": float((batch.turn_continue.float().clamp(0.0, 1.0) * step_mask).sum().detach().cpu() / step_mask.sum().clamp(min=1.0).detach().cpu()),
+        "turn_remaining_mean": float((batch.turn_remaining.float().clamp(0.0, float(MAX_SELECT_COUNT)) * step_mask).sum().detach().cpu() / step_mask.sum().clamp(min=1.0).detach().cpu()),
+        "current_complexity_mean": float(current_complexity[valid_action].mean().detach().cpu()) if bool(valid_action.any()) else 0.0,
+        "current_complexity_max": float(current_complexity[valid_action].max().detach().cpu()) if bool(valid_action.any()) else 0.0,
         "weight_boost": float((decision_weight_sum / valid_weight_sum).detach().cpu()),
         "dca_weight_share": float((decision_weights[damage_counter].sum() / decision_weights[valid_action].sum().clamp(min=1.0)).detach().cpu()) if bool(valid_action.any()) else 0.0,
         "multi_weight_share": float((decision_weights[multi_target].sum() / decision_weights[valid_action].sum().clamp(min=1.0)).detach().cpu()) if bool(valid_action.any()) else 0.0,
@@ -751,7 +1409,11 @@ def sequence_policy_loss(
         "next_query_ratio": norm_ratio("next_type_query_norm"),
         "dca_query_ratio": norm_ratio("dca_query_norm"),
         "known_query_ratio": norm_ratio("known_query_norm"),
+        "turn_query_ratio": norm_ratio("turn_query_norm"),
+        "turn_next_query_ratio": norm_ratio("turn_next_query_norm"),
+        "turn_seq_query_ratio": norm_ratio("turn_seq_query_norm"),
         "prefix_summary_ratio": norm_ratio("prefix_summary_norm"),
+        "conditioned_query_ratio": norm_ratio("conditioned_query_norm"),
         "known_opp_slots_mean": masked_mean("known_opp_card_slots"),
         "type_prior_abs": masked_mean("type_prior_abs"),
     }
@@ -790,6 +1452,49 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
             "cur_top1": 0.0,
             "cur_type_acc": 0.0,
             "cur_set_f1": 0.0,
+            "cur_entropy": 0.0,
+            "cur_margin": 0.0,
+            "cur_target_margin_best": 0.0,
+            "cur_rank_violation_025": 0.0,
+            "cur_ambig_target_margin_best": 0.0,
+            "cur_forced_rate": 0.0,
+            "cur_nonforced_top1": 0.0,
+            "cur_bigopt_rate": 0.0,
+            "cur_bigopt_top1": 0.0,
+            "cur_ambig_type_rate": 0.0,
+            "cur_ambig_type_top1": 0.0,
+            "cur_target_end_rate": 0.0,
+            "cur_pred_end_rate": 0.0,
+            "cur_pred_end_when_nonend_legal": 0.0,
+            "cur_pred_end_when_target_nonend": 0.0,
+            "cur_play_legal_rate": 0.0,
+            "cur_play_target_if_legal": 0.0,
+            "cur_play_pred_if_legal": 0.0,
+            "cur_play_miss_if_target": 0.0,
+            "cur_attach_legal_rate": 0.0,
+            "cur_attach_target_if_legal": 0.0,
+            "cur_attach_pred_if_legal": 0.0,
+            "cur_attach_miss_if_target": 0.0,
+            "cur_attach_target_mass": 0.0,
+            "cur_attach_target_margin_other": 0.0,
+            "cur_evolve_legal_rate": 0.0,
+            "cur_evolve_target_if_legal": 0.0,
+            "cur_evolve_pred_if_legal": 0.0,
+            "cur_evolve_miss_if_target": 0.0,
+            "cur_evolve_target_mass": 0.0,
+            "cur_evolve_target_margin_other": 0.0,
+            "cur_ability_legal_rate": 0.0,
+            "cur_ability_target_if_legal": 0.0,
+            "cur_ability_pred_if_legal": 0.0,
+            "cur_ability_miss_if_target": 0.0,
+            "cur_ability_target_mass": 0.0,
+            "cur_ability_target_margin_other": 0.0,
+            "cur_attack_legal_rate": 0.0,
+            "cur_attack_target_if_legal": 0.0,
+            "cur_attack_pred_if_legal": 0.0,
+            "cur_attack_miss_if_target": 0.0,
+            "cur_attack_target_mass": 0.0,
+            "cur_attack_target_margin_other": 0.0,
             "cur_dca_n": 0.0,
             "cur_dca_top1": 0.0,
             "seq_len_mean": 0.0,
@@ -800,6 +1505,53 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
             "known_opp_rate": 0.0,
             "known_opp_slots_mean": 0.0,
             "known_opp_count_mean": 0.0,
+            "known_action_n": 0.0,
+            "known_action_top1": 0.0,
+            "turn_continue_acc": 0.0,
+            "turn_continue_f1": 0.0,
+            "turn_continue_target_rate": 0.0,
+            "turn_continue_pred_rate": 0.0,
+            "turn_remaining_mae": 0.0,
+            "turn_future_type_f1": 0.0,
+            "turn_future_type_target_rate": 0.0,
+            "turn_future_type_pred_rate": 0.0,
+            "turn_next_exists_rate": 0.0,
+            "turn_next_type_acc": 0.0,
+            "turn_next_type_pos_acc": 0.0,
+            "turn_next_none_acc": 0.0,
+            "turn_next_card_acc": 0.0,
+            "turn_next_card_n": 0.0,
+            "turn_next_attack_acc": 0.0,
+            "turn_next_attack_n": 0.0,
+            "turn_next_context_acc": 0.0,
+            "turn_next_context_n": 0.0,
+            "cur_turn_next_exists_rate": 0.0,
+            "cur_turn_next_type_acc": 0.0,
+            "cur_turn_next_type_pos_acc": 0.0,
+            "cur_turn_next_card_acc": 0.0,
+            "cur_turn_next_attack_acc": 0.0,
+            "turn_seq_type_acc": 0.0,
+            "turn_seq_type_pos_acc": 0.0,
+            "turn_seq_none_acc": 0.0,
+            "turn_seq_step1_acc": 0.0,
+            "turn_seq_step2_acc": 0.0,
+            "turn_seq_step3_acc": 0.0,
+            "turn_seq_step4_acc": 0.0,
+            "turn_seq_card_acc": 0.0,
+            "turn_seq_card_n": 0.0,
+            "turn_seq_attack_acc": 0.0,
+            "turn_seq_attack_n": 0.0,
+            "turn_seq_context_acc": 0.0,
+            "turn_seq_context_n": 0.0,
+            "cur_turn_continue_target_rate": 0.0,
+            "cur_turn_continue_pred_rate": 0.0,
+            "cur_turn_continue_f1": 0.0,
+            "cur_turn_continue_miss": 0.0,
+            "cur_terminal_when_continue": 0.0,
+            "cur_nonterminal_when_stop": 0.0,
+            "cur_terminal_prob_when_continue": 0.0,
+            "cur_terminal_prob_when_stop": 0.0,
+            "cur_nonterminal_prob_when_stop": 0.0,
             "plan_mae": 0.0,
             "plan_f1": 0.0,
             "plan_pos_rate": 0.0,
@@ -832,6 +1584,14 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
         }
     pred = outputs["action_logits"].argmax(dim=-1)
     top1 = (pred[valid] == batch.target_first[valid]).float().mean().item()
+    known_action_n = 0.0
+    known_action_top1 = 0.0
+    if "known_action_logits" in outputs:
+        known_mask_for_action = valid & (batch.known_opp_mask.float().sum(dim=-1) > 0)
+        known_action_n = float(known_mask_for_action.sum().item())
+        if bool(known_mask_for_action.any()):
+            known_pred = outputs["known_action_logits"].argmax(dim=-1)
+            known_action_top1 = (known_pred[known_mask_for_action] == batch.target_first[known_mask_for_action]).float().mean().item()
     type_pred = outputs["type_logits"].argmax(dim=-1)
     type_acc = (type_pred[valid] == batch.target_type[valid]).float().mean().item()
     count_target = batch.target_multi.float().sum(dim=-1).long().clamp(0, MAX_SELECT_COUNT)
@@ -868,8 +1628,9 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
     log_probs = torch.log_softmax(logits, dim=-1)
     entropy = (-(probs * log_probs).sum(dim=-1))[valid].mean().item()
     top2 = logits.topk(k=min(2, logits.shape[-1]), dim=-1).values
-    if top2.shape[-1] >= 2:
-        margin = (top2[..., 0] - top2[..., 1])[valid].mean().item()
+    nonforced_valid = valid & (opt_n > 1)
+    if top2.shape[-1] >= 2 and bool(nonforced_valid.any()):
+        margin = (top2[..., 0] - top2[..., 1])[nonforced_valid].mean().item()
     else:
         margin = 0.0
     max_k = min(MAX_SELECT_COUNT, logits.shape[-1])
@@ -927,13 +1688,96 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
         precision = recall = f1 = 0.0
 
     cur_top1 = cur_type_acc = cur_set_f1 = cur_dca_top1 = 0.0
+    cur_entropy = cur_margin = 0.0
+    cur_target_margin_best = 0.0
+    cur_rank_violation_025 = 0.0
+    cur_ambig_target_margin_best = 0.0
+    cur_forced_rate = cur_nonforced_top1 = 0.0
+    cur_bigopt_rate = cur_bigopt_top1 = 0.0
+    cur_ambig_type_rate = cur_ambig_type_top1 = 0.0
+    cur_target_end_rate = cur_pred_end_rate = 0.0
+    cur_pred_end_when_nonend_legal = cur_pred_end_when_target_nonend = 0.0
+    current_type_opportunity: dict[str, float] = {}
+    cur_nonforced = current_valid & (opt_n > 1)
+    cur_bigopt = current_valid & (opt_n >= 8)
+    cur_ambig_type = current_valid & (same_type_count > 1)
+    cur_nonend_legal = current_valid & (((batch.opt_type.long() != TYPE_END) & (opt_mask > 0)).any(dim=-1))
     if bool(current_valid.any()):
         cur_top1 = (pred[current_valid] == batch.target_first[current_valid]).float().mean().item()
         cur_type_acc = (pred_type[current_valid] == batch.target_type.long()[current_valid]).float().mean().item()
         cur_set_f1 = (2.0 * tp[current_valid] / (pp[current_valid] + gp[current_valid]).clamp(min=1.0)).mean().item() if max_k > 0 else 0.0
+        cur_entropy = (-(probs * log_probs).sum(dim=-1))[current_valid].mean().item()
+        if top2.shape[-1] >= 2 and bool(cur_nonforced.any()):
+            cur_margin = (top2[..., 0] - top2[..., 1])[cur_nonforced].mean().item()
+            target_safe = batch.target_first.long().clamp(min=0, max=logits.shape[-1] - 1)
+            target_logit = logits.gather(-1, target_safe.unsqueeze(-1)).squeeze(-1)
+            non_target_mask = opt_mask > 0
+            non_target_mask = non_target_mask.clone()
+            non_target_mask.scatter_(-1, target_safe.unsqueeze(-1), False)
+            target_margin_rows = current_valid & non_target_mask.any(dim=-1)
+            if bool(target_margin_rows.any()):
+                best_non_target = logits.masked_fill(~non_target_mask, NEG_INF).max(dim=-1).values
+                target_margin = target_logit - best_non_target
+                cur_target_margin_best = target_margin[target_margin_rows].mean().item()
+                cur_rank_violation_025 = (target_margin[target_margin_rows] < 0.25).float().mean().item()
+                ambig_margin_rows = cur_ambig_type & non_target_mask.any(dim=-1)
+                if bool(ambig_margin_rows.any()):
+                    cur_ambig_target_margin_best = target_margin[ambig_margin_rows].mean().item()
+        cur_forced_rate = float((current_valid & (opt_n <= 1)).float().sum().item() / max(current_n, 1.0))
+        cur_bigopt_rate = float(cur_bigopt.float().sum().item() / max(current_n, 1.0))
+        cur_ambig_type_rate = float(cur_ambig_type.float().sum().item() / max(current_n, 1.0))
+        cur_target_end_rate = float((batch.target_type.long()[current_valid] == TYPE_END).float().mean().item())
+        cur_pred_end_rate = float((pred_type[current_valid] == TYPE_END).float().mean().item())
+        if bool(cur_nonforced.any()):
+            cur_nonforced_top1 = (pred[cur_nonforced] == batch.target_first[cur_nonforced]).float().mean().item()
+        if bool(cur_bigopt.any()):
+            cur_bigopt_top1 = (pred[cur_bigopt] == batch.target_first[cur_bigopt]).float().mean().item()
+        if bool(cur_ambig_type.any()):
+            cur_ambig_type_top1 = (pred[cur_ambig_type] == batch.target_first[cur_ambig_type]).float().mean().item()
+        if bool(cur_nonend_legal.any()):
+            cur_pred_end_when_nonend_legal = (pred_type[cur_nonend_legal] == TYPE_END).float().mean().item()
+        cur_target_nonend = current_valid & (batch.target_type.long() != TYPE_END)
+        if bool(cur_target_nonend.any()):
+            cur_pred_end_when_target_nonend = (pred_type[cur_target_nonend] == TYPE_END).float().mean().item()
         cur_dca = current_valid & dca
         if bool(cur_dca.any()):
             cur_dca_top1 = (pred[cur_dca] == batch.target_first[cur_dca]).float().mean().item()
+
+    for typ, name in (
+        (TYPE_PLAY, "play"),
+        (TYPE_ATTACH, "attach"),
+        (TYPE_EVOLVE, "evolve"),
+        (TYPE_ABILITY, "ability"),
+        (TYPE_ATTACK, "attack"),
+    ):
+        legal = current_valid & (((batch.opt_type.long() == typ) & (opt_mask > 0)).any(dim=-1))
+        target = current_valid & (batch.target_type.long() == typ)
+        current_type_opportunity[f"cur_{name}_legal_rate"] = float(legal.float().sum().item() / max(current_n, 1.0))
+        if bool(legal.any()):
+            current_type_opportunity[f"cur_{name}_target_if_legal"] = float((batch.target_type.long()[legal] == typ).float().mean().item())
+            current_type_opportunity[f"cur_{name}_pred_if_legal"] = float((pred_type[legal] == typ).float().mean().item())
+        else:
+            current_type_opportunity[f"cur_{name}_target_if_legal"] = 0.0
+            current_type_opportunity[f"cur_{name}_pred_if_legal"] = 0.0
+        if bool(target.any()):
+            current_type_opportunity[f"cur_{name}_miss_if_target"] = float((pred_type[target] != typ).float().mean().item())
+            target_type_mass = (probs * ((batch.opt_type.long() == typ) & (opt_mask > 0)).float()).sum(dim=-1)
+            current_type_opportunity[f"cur_{name}_target_mass"] = float(target_type_mass[target].mean().item())
+            target_safe = batch.target_first.long().clamp(min=0, max=logits.shape[-1] - 1)
+            target_logit = logits.gather(-1, target_safe.unsqueeze(-1)).squeeze(-1)
+            other_type = (batch.opt_type.long() != typ) & (opt_mask > 0)
+            target_with_other = target & other_type.any(dim=-1)
+            if bool(target_with_other.any()):
+                best_other = logits.masked_fill(~other_type, NEG_INF).max(dim=-1).values
+                current_type_opportunity[f"cur_{name}_target_margin_other"] = float(
+                    (target_logit[target_with_other] - best_other[target_with_other]).mean().item()
+                )
+            else:
+                current_type_opportunity[f"cur_{name}_target_margin_other"] = 0.0
+        else:
+            current_type_opportunity[f"cur_{name}_miss_if_target"] = 0.0
+            current_type_opportunity[f"cur_{name}_target_mass"] = 0.0
+            current_type_opportunity[f"cur_{name}_target_margin_other"] = 0.0
 
     order_logits = outputs.get("order_logits")
     order_acc = 0.0
@@ -1039,6 +1883,191 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
     known_opp_rate = known_step.float().sum().item() / max(float(step_valid.float().sum().item()), 1.0) if bool(step_valid.any()) else 0.0
     known_opp_slots_mean = known_slots[known_step].mean().item() if bool(known_step.any()) else 0.0
     known_opp_count_mean = (known_counts.sum(dim=-1)[known_step]).mean().item() if bool(known_step.any()) else 0.0
+    turn_continue_acc = turn_continue_f1 = 0.0
+    turn_continue_target_rate = turn_continue_pred_rate = 0.0
+    turn_remaining_mae = 0.0
+    turn_future_type_f1 = 0.0
+    turn_future_type_target_rate = turn_future_type_pred_rate = 0.0
+    turn_next_exists_rate = 0.0
+    turn_next_type_acc = turn_next_type_pos_acc = turn_next_none_acc = 0.0
+    turn_next_card_acc = turn_next_attack_acc = turn_next_context_acc = 0.0
+    turn_next_card_n = turn_next_attack_n = turn_next_context_n = 0.0
+    cur_turn_next_exists_rate = 0.0
+    cur_turn_next_type_acc = cur_turn_next_type_pos_acc = 0.0
+    cur_turn_next_card_acc = cur_turn_next_attack_acc = 0.0
+    turn_seq_type_acc = turn_seq_type_pos_acc = turn_seq_none_acc = 0.0
+    turn_seq_step_acc = {i: 0.0 for i in range(TURN_PLAN_STEPS)}
+    turn_seq_card_acc = turn_seq_attack_acc = turn_seq_context_acc = 0.0
+    turn_seq_card_n = turn_seq_attack_n = turn_seq_context_n = 0.0
+    cur_turn_continue_target_rate = cur_turn_continue_pred_rate = cur_turn_continue_f1 = 0.0
+    cur_turn_continue_miss = cur_terminal_when_continue = cur_nonterminal_when_stop = 0.0
+    cur_terminal_prob_when_continue = cur_terminal_prob_when_stop = cur_nonterminal_prob_when_stop = 0.0
+    turn_target = batch.turn_continue.float().clamp(0.0, 1.0)
+    turn_pred = torch.zeros_like(turn_target)
+    if "turn_continue_logits" in outputs and "turn_remaining_logits" in outputs and "turn_future_type_logits" in outputs:
+        turn_target = batch.turn_continue.float().clamp(0.0, 1.0)
+        turn_pred = (torch.sigmoid(outputs["turn_continue_logits"].float()) >= 0.5).float()
+        turn_valid = step_valid
+        if bool(turn_valid.any()):
+            turn_continue_acc = float((turn_pred[turn_valid] == turn_target[turn_valid]).float().mean().item())
+            turn_continue_target_rate = float(turn_target[turn_valid].mean().item())
+            turn_continue_pred_rate = float(turn_pred[turn_valid].mean().item())
+            tp_turn = (turn_pred[turn_valid] * turn_target[turn_valid]).sum()
+            pp_turn = turn_pred[turn_valid].sum()
+            gp_turn = turn_target[turn_valid].sum()
+            turn_continue_f1 = float((2.0 * tp_turn / (pp_turn + gp_turn).clamp(min=1.0)).item())
+            rem_pred = outputs["turn_remaining_logits"].argmax(dim=-1)
+            turn_remaining_mae = float(
+                (rem_pred[turn_valid].float() - batch.turn_remaining.long()[turn_valid].clamp(0, MAX_SELECT_COUNT).float())
+                .abs()
+                .mean()
+                .item()
+            )
+            fut_target = batch.turn_future_types.float().clamp(0.0, 1.0)
+            fut_pred = (torch.sigmoid(outputs["turn_future_type_logits"].float()) >= 0.20).float()
+            fut_mask = turn_valid.unsqueeze(-1).expand_as(fut_target)
+            tp_fut = (fut_pred[fut_mask] * fut_target[fut_mask]).sum()
+            pp_fut = fut_pred[fut_mask].sum()
+            gp_fut = fut_target[fut_mask].sum()
+            turn_future_type_f1 = float((2.0 * tp_fut / (pp_fut + gp_fut).clamp(min=1.0)).item())
+            turn_future_type_target_rate = float(fut_target[fut_mask].mean().item())
+            turn_future_type_pred_rate = float(fut_pred[fut_mask].mean().item())
+
+    if "turn_next_type_logits" in outputs:
+        next_valid = step_valid
+        next_exists = batch.turn_next_exists.float().clamp(0.0, 1.0) > 0.5
+        next_type_target = torch.where(
+            next_exists,
+            batch.turn_next_type.long().clamp(0, N_ACTION_TYPES),
+            torch.full_like(batch.turn_next_type.long(), N_ACTION_TYPES),
+        )
+        next_type_pred = outputs["turn_next_type_logits"].argmax(dim=-1)
+        if bool(next_valid.any()):
+            turn_next_exists_rate = float(next_exists[next_valid].float().mean().item())
+            turn_next_type_acc = float((next_type_pred[next_valid] == next_type_target[next_valid]).float().mean().item())
+            pos = next_valid & next_exists
+            none = next_valid & (~next_exists)
+            if bool(pos.any()):
+                turn_next_type_pos_acc = float((next_type_pred[pos] == next_type_target[pos]).float().mean().item())
+            if bool(none.any()):
+                turn_next_none_acc = float((next_type_pred[none] == N_ACTION_TYPES).float().mean().item())
+        card_valid = next_valid & next_exists & (batch.turn_next_card.long() > 0)
+        if bool(card_valid.any()) and "turn_next_card_logits" in outputs:
+            turn_next_card_n = float(card_valid.sum().item())
+            card_pred = outputs["turn_next_card_logits"].argmax(dim=-1)
+            turn_next_card_acc = float(
+                (card_pred[card_valid] == batch.turn_next_card.long()[card_valid].clamp(0, N_CARDS + 1)).float().mean().item()
+            )
+        attack_valid = next_valid & next_exists & (batch.turn_next_attack.long() > 0)
+        if bool(attack_valid.any()) and "turn_next_attack_logits" in outputs:
+            turn_next_attack_n = float(attack_valid.sum().item())
+            attack_pred = outputs["turn_next_attack_logits"].argmax(dim=-1)
+            turn_next_attack_acc = float(
+                (attack_pred[attack_valid] == batch.turn_next_attack.long()[attack_valid].clamp(0, N_ATTACKS)).float().mean().item()
+            )
+        context_valid = next_valid & next_exists & (batch.turn_next_context.long() > 0)
+        if bool(context_valid.any()) and "turn_next_context_logits" in outputs:
+            turn_next_context_n = float(context_valid.sum().item())
+            context_pred = outputs["turn_next_context_logits"].argmax(dim=-1)
+            turn_next_context_acc = float(
+                (context_pred[context_valid] == batch.turn_next_context.long()[context_valid].clamp(0, 65)).float().mean().item()
+            )
+        if bool(current_valid.any()):
+            cur_turn_next_exists_rate = float(next_exists[current_valid].float().mean().item())
+            cur_turn_next_type_acc = float(
+                (next_type_pred[current_valid] == next_type_target[current_valid]).float().mean().item()
+            )
+            cur_pos = current_valid & next_exists
+            if bool(cur_pos.any()):
+                cur_turn_next_type_pos_acc = float((next_type_pred[cur_pos] == next_type_target[cur_pos]).float().mean().item())
+                if "turn_next_card_logits" in outputs:
+                    cur_card = cur_pos & (batch.turn_next_card.long() > 0)
+                    if bool(cur_card.any()):
+                        card_pred = outputs["turn_next_card_logits"].argmax(dim=-1)
+                        cur_turn_next_card_acc = float(
+                            (card_pred[cur_card] == batch.turn_next_card.long()[cur_card].clamp(0, N_CARDS + 1)).float().mean().item()
+                        )
+                if "turn_next_attack_logits" in outputs:
+                    cur_attack = cur_pos & (batch.turn_next_attack.long() > 0)
+                    if bool(cur_attack.any()):
+                        attack_pred = outputs["turn_next_attack_logits"].argmax(dim=-1)
+                        cur_turn_next_attack_acc = float(
+                            (attack_pred[cur_attack] == batch.turn_next_attack.long()[cur_attack].clamp(0, N_ATTACKS)).float().mean().item()
+                        )
+
+    if "turn_seq_type_logits" in outputs:
+        seq_valid = (step_mask > 0).unsqueeze(-1).expand_as(batch.turn_plan_mask)
+        seq_exists = batch.turn_plan_mask.float().clamp(0.0, 1.0) > 0.5
+        seq_type_target = torch.where(
+            seq_exists,
+            batch.turn_plan_types.long().clamp(0, N_ACTION_TYPES),
+            torch.full_like(batch.turn_plan_types.long(), N_ACTION_TYPES),
+        )
+        seq_type_pred = outputs["turn_seq_type_logits"].argmax(dim=-1)
+        if bool(seq_valid.any()):
+            turn_seq_type_acc = float((seq_type_pred[seq_valid] == seq_type_target[seq_valid]).float().mean().item())
+            seq_pos = seq_valid & seq_exists
+            seq_none = seq_valid & (~seq_exists)
+            if bool(seq_pos.any()):
+                turn_seq_type_pos_acc = float((seq_type_pred[seq_pos] == seq_type_target[seq_pos]).float().mean().item())
+            if bool(seq_none.any()):
+                turn_seq_none_acc = float((seq_type_pred[seq_none] == N_ACTION_TYPES).float().mean().item())
+            for step in range(min(TURN_PLAN_STEPS, 4)):
+                step_mask_i = seq_valid[..., step]
+                if bool(step_mask_i.any()):
+                    turn_seq_step_acc[step] = float(
+                        (seq_type_pred[..., step][step_mask_i] == seq_type_target[..., step][step_mask_i]).float().mean().item()
+                    )
+        seq_card_valid = seq_valid & seq_exists & (batch.turn_plan_cards.long() > 0)
+        if bool(seq_card_valid.any()) and "turn_seq_card_logits" in outputs:
+            turn_seq_card_n = float(seq_card_valid.sum().item())
+            seq_card_pred = outputs["turn_seq_card_logits"].argmax(dim=-1)
+            turn_seq_card_acc = float(
+                (seq_card_pred[seq_card_valid] == batch.turn_plan_cards.long()[seq_card_valid].clamp(0, N_CARDS + 1)).float().mean().item()
+            )
+        seq_attack_valid = seq_valid & seq_exists & (batch.turn_plan_attacks.long() > 0)
+        if bool(seq_attack_valid.any()) and "turn_seq_attack_logits" in outputs:
+            turn_seq_attack_n = float(seq_attack_valid.sum().item())
+            seq_attack_pred = outputs["turn_seq_attack_logits"].argmax(dim=-1)
+            turn_seq_attack_acc = float(
+                (seq_attack_pred[seq_attack_valid] == batch.turn_plan_attacks.long()[seq_attack_valid].clamp(0, N_ATTACKS)).float().mean().item()
+            )
+        seq_context_valid = seq_valid & seq_exists & (batch.turn_plan_contexts.long() > 0)
+        if bool(seq_context_valid.any()) and "turn_seq_context_logits" in outputs:
+            turn_seq_context_n = float(seq_context_valid.sum().item())
+            seq_context_pred = outputs["turn_seq_context_logits"].argmax(dim=-1)
+            turn_seq_context_acc = float(
+                (seq_context_pred[seq_context_valid] == batch.turn_plan_contexts.long()[seq_context_valid].clamp(0, 65)).float().mean().item()
+            )
+
+    if bool(current_valid.any()):
+        cur_turn_target = turn_target[current_valid]
+        cur_turn_pred = turn_pred[current_valid]
+        cur_turn_continue_target_rate = float(cur_turn_target.mean().item())
+        cur_turn_continue_pred_rate = float(cur_turn_pred.mean().item())
+        tp_cur = (cur_turn_pred * cur_turn_target).sum()
+        pp_cur = cur_turn_pred.sum()
+        gp_cur = cur_turn_target.sum()
+        cur_turn_continue_f1 = float((2.0 * tp_cur / (pp_cur + gp_cur).clamp(min=1.0)).item())
+        cur_cont = current_valid & (turn_target > 0.5)
+        cur_stop = current_valid & (turn_target <= 0.5)
+        terminal_options = (
+            ((batch.opt_type.long() == TYPE_END) | (batch.opt_type.long() == TYPE_ATTACK))
+            & (opt_mask > 0)
+        )
+        terminal_prob = (probs * terminal_options.float()).sum(dim=-1).clamp(0.0, 1.0)
+        if bool(cur_cont.any()):
+            cur_turn_continue_miss = float((turn_pred[cur_cont] < 0.5).float().mean().item())
+            cur_terminal_when_continue = float(
+                ((pred_type[cur_cont] == TYPE_END) | (pred_type[cur_cont] == TYPE_ATTACK)).float().mean().item()
+            )
+            cur_terminal_prob_when_continue = float(terminal_prob[cur_cont].mean().item())
+        if bool(cur_stop.any()):
+            cur_nonterminal_when_stop = float(
+                ((pred_type[cur_stop] != TYPE_END) & (pred_type[cur_stop] != TYPE_ATTACK)).float().mean().item()
+            )
+            cur_terminal_prob_when_stop = float(terminal_prob[cur_stop].mean().item())
+            cur_nonterminal_prob_when_stop = float((1.0 - terminal_prob[cur_stop]).mean().item())
     prev_nonzero = (
         (batch.prev_type.long() != 0)
         | (batch.prev_card.long() != 0)
@@ -1106,6 +2135,21 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
         "cur_top1": float(cur_top1),
         "cur_type_acc": float(cur_type_acc),
         "cur_set_f1": float(cur_set_f1),
+        "cur_entropy": float(cur_entropy),
+        "cur_margin": float(cur_margin),
+        "cur_target_margin_best": float(cur_target_margin_best),
+        "cur_rank_violation_025": float(cur_rank_violation_025),
+        "cur_ambig_target_margin_best": float(cur_ambig_target_margin_best),
+        "cur_forced_rate": float(cur_forced_rate),
+        "cur_nonforced_top1": float(cur_nonforced_top1),
+        "cur_bigopt_rate": float(cur_bigopt_rate),
+        "cur_bigopt_top1": float(cur_bigopt_top1),
+        "cur_ambig_type_rate": float(cur_ambig_type_rate),
+        "cur_ambig_type_top1": float(cur_ambig_type_top1),
+        "cur_target_end_rate": float(cur_target_end_rate),
+        "cur_pred_end_rate": float(cur_pred_end_rate),
+        "cur_pred_end_when_nonend_legal": float(cur_pred_end_when_nonend_legal),
+        "cur_pred_end_when_target_nonend": float(cur_pred_end_when_target_nonend),
         "cur_dca_n": float((current_valid & dca).float().sum().item()),
         "cur_dca_top1": float(cur_dca_top1),
         "seq_len_mean": float(seq_len_mean),
@@ -1116,6 +2160,53 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
         "known_opp_rate": float(known_opp_rate),
         "known_opp_slots_mean": float(known_opp_slots_mean),
         "known_opp_count_mean": float(known_opp_count_mean),
+        "known_action_n": float(known_action_n),
+        "known_action_top1": float(known_action_top1),
+        "turn_continue_acc": float(turn_continue_acc),
+        "turn_continue_f1": float(turn_continue_f1),
+        "turn_continue_target_rate": float(turn_continue_target_rate),
+        "turn_continue_pred_rate": float(turn_continue_pred_rate),
+        "turn_remaining_mae": float(turn_remaining_mae),
+        "turn_future_type_f1": float(turn_future_type_f1),
+        "turn_future_type_target_rate": float(turn_future_type_target_rate),
+        "turn_future_type_pred_rate": float(turn_future_type_pred_rate),
+        "turn_next_exists_rate": float(turn_next_exists_rate),
+        "turn_next_type_acc": float(turn_next_type_acc),
+        "turn_next_type_pos_acc": float(turn_next_type_pos_acc),
+        "turn_next_none_acc": float(turn_next_none_acc),
+        "turn_next_card_acc": float(turn_next_card_acc),
+        "turn_next_card_n": float(turn_next_card_n),
+        "turn_next_attack_acc": float(turn_next_attack_acc),
+        "turn_next_attack_n": float(turn_next_attack_n),
+        "turn_next_context_acc": float(turn_next_context_acc),
+        "turn_next_context_n": float(turn_next_context_n),
+        "cur_turn_next_exists_rate": float(cur_turn_next_exists_rate),
+        "cur_turn_next_type_acc": float(cur_turn_next_type_acc),
+        "cur_turn_next_type_pos_acc": float(cur_turn_next_type_pos_acc),
+        "cur_turn_next_card_acc": float(cur_turn_next_card_acc),
+        "cur_turn_next_attack_acc": float(cur_turn_next_attack_acc),
+        "turn_seq_type_acc": float(turn_seq_type_acc),
+        "turn_seq_type_pos_acc": float(turn_seq_type_pos_acc),
+        "turn_seq_none_acc": float(turn_seq_none_acc),
+        "turn_seq_step1_acc": float(turn_seq_step_acc.get(0, 0.0)),
+        "turn_seq_step2_acc": float(turn_seq_step_acc.get(1, 0.0)),
+        "turn_seq_step3_acc": float(turn_seq_step_acc.get(2, 0.0)),
+        "turn_seq_step4_acc": float(turn_seq_step_acc.get(3, 0.0)),
+        "turn_seq_card_acc": float(turn_seq_card_acc),
+        "turn_seq_card_n": float(turn_seq_card_n),
+        "turn_seq_attack_acc": float(turn_seq_attack_acc),
+        "turn_seq_attack_n": float(turn_seq_attack_n),
+        "turn_seq_context_acc": float(turn_seq_context_acc),
+        "turn_seq_context_n": float(turn_seq_context_n),
+        "cur_turn_continue_target_rate": float(cur_turn_continue_target_rate),
+        "cur_turn_continue_pred_rate": float(cur_turn_continue_pred_rate),
+        "cur_turn_continue_f1": float(cur_turn_continue_f1),
+        "cur_turn_continue_miss": float(cur_turn_continue_miss),
+        "cur_terminal_when_continue": float(cur_terminal_when_continue),
+        "cur_nonterminal_when_stop": float(cur_nonterminal_when_stop),
+        "cur_terminal_prob_when_continue": float(cur_terminal_prob_when_continue),
+        "cur_terminal_prob_when_stop": float(cur_terminal_prob_when_stop),
+        "cur_nonterminal_prob_when_stop": float(cur_nonterminal_prob_when_stop),
         "plan_mae": float(plan_mae),
         "plan_f1": float(plan_f1),
         "plan_pos_rate": float(plan_pos_rate),
@@ -1147,6 +2238,7 @@ def sequence_accuracy(outputs: dict[str, torch.Tensor], batch: SequenceBatch) ->
         "outcome_brier": float(outcome_brier),
     }
     metrics.update(type_metrics)
+    metrics.update(current_type_opportunity)
     return metrics
 
 
